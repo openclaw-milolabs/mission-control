@@ -148,6 +148,30 @@ create table if not exists ticket_activity (
   occurred_at timestamptz not null default now()
 );
 
+create table if not exists board_assignees (
+  id uuid primary key default gen_random_uuid(),
+  board_id uuid not null references boards(id) on delete cascade,
+  name text not null,
+  color text not null default '#94a3b8',
+  initials text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (board_id, name)
+);
+create index if not exists board_assignees_board_id_idx on board_assignees(board_id);
+
+-- One-shot data migration: clear legacy runtime-agent assignee_ids on tickets.
+-- Tickets used to reference runtime agent IDs; switching to board-scoped custom
+-- assignees would leave orphans. The flag column makes this idempotent.
+alter table app_settings add column if not exists board_assignees_migrated_at timestamptz;
+do $$
+begin
+  if not exists (select 1 from app_settings where id = 1 and board_assignees_migrated_at is not null) then
+    update tickets set assignee_ids = '{}'::text[], updated_at = now() where assignee_ids <> '{}'::text[];
+    update app_settings set board_assignees_migrated_at = now() where id = 1;
+  end if;
+end $$;
+
 create table if not exists agents (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id) on delete cascade,

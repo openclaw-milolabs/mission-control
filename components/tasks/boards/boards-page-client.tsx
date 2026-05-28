@@ -10,6 +10,7 @@ import { ListView } from "@/components/tasks/list/list-view";
 import { CreateBoardModal } from "@/components/tasks/modals/create-board-modal";
 import { CreateListModal } from "@/components/tasks/modals/create-list-modal";
 import { DiscardModal } from "@/components/tasks/modals/discard-modal";
+import { ManageAssigneesModal } from "@/components/tasks/modals/manage-assignees-modal";
 import { TicketDetailsModal } from "@/components/tasks/modals/ticket-details-modal";
 import { Button } from "@/components/ui/button";
 import {
@@ -104,30 +105,61 @@ type Props = {
   } | null;
 };
 
-export function BoardsPageClient({ initialBoardId, initialBoards, initialAssignees, sidebarUser }: Props) {
-  // Client-side assignee loading — fetch from /api/agents for live runtime agents
-  const [runtimeAssignees, setRuntimeAssignees] = useState<Assignee[]>(initialAssignees);
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch("/api/agents", { cache: "reload" });
-        const json = await res.json();
-        if (!cancelled && json.agents) {
-          setRuntimeAssignees(json.agents.map((a: { id: string; name?: string }) => ({
-            id: a.id,
-            name: a.name || a.id,
-            initials: (a.name || a.id).split(/\s+/).filter(Boolean).slice(0, 2).map((p: string) => p[0]?.toUpperCase() || "").join("") || "AG",
-            color: "#64748b",
-            source: "runtime" as const,
-          })));
-        }
-      } catch { /* ignore load errors */ }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+type RawBoardAssignee = { id: string; board_id: string; name: string; color: string; initials: string | null };
 
-  const tasks = useTasks({ initialBoardId, initialBoards, initialAssignees: runtimeAssignees });
+function deriveInitials(name: string): string {
+  const parts = name.split(/\s+/).filter(Boolean).slice(0, 2);
+  if (parts.length === 0) return name.slice(0, 2).toUpperCase();
+  return parts.map((p) => p[0]?.toUpperCase() || "").join("");
+}
+
+function groupAssigneesByBoard(rows: RawBoardAssignee[]): Record<string, Assignee[]> {
+  const out: Record<string, Assignee[]> = {};
+  for (const row of rows) {
+    if (!out[row.board_id]) out[row.board_id] = [];
+    out[row.board_id].push({
+      id: row.id,
+      name: row.name,
+      initials: row.initials || deriveInitials(row.name),
+      color: row.color,
+    });
+  }
+  return out;
+}
+
+async function postTasks<T = Record<string, unknown>>(body: Record<string, unknown>): Promise<{ ok: boolean; error?: string } & T> {
+  try {
+    const res = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json();
+    return json as { ok: boolean; error?: string } & T;
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Network error" } as { ok: boolean; error?: string } & T;
+  }
+}
+
+export function BoardsPageClient({ initialBoardId, initialBoards, initialAssignees: _ignored, sidebarUser }: Props) {
+  void _ignored;
+  const [assigneesByBoardId, setAssigneesByBoardId] = useState<Record<string, Assignee[]>>({});
+  const [manageAssigneesOpen, setManageAssigneesOpen] = useState(false);
+
+  const reloadAssignees = async () => {
+    try {
+      const res = await fetch("/api/tasks", { cache: "reload" });
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.ok && Array.isArray(json.boardAssignees)) {
+        setAssigneesByBoardId(groupAssigneesByBoard(json.boardAssignees as RawBoardAssignee[]));
+      }
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => { void reloadAssignees(); }, []);
+
+  const tasks = useTasks({ initialBoardId, initialBoards, assigneesByBoardId });
   const router = useRouter();
   const searchParams = useSearchParams();
   const [boardSearch, setBoardSearch] = useState("");
@@ -143,6 +175,25 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
   const [copyAndOpen, setCopyAndOpen] = useState(false);
 
   const boardParam = searchParams.get("board");
+
+  const handleCreateAssignee = async (name: string, color: string) => {
+    if (!tasks.activeBoardId) return { ok: false, error: "No active board." };
+    const res = await postTasks({ action: "createBoardAssignee", boardId: tasks.activeBoardId, name, color });
+    if (res.ok) await reloadAssignees();
+    return { ok: res.ok, error: res.error };
+  };
+
+  const handleUpdateAssignee = async (assigneeId: string, name: string, color: string) => {
+    const res = await postTasks({ action: "updateBoardAssignee", assigneeId, name, color });
+    if (res.ok) await reloadAssignees();
+    return { ok: res.ok, error: res.error };
+  };
+
+  const handleDeleteAssignee = async (assigneeId: string) => {
+    const res = await postTasks({ action: "deleteBoardAssignee", assigneeId });
+    if (res.ok) await reloadAssignees();
+    return { ok: res.ok, error: res.error };
+  };
 
   const reloadBoardsRef = useRef<(() => void) | null>(null);
   useEffect(() => {
@@ -418,6 +469,9 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
                       <DropdownMenuItem onClick={tasks.openCreateListModal}>
                         Add list
                       </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setManageAssigneesOpen(true)}>
+                        Manage assignees
+                      </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={() => tasks.openEditBoardModal(tasks.activeBoardId)}>
                         Edit board
@@ -486,6 +540,15 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setManageAssigneesOpen(true)}
+                    id="workspace-manage-assignees-trigger"
+                  >
+                    Assignees
+                  </Button>
 
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -821,6 +884,16 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
         onTitleChange={tasks.setCreateListTitle}
         onSubmit={tasks.handleCreateList}
         onClose={tasks.closeCreateListModal}
+      />
+
+      <ManageAssigneesModal
+        open={manageAssigneesOpen}
+        boardName={tasks.activeBoardName || "this board"}
+        assignees={assigneesByBoardId[tasks.activeBoardId] ?? []}
+        onCreate={handleCreateAssignee}
+        onUpdate={handleUpdateAssignee}
+        onDelete={handleDeleteAssignee}
+        onClose={() => setManageAssigneesOpen(false)}
       />
 
       {tasks.detailsForm &&

@@ -142,14 +142,15 @@ export async function GET() {
     const wid = await workspaceId(sql);
     if (!wid) return ok({ boards: [], columns: [], tickets: [], workerSettings: { enabled: true, pollIntervalSeconds: 20, maxConcurrency: 3, lastTickAt: null } });
 
-    const [boards, columns, tickets, workerSettings] = await Promise.all([
+    const [boards, columns, tickets, boardAssignees, workerSettings] = await Promise.all([
       sql`select * from boards where workspace_id=${wid} order by created_at asc`,
       sql`select * from columns where board_id in (select id from boards where workspace_id=${wid}) order by position asc, created_at asc`,
       sql`select * from tickets where workspace_id=${wid} order by position asc, created_at asc`,
+      sql`select * from board_assignees where board_id in (select id from boards where workspace_id=${wid}) order by name asc`.catch(() => []),
       getWorkerSettings(sql),
     ]);
 
-    return ok({ boards, columns, tickets, workerSettings });
+    return ok({ boards, columns, tickets, boardAssignees, workerSettings });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to load tasks", 500);
   }
@@ -160,6 +161,7 @@ export async function POST(request: Request) {
     const sql = getSql();
     // Boot migration: add checklist_name if not present
     await sql`ALTER TABLE ticket_subtasks ADD COLUMN IF NOT EXISTS checklist_name text NOT NULL DEFAULT 'Checklist'`;
+    // board_assignees table + data migration live in db/schema.sql (applied via update.sh / npm run db:migrate)
     const contentType = request.headers.get("content-type") || "";
     const isMultipart = contentType.includes("multipart/form-data");
 
@@ -241,6 +243,74 @@ export async function POST(request: Request) {
       if (!columnId) return fail("Column id is required.");
       await sql`delete from columns where id=${columnId}`;
       await logTaskAudit(sql, wid, { event: 'List deleted', details: columnId, level: 'warning' });
+      return ok();
+    }
+
+    if (action === "listBoardAssignees") {
+      const boardId = String(body.boardId || "");
+      if (!boardId) return fail("Board id is required.");
+      const rows = await sql`select * from board_assignees where board_id=${boardId} order by name asc`;
+      return ok({ assignees: rows });
+    }
+
+    if (action === "createBoardAssignee") {
+      const boardId = String(body.boardId || "");
+      const name = String(body.name || "").trim();
+      const color = String(body.color || "#94a3b8").trim() || "#94a3b8";
+      if (!boardId || !name) return fail("Board id and name are required.");
+      const initials = name
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase() || "")
+        .join("") || name.slice(0, 2).toUpperCase();
+      try {
+        const rows = await sql`
+          insert into board_assignees (board_id, name, color, initials)
+          values (${boardId}, ${name}, ${color}, ${initials})
+          returning *
+        `;
+        await logTaskAudit(sql, wid, { event: 'Assignee added', details: `${name} on board ${boardId}`, level: 'success' });
+        return ok({ assignee: rows[0] });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("board_assignees_board_id_name_key") || msg.includes("duplicate key")) {
+          return fail("An assignee with that name already exists on this board.");
+        }
+        throw err;
+      }
+    }
+
+    if (action === "updateBoardAssignee") {
+      const assigneeId = String(body.assigneeId || "");
+      if (!assigneeId) return fail("Assignee id is required.");
+      const rawName = body.name === undefined ? null : String(body.name).trim();
+      const name = rawName === "" ? null : rawName;
+      const color = body.color === undefined ? null : String(body.color).trim() || null;
+      const initials = name
+        ? name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase() || "").join("") || name.slice(0, 2).toUpperCase()
+        : null;
+      const rows = await sql`
+        update board_assignees
+        set
+          name = coalesce(${name}, name),
+          color = coalesce(${color}, color),
+          initials = coalesce(${initials}, initials),
+          updated_at = now()
+        where id = ${assigneeId}
+        returning *
+      `;
+      await logTaskAudit(sql, wid, { event: 'Assignee updated', details: rows[0]?.name || assigneeId, level: 'info' });
+      return ok({ assignee: rows[0] });
+    }
+
+    if (action === "deleteBoardAssignee") {
+      const assigneeId = String(body.assigneeId || "");
+      if (!assigneeId) return fail("Assignee id is required.");
+      // Remove from all tickets that reference it on this board
+      await sql`update tickets set assignee_ids = array_remove(assignee_ids, ${assigneeId}), updated_at = now() where ${assigneeId} = ANY(assignee_ids)`;
+      const rows = await sql`delete from board_assignees where id=${assigneeId} returning name`;
+      await logTaskAudit(sql, wid, { event: 'Assignee removed', details: rows[0]?.name || assigneeId, level: 'warning' });
       return ok();
     }
 

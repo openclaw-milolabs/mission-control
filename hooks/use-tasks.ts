@@ -79,7 +79,7 @@ type RawTicket = {
 type UseTasksOptions = {
   initialBoardId: string | null;
   initialBoards: BoardHydration[];
-  initialAssignees: Assignee[];
+  assigneesByBoardId: Record<string, Assignee[]>;
 };
 
 const sameText = (a: string, b: string) => a.trim() === b.trim();
@@ -355,7 +355,7 @@ const buildBoardState = (columnRows: ColumnRecord[], ticketRows: TicketRecord[])
   };
 };
 
-export function useTasks({ initialBoardId, initialBoards, initialAssignees }: UseTasksOptions) {
+export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: UseTasksOptions) {
   const adapter = useMemo(() => getDataAdapter(), []);
   const [boardMap, setBoardMap] = useState<Record<string, BoardEntry>>(() =>
     Object.fromEntries(initialBoards.map((board) => [board.id, cloneBoardEntry(board)])),
@@ -501,7 +501,10 @@ export function useTasks({ initialBoardId, initialBoards, initialAssignees }: Us
     return () => window.clearTimeout(timer);
   }, [searchInput]);
 
-  const assignees = useMemo(() => initialAssignees, [initialAssignees]);
+  const assignees = useMemo(
+    () => assigneesByBoardId[activeBoardId] ?? [],
+    [assigneesByBoardId, activeBoardId],
+  );
   const assigneeById = useMemo(
     () => Object.fromEntries(assignees.map((a) => [a.id, a])),
     [assignees],
