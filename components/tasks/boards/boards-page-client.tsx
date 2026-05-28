@@ -814,6 +814,7 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
         open={tasks.modal === "create"}
         form={createTicketForm}
         board={tasks.board}
+        assignees={assigneesByBoardId[tasks.activeBoardId] ?? []}
         attachments={[]}
         attachmentsLoading={false}
         attachmentsUploading={false}
@@ -904,6 +905,7 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
               open={tasks.modal === "details"}
               form={detailsForm}
               board={tasks.board}
+              assignees={assigneesByBoardId[tasks.activeBoardId] ?? []}
               attachments={tasks.detailsAttachments}
               attachmentsLoading={tasks.detailsAttachmentsLoading}
               attachmentsUploading={tasks.detailsAttachmentsUploading}

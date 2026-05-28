@@ -35,6 +35,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { TICKET_PRIORITY_OPTIONS } from "@/types/tasks";
 import type {
+  Assignee,
   BoardState,
   TicketActivity,
   TicketAttachment,
@@ -77,6 +78,7 @@ type Props = {
   open: boolean;
   form: TicketDetailsForm;
   board: BoardState;
+  assignees: Assignee[];
   attachments: TicketAttachment[];
   attachmentsLoading: boolean;
   attachmentsUploading: boolean;
@@ -181,7 +183,7 @@ function ActivityMarkdown({ text }: { text: string }) {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function TicketDetailsModal({
-  mode = "edit", open, form, board,
+  mode = "edit", open, form, board, assignees,
   attachments,
   subtasks,
   onAddSubtask, onToggleSubtask, onDeleteSubtask,
@@ -734,6 +736,46 @@ export function TicketDetailsModal({
                   placeholder="tag1, tag2..."
                   className="h-8 text-xs"
                 />
+              </div>
+
+              {/* Assignees */}
+              <div className="flex flex-col gap-1.5">
+                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Assignees</Label>
+                {assignees.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No board assignees yet. Use "Assignees" on the board toolbar to add some.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {assignees.map((a) => {
+                      const selected = form.assigneeIds.includes(a.id);
+                      return (
+                        <button
+                          key={a.id}
+                          type="button"
+                          onClick={() => {
+                            const next = selected
+                              ? form.assigneeIds.filter((id) => id !== a.id)
+                              : [...form.assigneeIds, a.id];
+                            onChange({ assigneeIds: next });
+                          }}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-colors",
+                            selected ? "border-foreground/40 bg-foreground/5" : "border-border bg-background hover:bg-accent",
+                          )}
+                          aria-pressed={selected}
+                          title={selected ? `Unassign ${a.name}` : `Assign ${a.name}`}
+                        >
+                          <span
+                            className="flex size-4 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+                            style={{ backgroundColor: a.color }}
+                          >
+                            {a.initials}
+                          </span>
+                          <span className="truncate max-w-[120px]">{a.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
             </div>
