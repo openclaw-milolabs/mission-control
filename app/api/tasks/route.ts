@@ -161,7 +161,27 @@ export async function POST(request: Request) {
     const sql = getSql();
     // Boot migration: add checklist_name if not present
     await sql`ALTER TABLE ticket_subtasks ADD COLUMN IF NOT EXISTS checklist_name text NOT NULL DEFAULT 'Checklist'`;
-    // board_assignees table + data migration live in db/schema.sql (applied via update.sh / npm run db:migrate)
+    // Boot migration safety net for board_assignees — also lives in db/schema.sql (applied via update.sh / npm run db:migrate),
+    // but mirrored here so a running app without a re-migrated DB self-heals on first POST.
+    await sql`
+      CREATE TABLE IF NOT EXISTS board_assignees (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        board_id uuid NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+        name text NOT NULL,
+        color text NOT NULL DEFAULT '#94a3b8',
+        initials text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (board_id, name)
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS board_assignees_board_id_idx ON board_assignees(board_id)`;
+    await sql`ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS board_assignees_migrated_at timestamptz`;
+    const migRows = await sql`select board_assignees_migrated_at from app_settings where id = 1 limit 1`;
+    if (!migRows[0]?.board_assignees_migrated_at) {
+      await sql`update tickets set assignee_ids = '{}'::text[], updated_at = now() where assignee_ids <> '{}'::text[]`;
+      await sql`update app_settings set board_assignees_migrated_at = now() where id = 1`;
+    }
     const contentType = request.headers.get("content-type") || "";
     const isMultipart = contentType.includes("multipart/form-data");
 

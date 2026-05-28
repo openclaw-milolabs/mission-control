@@ -3,7 +3,7 @@
 All notable changes to Mission Control are documented here.
 
 
-## [3.5.1] - 2026-04-18
+## [3.5.2] - 2026-04-18
 
 ### Fixed
 - **File manager "Open folder" link from Agenda was broken.** A previous attempt introduced a dual-root architecture (`home` vs `artifacts`) based on a mistaken assumption that `runtime-artifacts/` lived outside `~/.openclaw`. In reality the file manager's root is `/home/clawdbot/.openclaw` and `runtime-artifacts/` is already a subfolder inside it, so the dual-root plumbing produced "failed to load" errors when the agenda sheet linked to an artifact folder. Reverted the API route and the file-manager client back to a single-root model (`ROOT = /home/clawdbot/.openclaw`) and changed the agenda detail sheet to build its href by stripping the `/home/clawdbot/.openclaw` prefix from the artifact path, producing a relative link like `/file-manager?path=/runtime-artifacts/agenda/<evt>/occurrences/<occ>/artifacts`.
