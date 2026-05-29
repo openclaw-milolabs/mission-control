@@ -36,7 +36,7 @@ import { cn } from "@/lib/utils";
 import { TICKET_PRIORITY_OPTIONS } from "@/types/tasks";
 import type {
   Assignee,
-  Label,
+  Label as BoardLabelType,
   BoardState,
   TicketActivity,
   TicketAttachment,
@@ -81,7 +81,7 @@ type Props = {
   form: TicketDetailsForm;
   board: BoardState;
   assignees: Assignee[];
-  labels: Label[];
+  labels: BoardLabelType[];
   boardId: string;
   attachments: TicketAttachment[];
   attachmentsLoading: boolean;
