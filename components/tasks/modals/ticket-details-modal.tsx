@@ -284,7 +284,7 @@ export function TicketDetailsModal({
   return (
     <>
       <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-        <DialogContent className="sm:max-w-[760px] max-h-[92vh] overflow-hidden p-0">
+        <DialogContent showCloseButton={false} className="sm:max-w-[760px] max-h-[92vh] overflow-hidden p-0">
           {/* Header */}
           <DialogHeader className="px-6 pt-5 pb-0">
             <div className="flex items-center gap-3">
@@ -297,21 +297,24 @@ export function TicketDetailsModal({
                   {isEditing ? "Update details, checklists, and attachments" : "Create a new ticket"}
                 </DialogDescription>
               </div>
-              {isEditing && (
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button variant="ghost" size="icon-sm" onClick={onCopy} className="cursor-pointer"><CopyIcon className="h-3.5 w-3.5" /></Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-sm" className="cursor-pointer"><MoreHorizontalIcon className="h-3.5 w-3.5" /></Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem variant="destructive" onClick={onDelete} className="cursor-pointer">
-                        <Trash2Icon className="h-4 w-4" /> Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              )}
+              <div className="flex items-center gap-1 shrink-0">
+                {isEditing && (
+                  <>
+                    <Button variant="ghost" size="icon-sm" onClick={onCopy} className="cursor-pointer" aria-label="Copy ticket"><CopyIcon className="h-3.5 w-3.5" /></Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" className="cursor-pointer" aria-label="More actions"><MoreHorizontalIcon className="h-3.5 w-3.5" /></Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem variant="destructive" onClick={onDelete} className="cursor-pointer">
+                          <Trash2Icon className="h-4 w-4" /> Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </>
+                )}
+                <Button variant="ghost" size="icon-sm" onClick={onClose} className="cursor-pointer" aria-label="Close"><XIcon className="h-3.5 w-3.5" /></Button>
+              </div>
             </div>
           </DialogHeader>
 
@@ -798,9 +801,9 @@ export function TicketDetailsModal({
                 />
               </div>
 
-              {/* Labels */}
+              {/* Tags (free-text, comma separated) */}
               <div className="flex flex-col gap-1">
-                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Labels</Label>
+                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Tags</Label>
                 <Input
                   value={form.tagsText}
                   onChange={(e) => onChange({ tagsText: e.target.value })}
@@ -809,13 +812,15 @@ export function TicketDetailsModal({
                 />
               </div>
 
-              {/* Labels */}
+              {/* Labels (per-board colored, managed in Board ▸ Manage labels) */}
               <div className="flex flex-col gap-1.5">
                 <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Labels</Label>
                 {labels.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No labels on this board. Use "Labels" on the board toolbar to add some.</p>
+                  <p className="text-xs text-muted-foreground">
+                    No labels on this board. Open <span className="font-medium text-foreground">Board ▸ Manage labels</span> to add some.
+                  </p>
                 ) : (
-                  <div className="flex flex-wrap gap-1">
+                  <div className="flex flex-wrap gap-1.5">
                     {labels.map((l) => {
                       const selected = form.labelIds.includes(l.id);
                       return (
@@ -829,8 +834,8 @@ export function TicketDetailsModal({
                             onChange({ labelIds: next });
                           }}
                           className={cn(
-                            "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-white transition-opacity",
-                            selected ? "opacity-100" : "opacity-50 hover:opacity-80",
+                            "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium text-white transition-opacity",
+                            selected ? "opacity-100 ring-2 ring-offset-1 ring-foreground/40" : "opacity-50 hover:opacity-80",
                           )}
                           style={{ backgroundColor: l.color }}
                           aria-pressed={selected}
@@ -848,9 +853,11 @@ export function TicketDetailsModal({
               <div className="flex flex-col gap-1.5">
                 <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Assignees</Label>
                 {assignees.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No board assignees yet. Use "Assignees" on the board toolbar to add some.</p>
+                  <p className="text-xs text-muted-foreground">
+                    No assignees on this board. Open <span className="font-medium text-foreground">Board ▸ Manage assignees</span> to add some.
+                  </p>
                 ) : (
-                  <div className="flex flex-wrap gap-1">
+                  <div className="flex flex-wrap gap-1.5">
                     {assignees.map((a) => {
                       const selected = form.assigneeIds.includes(a.id);
                       return (
@@ -864,19 +871,21 @@ export function TicketDetailsModal({
                             onChange({ assigneeIds: next });
                           }}
                           className={cn(
-                            "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-colors",
-                            selected ? "border-foreground/40 bg-foreground/5" : "border-border bg-background hover:bg-accent",
+                            "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-sm transition-colors",
+                            selected
+                              ? "border-foreground/40 bg-foreground/5 font-medium text-foreground"
+                              : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
                           )}
                           aria-pressed={selected}
                           title={selected ? `Unassign ${a.name}` : `Assign ${a.name}`}
                         >
                           <span
-                            className="flex size-4 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+                            className="flex size-6 items-center justify-center rounded-full text-[10px] font-semibold text-white"
                             style={{ backgroundColor: a.color }}
                           >
                             {a.initials}
                           </span>
-                          <span className="truncate max-w-[120px]">{a.name}</span>
+                          <span className="truncate max-w-[140px]">{a.name}</span>
                         </button>
                       );
                     })}
