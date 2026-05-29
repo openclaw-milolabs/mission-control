@@ -267,19 +267,21 @@ export async function POST(request: Request) {
       if (!exists(rel)) return fail("Not found.", 404);
       const doc = await findDocByPath(sql, wid, rel);
       const name = baseName(rel);
-      await remove(rel);
-      // Cascade-clean DB rows for this path or any descendant of it.
-      await sql`
-        delete from documents
-        where workspace_id = ${wid}
-          and (relative_path = ${rel} or relative_path like ${rel + "/%"})
-      `;
+      // Write the audit row BEFORE deleting the documents row so the FK still
+      // resolves. The documents row's `ON DELETE SET NULL` cascade will null
+      // the audit's document_id automatically when we drop the row below.
       await audit(sql, wid, {
         documentId: doc?.id || null,
         actor,
         event: "deleted",
         details: { path: rel, name },
       });
+      await remove(rel);
+      await sql`
+        delete from documents
+        where workspace_id = ${wid}
+          and (relative_path = ${rel} or relative_path like ${rel + "/%"})
+      `;
       return ok({ path: rel });
     }
 

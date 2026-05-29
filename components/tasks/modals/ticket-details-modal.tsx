@@ -32,7 +32,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { TICKET_PRIORITY_OPTIONS } from "@/types/tasks";
@@ -188,6 +187,26 @@ function ActivityMarkdown({ text }: { text: string }) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
+// Small layout primitives that keep the right meta column clean.
+// Each group has a single muted SectionHeader at top; each field is just
+// label + control, no per-row uppercase shouting.
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mb-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">
+      {children}
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[11px] font-medium text-foreground/65">{label}</span>
+      {children}
+    </div>
+  );
+}
+
 export function TicketDetailsModal({
   mode = "edit", open, form, board, assignees, labels, boardId,
   attachments,
@@ -286,20 +305,20 @@ export function TicketDetailsModal({
   return (
     <>
       <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-        <DialogContent showCloseButton={false} className="sm:max-w-[760px] max-h-[92vh] overflow-hidden p-0">
-          {/* Header */}
-          <DialogHeader className="px-6 pt-5 pb-0">
-            <div className="flex items-center gap-3">
-              <div className={cn("flex items-center justify-center size-8 rounded-lg shrink-0", isEditing ? "bg-primary/10" : "bg-primary")}>
-                <ClipboardListIcon className={cn("size-4", isEditing ? "text-primary" : "text-primary-foreground")} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <DialogTitle className="text-base">{isEditing ? "Edit ticket" : "New ticket"}</DialogTitle>
-                <DialogDescription className="text-[11px]">
-                  {isEditing ? "Update details, checklists, and attachments" : "Create a new ticket"}
-                </DialogDescription>
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
+        <DialogContent showCloseButton={false} className="sm:max-w-[880px] max-h-[92vh] overflow-hidden p-0">
+          {/* Header — Title is the focal element. Mode + actions sit above it as a thin chrome strip. */}
+          <DialogHeader className="px-7 pt-4 pb-3 border-b">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                {isEditing ? "Edit ticket" : "New ticket"}
+                {isEditing && board.columns[form.statusId] && (
+                  <>
+                    <span className="mx-1.5 text-muted-foreground/40">·</span>
+                    {board.columns[form.statusId].title}
+                  </>
+                )}
+              </span>
+              <div className="flex items-center gap-0.5 shrink-0">
                 {isEditing && (
                   <>
                     <Button variant="ghost" size="icon-sm" onClick={onCopy} className="cursor-pointer" aria-label="Copy ticket"><CopyIcon className="h-3.5 w-3.5" /></Button>
@@ -318,35 +337,34 @@ export function TicketDetailsModal({
                 <Button variant="ghost" size="icon-sm" onClick={onClose} className="cursor-pointer" aria-label="Close"><XIcon className="h-3.5 w-3.5" /></Button>
               </div>
             </div>
+            <DialogTitle className="sr-only">{isEditing ? "Edit ticket" : "New ticket"}</DialogTitle>
+            <DialogDescription className="sr-only">
+              {isEditing ? "Update details, checklists, and attachments" : "Create a new ticket"}
+            </DialogDescription>
+            <Input
+              placeholder="Ticket title"
+              value={form.title}
+              onChange={(e) => onChange({ title: e.target.value })}
+              className="mt-1 h-auto border-0 bg-transparent px-0 py-1 text-lg font-semibold leading-tight shadow-none focus-visible:ring-0 focus-visible:border-b focus-visible:border-foreground/30"
+              autoFocus
+            />
           </DialogHeader>
 
           {/* Two-column layout */}
-          <div className="flex overflow-hidden" style={{ maxHeight: "calc(92vh - 130px)" }}>
-            {/* ── Main column (left) ─────────────────────────────── */}
-            <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-4 min-w-0">
-              {/* Title */}
-              <div className="flex flex-col gap-1">
-                <Label className="text-xs font-semibold text-muted-foreground">Title</Label>
-                <Input
-                  placeholder="Ticket title..."
-                  value={form.title}
-                  onChange={(e) => onChange({ title: e.target.value })}
-                  className="h-10 text-base font-semibold"
-                  autoFocus
-                />
-              </div>
-
+          <div className="flex overflow-hidden" style={{ maxHeight: "calc(92vh - 170px)" }}>
+            {/* ── Main column (left) — primary content with breathing room ─── */}
+            <div className="flex-1 overflow-y-auto px-7 py-6 flex flex-col gap-8 min-w-0">
               {/* Description */}
-              <div className="flex flex-col gap-1">
-                <Label className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+              <div className="flex flex-col gap-2">
+                <Label className="text-xs font-medium text-foreground/70 flex items-center gap-1.5">
                   <FileTextIcon className="size-3" /> Description
                 </Label>
                 <Textarea
                   placeholder="Add a more detailed description..."
                   value={form.description}
                   onChange={(e) => onChange({ description: e.target.value })}
-                  rows={6}
-                  className="resize-y text-sm min-h-[120px]"
+                  rows={7}
+                  className="resize-y text-sm min-h-[150px] leading-relaxed"
                 />
               </div>
 
@@ -512,7 +530,7 @@ export function TicketDetailsModal({
               {/* Attachments */}
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                  <Label className="text-xs font-medium text-foreground/70 flex items-center gap-1.5">
                     <PaperclipIcon className="size-3" /> Attachments
                   </Label>
                   <input ref={attachRef} type="file" className="hidden" multiple
@@ -577,7 +595,7 @@ export function TicketDetailsModal({
               {/* Comments (edit only) */}
               {isEditing && (
                 <div className="flex flex-col gap-2">
-                  <Label className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                  <Label className="text-xs font-medium text-foreground/70 flex items-center gap-1.5">
                     <SquarePenIcon className="size-3" /> Comments
                   </Label>
                   {(() => {
@@ -758,177 +776,167 @@ export function TicketDetailsModal({
             </div>
 
             {/* ── Sidebar (right) — Trello style ─────────────────── */}
-            <div className="w-[210px] shrink-0 border-l bg-muted/5 px-3 py-4 overflow-y-auto flex flex-col gap-4">
-
-              <Separator className="my-0" />
-
-              {/* List */}
-              <div className="flex flex-col gap-1">
-                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">List</Label>
-                <Select value={form.statusId} onValueChange={(v) => onChange({ statusId: v })}>
-                  <SelectTrigger className="h-8 text-xs w-full cursor-pointer"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {board.columnOrder.map((colId) => <SelectItem key={colId} value={colId}>{board.columns[colId]?.title}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+            <div className="w-[240px] shrink-0 border-l bg-muted/[0.04] px-5 py-6 overflow-y-auto">
+              {/* ── Status group ───────────────────────────────────── */}
+              <SectionHeader>Status</SectionHeader>
+              <div className="flex flex-col gap-3 mb-8">
+                <Field label="List">
+                  <Select value={form.statusId} onValueChange={(v) => onChange({ statusId: v })}>
+                    <SelectTrigger className="h-8 text-xs w-full cursor-pointer"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {board.columnOrder.map((colId) => <SelectItem key={colId} value={colId}>{board.columns[colId]?.title}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Priority">
+                  <Select value={form.priority} onValueChange={(v) => onChange({ priority: v as TicketDetailsForm["priority"] })}>
+                    <SelectTrigger className="h-8 text-xs w-full cursor-pointer"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {TICKET_PRIORITY_OPTIONS.map((o) => (
+                        <SelectItem key={o.key} value={o.key}>
+                          <span className="flex items-center gap-1.5">
+                            <span className={cn(
+                              "size-1.5 rounded-full shrink-0",
+                              o.key === "low" && "bg-emerald-500",
+                              o.key === "medium" && "bg-amber-500",
+                              o.key === "high" && "bg-orange-500",
+                              o.key === "urgent" && "bg-rose-600",
+                            )} />
+                            {o.label}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
               </div>
 
-              {/* Priority */}
-              <div className="flex flex-col gap-1">
-                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Priority</Label>
-                <Select value={form.priority} onValueChange={(v) => onChange({ priority: v as TicketDetailsForm["priority"] })}>
-                  <SelectTrigger className="h-8 text-xs w-full cursor-pointer"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {TICKET_PRIORITY_OPTIONS.map((o) => (
-                      <SelectItem key={o.key} value={o.key}>
-                        <span className="flex items-center gap-1.5">
-                          <span className={cn(
-                            "size-1.5 rounded-full shrink-0",
-                            o.key === "low" && "bg-emerald-500",
-                            o.key === "medium" && "bg-amber-500",
-                            o.key === "high" && "bg-orange-500",
-                            o.key === "urgent" && "bg-rose-600",
-                          )} />
-                          {o.label}
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              {/* ── Schedule group ─────────────────────────────────── */}
+              <SectionHeader>Schedule</SectionHeader>
+              <div className="flex flex-col gap-3 mb-8">
+                <Field label="Due date">
+                  <Input
+                    type="date"
+                    value={(form.dueDate || form.scheduledFor || "").slice(0, 10)}
+                    onChange={(e) => onChange({ dueDate: e.target.value, scheduledFor: e.target.value })}
+                    className="h-8 text-xs"
+                  />
+                </Field>
               </div>
 
-              {/* Due date */}
-              <div className="flex flex-col gap-1">
-                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Due date</Label>
-                <Input
-                  type="date"
-                  value={(form.dueDate || form.scheduledFor || "").slice(0, 10)}
-                  onChange={(e) => onChange({ dueDate: e.target.value, scheduledFor: e.target.value })}
-                  className="h-8 text-xs"
-                />
-              </div>
-
-              {/* Tags (free-text, comma separated) */}
-              <div className="flex flex-col gap-1">
-                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Tags</Label>
-                <Input
-                  value={form.tagsText}
-                  onChange={(e) => onChange({ tagsText: e.target.value })}
-                  placeholder="tag1, tag2..."
-                  className="h-8 text-xs"
-                />
-              </div>
-
-              {/* Labels (per-board colored, managed in Board ▸ Manage labels) */}
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Labels</Label>
-                {labels.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    No labels on this board. Open <span className="font-medium text-foreground">Board ▸ Manage labels</span> to add some.
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-1.5">
-                    {labels.map((l) => {
-                      const selected = form.labelIds.includes(l.id);
-                      return (
-                        <button
-                          key={l.id}
-                          type="button"
-                          onClick={() => {
-                            const next = selected
-                              ? form.labelIds.filter((id) => id !== l.id)
-                              : [...form.labelIds, l.id];
-                            onChange({ labelIds: next });
-                          }}
-                          className={cn(
-                            "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium text-white transition-opacity",
-                            selected ? "opacity-100 ring-2 ring-offset-1 ring-foreground/40" : "opacity-50 hover:opacity-80",
-                          )}
-                          style={{ backgroundColor: l.color }}
-                          aria-pressed={selected}
-                          title={selected ? `Remove ${l.name}` : `Add ${l.name}`}
-                        >
-                          {l.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Assignees */}
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Assignees</Label>
-                {assignees.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    No assignees on this board. Open <span className="font-medium text-foreground">Board ▸ Manage assignees</span> to add some.
-                  </p>
-                ) : (() => {
-                  const selectedAssignees = assignees.filter((a) => form.assigneeIds.includes(a.id));
-                  return (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          type="button"
-                          className="flex w-full items-center gap-2 rounded-md border bg-background px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-accent"
-                        >
-                          {selectedAssignees.length === 0 ? (
-                            <span className="text-muted-foreground">Assign people…</span>
-                          ) : (
-                            <div className="flex flex-1 flex-wrap items-center gap-1.5">
-                              {selectedAssignees.map((a) => (
-                                <span key={a.id} className="inline-flex items-center gap-1">
-                                  <span
-                                    className="inline-block size-2 rounded-full"
-                                    style={{ backgroundColor: a.color }}
-                                  />
-                                  <span className="truncate max-w-[120px]">{a.name}</span>
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          <span className="ml-auto text-[10px] text-muted-foreground/60">▾</span>
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start" className="w-[260px]">
-                        {assignees.map((a) => {
-                          const checked = form.assigneeIds.includes(a.id);
-                          return (
-                            <DropdownMenuCheckboxItem
-                              key={a.id}
-                              checked={checked}
-                              onCheckedChange={() => {
-                                const next = checked
-                                  ? form.assigneeIds.filter((id) => id !== a.id)
-                                  : [...form.assigneeIds, a.id];
-                                onChange({ assigneeIds: next });
-                              }}
-                              onSelect={(e) => e.preventDefault()}
-                            >
-                              <span className="flex items-center gap-2">
-                                <span
-                                  className="inline-block size-2.5 rounded-full"
-                                  style={{ backgroundColor: a.color }}
-                                />
-                                <span className="truncate">{a.name}</span>
-                                {a.email && (
-                                  <span className="ml-auto truncate text-[10px] text-muted-foreground">{a.email}</span>
+              {/* ── People & tags group ────────────────────────────── */}
+              <SectionHeader>People &amp; tags</SectionHeader>
+              <div className="flex flex-col gap-4">
+                <Field label="Assignees">
+                  {assignees.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground/80">
+                      Open <span className="font-medium text-foreground">Board ▸ Manage assignees</span> first.
+                    </p>
+                  ) : (() => {
+                    const selectedAssignees = assignees.filter((a) => form.assigneeIds.includes(a.id));
+                    return (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className="flex h-8 w-full items-center gap-2 rounded-md border bg-background px-2.5 text-left text-xs transition-colors hover:bg-accent"
+                          >
+                            {selectedAssignees.length === 0 ? (
+                              <span className="text-muted-foreground">Assign people</span>
+                            ) : (
+                              <div className="flex flex-1 flex-wrap items-center gap-2 overflow-hidden">
+                                {selectedAssignees.slice(0, 2).map((a) => (
+                                  <span key={a.id} className="inline-flex items-center gap-1.5">
+                                    <span className="inline-block size-2 rounded-full" style={{ backgroundColor: a.color }} />
+                                    <span className="truncate max-w-[80px]">{a.name}</span>
+                                  </span>
+                                ))}
+                                {selectedAssignees.length > 2 && (
+                                  <span className="text-[10px] text-muted-foreground">+{selectedAssignees.length - 2}</span>
                                 )}
-                              </span>
-                            </DropdownMenuCheckboxItem>
-                          );
-                        })}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  );
-                })()}
-              </div>
+                              </div>
+                            )}
+                            <span className="ml-auto text-[10px] text-muted-foreground/60">▾</span>
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-[260px]">
+                          {assignees.map((a) => {
+                            const checked = form.assigneeIds.includes(a.id);
+                            return (
+                              <DropdownMenuCheckboxItem
+                                key={a.id}
+                                checked={checked}
+                                onCheckedChange={() => {
+                                  const next = checked
+                                    ? form.assigneeIds.filter((id) => id !== a.id)
+                                    : [...form.assigneeIds, a.id];
+                                  onChange({ assigneeIds: next });
+                                }}
+                                onSelect={(e) => e.preventDefault()}
+                              >
+                                <span className="flex items-center gap-2">
+                                  <span className="inline-block size-2.5 rounded-full" style={{ backgroundColor: a.color }} />
+                                  <span className="truncate">{a.name}</span>
+                                  {a.email && <span className="ml-auto truncate text-[10px] text-muted-foreground">{a.email}</span>}
+                                </span>
+                              </DropdownMenuCheckboxItem>
+                            );
+                          })}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    );
+                  })()}
+                </Field>
 
+                <Field label="Labels">
+                  {labels.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground/80">
+                      Open <span className="font-medium text-foreground">Board ▸ Manage labels</span> first.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {labels.map((l) => {
+                        const selected = form.labelIds.includes(l.id);
+                        return (
+                          <button
+                            key={l.id}
+                            type="button"
+                            onClick={() => {
+                              const next = selected
+                                ? form.labelIds.filter((id) => id !== l.id)
+                                : [...form.labelIds, l.id];
+                              onChange({ labelIds: next });
+                            }}
+                            className={cn(
+                              "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium text-white transition-opacity",
+                              selected ? "opacity-100 ring-2 ring-offset-1 ring-foreground/40" : "opacity-50 hover:opacity-80",
+                            )}
+                            style={{ backgroundColor: l.color }}
+                            aria-pressed={selected}
+                            title={selected ? `Remove ${l.name}` : `Add ${l.name}`}
+                          >
+                            {l.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </Field>
+
+                <Field label="Tags">
+                  <Input
+                    value={form.tagsText}
+                    onChange={(e) => onChange({ tagsText: e.target.value })}
+                    placeholder="comma-separated"
+                    className="h-8 text-xs"
+                  />
+                </Field>
+              </div>
             </div>
           </div>
 
           {/* Footer */}
-          <DialogFooter className="px-6 py-3 border-t">
+          <DialogFooter className="px-7 py-3 border-t">
             {isEditing && form.id && boardId && (
               <Button
                 variant="ghost"
@@ -945,7 +953,6 @@ export function TicketDetailsModal({
                 Copy link
               </Button>
             )}
-            <Button variant="ghost" onClick={onClose} className="cursor-pointer">Cancel</Button>
             <Button
               onClick={() => {
                 if (mode === "create") {
