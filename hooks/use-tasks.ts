@@ -68,6 +68,7 @@ type RawTicket = {
   priority: string;
   due_date: string | null;
   tags: string[] | null;
+  label_ids: string[] | null;
   assignee_ids: string[] | null;
   scheduled_for: string | null;
   checklist_done: number | null;
