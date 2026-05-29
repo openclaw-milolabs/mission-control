@@ -203,6 +203,53 @@ create table if not exists board_labels (
 create index if not exists board_labels_board_id_idx on board_labels(board_id);
 alter table tickets add column if not exists label_ids text[] not null default '{}'::text[];
 
+-- Documents (a lightweight doc/code editor surface backed by real files on disk
+-- under <project_root>/documents/). The DB tracks metadata for listing + audit;
+-- the file content lives on disk so any extension works.
+create table if not exists documents (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references workspaces(id) on delete cascade,
+  relative_path text not null,
+  kind text not null default 'file',
+  size_bytes integer not null default 0,
+  extension text,
+  created_by_email text,
+  created_by_name text,
+  last_edited_by_email text,
+  last_edited_by_name text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (workspace_id, relative_path)
+);
+create index if not exists documents_workspace_idx on documents(workspace_id);
+create index if not exists documents_path_idx on documents(workspace_id, relative_path);
+
+create table if not exists document_audit (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid references documents(id) on delete set null,
+  workspace_id uuid not null references workspaces(id) on delete cascade,
+  actor_email text,
+  actor_name text,
+  event text not null,
+  details jsonb not null default '{}'::jsonb,
+  occurred_at timestamptz not null default now()
+);
+create index if not exists document_audit_doc_idx on document_audit(document_id, occurred_at desc);
+create index if not exists document_audit_workspace_recent_idx on document_audit(workspace_id, occurred_at desc);
+
+-- Many-to-many ticket ↔ document linking. Pointer-only: deleting either side
+-- drops the link row, while audit history in ticket_activity / document_audit
+-- preserves the path + title at the time of the event.
+create table if not exists ticket_documents (
+  ticket_id uuid not null references tickets(id) on delete cascade,
+  document_id uuid not null references documents(id) on delete cascade,
+  linked_by_email text,
+  linked_by_name text,
+  linked_at timestamptz not null default now(),
+  primary key (ticket_id, document_id)
+);
+create index if not exists ticket_documents_doc_idx on ticket_documents(document_id);
+
 -- One-shot data migration: clear legacy runtime-agent assignee_ids on tickets.
 -- Tickets used to reference runtime agent IDs; switching to board-scoped custom
 -- assignees would leave orphans. The flag column makes this idempotent.

@@ -751,10 +751,20 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
             </div>
 
             <div className="grid min-h-0 flex-1 gap-4 overflow-hidden px-3 py-4 sm:px-4 lg:grid-cols-[1fr_340px] lg:px-6">
-              <div className="min-h-0 overflow-auto">
+              <div
+                className={cn(
+                  "flex min-h-0 flex-col",
+                  tasks.view === "kanban" ? "overflow-hidden" : "overflow-auto",
+                )}
+              >
                 <div className="pb-3" />
 
-                <div className={cn("min-h-0 overflow-auto", tasks.view === "kanban" && "overflow-x-auto")}>
+                <div
+                  className={cn(
+                    "min-h-0 flex-1",
+                    tasks.view === "kanban" ? "overflow-hidden" : "overflow-auto",
+                  )}
+                >
                   {tasks.view === "kanban" && (
                     <KanbanView
                       board={tasks.board}

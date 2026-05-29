@@ -13,6 +13,7 @@ import {
   IconStack2,
   IconSettings,
   IconFolder,
+  IconFileText,
 } from "@tabler/icons-react"
 
 import { NavMain } from "@/components/layout/nav-main"
@@ -36,6 +37,7 @@ const data = {
   navMain: [
     { title: "Dashboard", url: "/dashboard", icon: IconDashboard },
     { title: "Boards", url: "/boards", icon: IconListDetails },
+    { title: "Documents", url: "/documents", icon: IconFileText },
     { title: "Agenda", url: "/agenda", icon: IconCalendar },
     { title: "Processes", url: "/processes", icon: IconStack2 },
     { title: "Agents", url: "/agents", icon: IconRobot },

@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { TicketDocumentsSection } from "@/components/tasks/modals/ticket-documents-section";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -668,6 +669,11 @@ export function TicketDetailsModal({
                     </ScrollArea>
                   )}
                 </div>
+              )}
+
+              {/* Documents (edit only) */}
+              {isEditing && form.id && (
+                <TicketDocumentsSection ticketId={form.id} />
               )}
 
               {/* Activity + Agent Output (edit only) */}

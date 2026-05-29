@@ -489,6 +489,86 @@ export async function POST(request: Request) {
       return ok();
     }
 
+    if (action === "listTicketDocuments") {
+      const ticketId = String(body.ticketId || "");
+      if (!ticketId) return fail("Ticket id is required.");
+      // ticket_documents may not exist yet on a stale dev DB; create it on demand.
+      await sql`
+        CREATE TABLE IF NOT EXISTS ticket_documents (
+          ticket_id uuid NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+          document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          linked_by_email text,
+          linked_by_name text,
+          linked_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (ticket_id, document_id)
+        )
+      `.catch(() => null);
+      const rows = await sql`
+        select
+          d.id::text,
+          d.relative_path,
+          d.kind,
+          d.size_bytes,
+          d.extension,
+          d.last_edited_by_name,
+          d.last_edited_by_email,
+          d.updated_at,
+          td.linked_by_name,
+          td.linked_at
+        from ticket_documents td
+        join documents d on d.id = td.document_id
+        where td.ticket_id = ${ticketId}
+        order by td.linked_at desc
+      `.catch(() => []);
+      return ok({ documents: rows });
+    }
+
+    if (action === "linkTicketDocument") {
+      const ticketId = String(body.ticketId || "");
+      const documentId = String(body.documentId || "");
+      if (!ticketId || !documentId) return fail("Ticket id and document id are required.");
+      const docRows = await sql`select relative_path from documents where id = ${documentId} limit 1`;
+      const docPath = docRows[0]?.relative_path as string | undefined;
+      if (!docPath) return fail("Document not found.", 404);
+      await sql`
+        insert into ticket_documents (ticket_id, document_id, linked_by_email, linked_by_name)
+        values (${ticketId}, ${documentId}, ${actor.email}, ${actor.name})
+        on conflict (ticket_id, document_id) do nothing
+      `;
+      await audit({
+        event: 'Document linked',
+        details: docPath,
+        level: 'success',
+        ticketId,
+      });
+      // Mirror to document_audit so the doc's History tab knows.
+      await sql`
+        insert into document_audit (document_id, workspace_id, actor_email, actor_name, event, details)
+        values (${documentId}, ${wid}, ${actor.email}, ${actor.name}, 'linked_to_ticket', ${JSON.stringify({ ticketId, path: docPath })}::jsonb)
+      `.catch(() => null);
+      return ok();
+    }
+
+    if (action === "unlinkTicketDocument") {
+      const ticketId = String(body.ticketId || "");
+      const documentId = String(body.documentId || "");
+      if (!ticketId || !documentId) return fail("Ticket id and document id are required.");
+      const docRows = await sql`select relative_path from documents where id = ${documentId} limit 1`;
+      const docPath = (docRows[0]?.relative_path as string | undefined) || documentId;
+      await sql`delete from ticket_documents where ticket_id = ${ticketId} and document_id = ${documentId}`;
+      await audit({
+        event: 'Document unlinked',
+        details: docPath,
+        level: 'info',
+        ticketId,
+      });
+      await sql`
+        insert into document_audit (document_id, workspace_id, actor_email, actor_name, event, details)
+        values (${documentId}, ${wid}, ${actor.email}, ${actor.name}, 'unlinked_from_ticket', ${JSON.stringify({ ticketId, path: docPath })}::jsonb)
+      `.catch(() => null);
+      return ok();
+    }
+
     if (action === "reorderColumns") {
       const orderedColumnIds = Array.isArray(body.orderedColumnIds) ? body.orderedColumnIds : [];
       for (let i = 0; i < orderedColumnIds.length; i += 1) {
