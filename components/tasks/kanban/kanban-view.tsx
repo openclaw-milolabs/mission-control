@@ -23,12 +23,8 @@ import { GhostIcon } from "lucide-react";
 type Props = {
   board: BoardState;
   assigneeById: Record<string, Assignee>;
+  labelById?: Record<string, import("@/types/tasks").Label>;
   visibleTicketIdsByColumn: Record<string, string[]>;
-  renderedTicketIdsByColumn?: Record<string, string[]>;
-  hiddenCountByColumn?: Record<string, number>;
-  onExpandColumn?: (columnId: string) => void;
-  onCollapseColumn?: (columnId: string) => void;
-  expandedColumnIds?: Set<string>;
   onAddTask: (statusId: string) => void;
   canDeleteList: (columnId: string) => boolean;
   onDeleteList: (columnId: string) => void;
@@ -50,11 +46,7 @@ export function KanbanView({
   board,
   assigneeById,
   visibleTicketIdsByColumn,
-  renderedTicketIdsByColumn,
-  hiddenCountByColumn,
-  onExpandColumn,
-  onCollapseColumn,
-  expandedColumnIds,
+  labelById,
   onAddTask,
   canDeleteList,
   onDeleteList,
@@ -206,24 +198,16 @@ export function KanbanView({
             const column = board.columns[colId];
             if (!column) return null;
             const visibleIds = visibleTicketIdsByColumn[colId] ?? [];
-            const renderedIds = (renderedTicketIdsByColumn?.[colId] ?? visibleIds);
-            const tickets = renderedIds.map((id) => board.tickets[id]).filter(Boolean) as Ticket[];
-            const hiddenCount = hiddenCountByColumn?.[colId] ?? 0;
-            const isExpanded = expandedColumnIds?.has(colId) ?? false;
-            const totalVisible = visibleIds.length;
+            const tickets = visibleIds.map((id) => board.tickets[id]).filter(Boolean) as Ticket[];
 
             return (
               <KanbanColumn
                 key={colId}
                 column={column}
                 tickets={tickets}
-                allTicketIds={renderedIds}
-                totalVisible={totalVisible}
-                hiddenCount={hiddenCount}
-                isExpanded={isExpanded}
-                onShowMore={onExpandColumn ? () => onExpandColumn(colId) : undefined}
-                onCollapse={onCollapseColumn ? () => onCollapseColumn(colId) : undefined}
+                allTicketIds={visibleIds}
                 assigneeById={assigneeById}
+                labelById={labelById}
                 isActive={activeColumnId === colId}
                 onAddTask={() => onAddTask(colId)}
                 canDeleteList={canDeleteList(colId)}
@@ -240,7 +224,7 @@ export function KanbanView({
       <DragOverlay dropAnimation={{ duration: 150, easing: "ease" }}>
         {activeTicket ? (
           <div className="w-72 rotate-1 shadow-2xl opacity-90">
-            <TicketCard ticket={activeTicket} assigneeById={assigneeById} onClick={() => {}} />
+            <TicketCard ticket={activeTicket} assigneeById={assigneeById} labelById={labelById} onClick={() => {}} />
           </div>
         ) : activeColumnId ? (
           <div className="w-72 rotate-1 shadow-2xl opacity-95">
@@ -260,6 +244,7 @@ export function KanbanView({
                       key={ticket.id}
                       ticket={ticket}
                       assigneeById={assigneeById}
+                labelById={labelById}
                       dense
                       onClick={() => {}}
                     />

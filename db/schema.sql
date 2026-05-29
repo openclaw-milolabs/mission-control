@@ -190,6 +190,19 @@ create index if not exists notifications_recipient_unread_idx
 create index if not exists notifications_recipient_recent_idx
   on notifications(lower(recipient_email), created_at desc);
 
+-- Per-board labels with colour, similar shape to board_assignees.
+create table if not exists board_labels (
+  id uuid primary key default gen_random_uuid(),
+  board_id uuid not null references boards(id) on delete cascade,
+  name text not null,
+  color text not null default '#94a3b8',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (board_id, name)
+);
+create index if not exists board_labels_board_id_idx on board_labels(board_id);
+alter table tickets add column if not exists label_ids text[] not null default '{}'::text[];
+
 -- One-shot data migration: clear legacy runtime-agent assignee_ids on tickets.
 -- Tickets used to reference runtime agent IDs; switching to board-scoped custom
 -- assignees would leave orphans. The flag column makes this idempotent.

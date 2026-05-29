@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppSidebar } from "@/components/layout/app-sidebar";
+import { CalendarView } from "@/components/tasks/calendar/calendar-view";
 import { GridView } from "@/components/tasks/grid/grid-view";
 import { KanbanView } from "@/components/tasks/kanban/kanban-view";
 import { ListView } from "@/components/tasks/list/list-view";
@@ -11,6 +12,7 @@ import { CreateBoardModal } from "@/components/tasks/modals/create-board-modal";
 import { CreateListModal } from "@/components/tasks/modals/create-list-modal";
 import { DiscardModal } from "@/components/tasks/modals/discard-modal";
 import { ManageAssigneesModal } from "@/components/tasks/modals/manage-assignees-modal";
+import { ManageLabelsModal } from "@/components/tasks/modals/manage-labels-modal";
 import { TicketDetailsModal } from "@/components/tasks/modals/ticket-details-modal";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,6 +34,7 @@ import { useTasks } from "@/hooks/use-tasks";
 import { cn } from "@/lib/utils";
 import {
   type Assignee,
+  type Label,
   type BoardHydration,
   type TicketDetailsForm,
   type SortMode,
@@ -58,6 +61,7 @@ import {
   LayoutGridIcon,
 } from "lucide-react";
 import { BoardActivityFeed, type LiveLog } from "@/components/tasks/boards/board-activity-feed";
+import { WorkspaceToolbar } from "@/components/tasks/boards/workspace-toolbar";
 
 // UTC date formatting to avoid hydration mismatches
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -94,6 +98,7 @@ const VIEW_OPTIONS: Array<{ key: ViewMode; label: string }> = [
   { key: "kanban", label: "Kanban" },
   { key: "list", label: "List" },
   { key: "grid", label: "Grid" },
+  { key: "calendar", label: "Calendar" },
 ];
 
 type Props = {
@@ -108,6 +113,16 @@ type Props = {
 };
 
 type RawBoardAssignee = { id: string; board_id: string; name: string; color: string; initials: string | null; email: string | null };
+type RawBoardLabel = { id: string; board_id: string; name: string; color: string };
+
+function groupLabelsByBoard(rows: RawBoardLabel[]): Record<string, Label[]> {
+  const out: Record<string, Label[]> = {};
+  for (const row of rows) {
+    if (!out[row.board_id]) out[row.board_id] = [];
+    out[row.board_id].push({ id: row.id, boardId: row.board_id, name: row.name, color: row.color });
+  }
+  return out;
+}
 
 function deriveInitials(name: string): string {
   const parts = name.split(/\s+/).filter(Boolean).slice(0, 2);
@@ -147,22 +162,29 @@ async function postTasks<T = Record<string, unknown>>(body: Record<string, unkno
 export function BoardsPageClient({ initialBoardId, initialBoards, initialAssignees: _ignored, sidebarUser }: Props) {
   void _ignored;
   const [assigneesByBoardId, setAssigneesByBoardId] = useState<Record<string, Assignee[]>>({});
+  const [labelsByBoardId, setLabelsByBoardId] = useState<Record<string, Label[]>>({});
   const [manageAssigneesOpen, setManageAssigneesOpen] = useState(false);
+  const [manageLabelsOpen, setManageLabelsOpen] = useState(false);
 
   const reloadAssignees = async () => {
     try {
       const res = await fetch("/api/tasks", { cache: "reload" });
       if (!res.ok) return;
       const json = await res.json();
-      if (json.ok && Array.isArray(json.boardAssignees)) {
-        setAssigneesByBoardId(groupAssigneesByBoard(json.boardAssignees as RawBoardAssignee[]));
+      if (json.ok) {
+        if (Array.isArray(json.boardAssignees)) {
+          setAssigneesByBoardId(groupAssigneesByBoard(json.boardAssignees as RawBoardAssignee[]));
+        }
+        if (Array.isArray(json.boardLabels)) {
+          setLabelsByBoardId(groupLabelsByBoard(json.boardLabels as RawBoardLabel[]));
+        }
       }
     } catch { /* ignore */ }
   };
 
   useEffect(() => { void reloadAssignees(); }, []);
 
-  const tasks = useTasks({ initialBoardId, initialBoards, assigneesByBoardId });
+  const tasks = useTasks({ initialBoardId, initialBoards, assigneesByBoardId, labelsByBoardId });
   const router = useRouter();
   const searchParams = useSearchParams();
   const [boardSearch, setBoardSearch] = useState("");
@@ -198,6 +220,25 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
     return { ok: res.ok, error: res.error };
   };
 
+  const handleCreateLabel = async (name: string, color: string) => {
+    if (!tasks.activeBoardId) return { ok: false, error: "No active board." };
+    const res = await postTasks({ action: "createBoardLabel", boardId: tasks.activeBoardId, name, color });
+    if (res.ok) await reloadAssignees();
+    return { ok: res.ok, error: res.error };
+  };
+
+  const handleUpdateLabel = async (labelId: string, name: string, color: string) => {
+    const res = await postTasks({ action: "updateBoardLabel", labelId, name, color });
+    if (res.ok) await reloadAssignees();
+    return { ok: res.ok, error: res.error };
+  };
+
+  const handleDeleteLabel = async (labelId: string) => {
+    const res = await postTasks({ action: "deleteBoardLabel", labelId });
+    if (res.ok) await reloadAssignees();
+    return { ok: res.ok, error: res.error };
+  };
+
   const reloadBoardsRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     reloadBoardsRef.current = tasks.reloadBoards;
@@ -227,6 +268,7 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
       dueDate: tasks.createForm.dueDate,
       tagsText: tasks.createForm.tagsText,
       assigneeIds: tasks.createForm.assigneeIds,
+      labelIds: tasks.createForm.labelIds ?? [],
       scheduledFor: tasks.createForm.scheduledFor,
       checklistDone: 0,
       checklistTotal: 0,
@@ -311,6 +353,28 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
     tasks.setActiveBoardId(boardParam);
     setWorkspaceOpen(true);
   }, [boardParam, tasks]);
+
+  // One-shot: if the page mounted with ?board=X&ticket=Y, open that ticket.
+  // We don't push ?ticket= to the URL on regular clicks (that was reverted in 3.4.x);
+  // this is only for shareable links someone explicitly pasted.
+  const ticketDeepLinkHandledRef = useRef(false);
+  useEffect(() => {
+    if (ticketDeepLinkHandledRef.current) return;
+    const ticketParam = searchParams.get("ticket");
+    if (!ticketParam || !boardParam) return;
+    if (!tasks.boards.find((b) => b.id === boardParam)) return;
+    ticketDeepLinkHandledRef.current = true;
+    setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("mc:open-ticket", { detail: { ticketId: ticketParam, boardId: boardParam } }),
+      );
+      // Strip ?ticket= from the URL so refreshes don't re-open and to keep the URL clean.
+      const next = new URLSearchParams(window.location.search);
+      next.delete("ticket");
+      const query = next.toString();
+      router.replace(query ? `/boards?${query}` : "/boards");
+    }, 300);
+  }, [boardParam, searchParams, tasks.boards, router]);
 
   // Listen for mc:open-ticket events from the sidebar Live Activity
   // (no ?ticket= URL param — avoids re-opening modal on refresh)
@@ -475,6 +539,9 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
                       <DropdownMenuItem onClick={() => setManageAssigneesOpen(true)}>
                         Manage assignees
                       </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setManageLabelsOpen(true)}>
+                        Manage labels
+                      </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={() => tasks.openEditBoardModal(tasks.activeBoardId)}>
                         Edit board
@@ -523,158 +590,16 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
 
             <div className="hidden items-center gap-2 md:flex">
               {workspaceOpen ? (
-                <>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="outline" size="sm" id="workspace-board-dropdown-trigger">Board</Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56">
-                      <DropdownMenuItem onClick={() => tasks.openEditBoardModal(tasks.activeBoardId)}>
-                        Edit board
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => requestCopyBoard(tasks.activeBoardId, true)}>
-                        Copy board
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onClick={() => requestDeleteBoard(tasks.activeBoardId)}
-                      >
-                        Delete board
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setManageAssigneesOpen(true)}
-                    id="workspace-manage-assignees-trigger"
-                  >
-                    Assignees
-                  </Button>
-
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="outline" size="sm" className="gap-1.5" id="workspace-add-dropdown-trigger">
-                        <PlusIcon className="h-4 w-4" />
-                        Add
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56">
-                      <DropdownMenuItem onClick={() => tasks.openCreateModal(tasks.board.columnOrder[0] ?? "")}>
-                        Create ticket
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={tasks.openCreateListModal}>
-                        Add list
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-
-                  {(() => {
-                    const filterCount = tasks.assigneeFilter.size;
-                    const boardAssignees = assigneesByBoardId[tasks.activeBoardId] ?? [];
-                    return (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant={filterCount > 0 ? "outline" : "ghost"}
-                            size="sm"
-                            className="gap-1.5"
-                            id="workspace-assignee-filter-trigger"
-                          >
-                            Assignee
-                            {filterCount > 0 && (
-                              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-foreground/10 px-1 text-[10px] font-medium tabular-nums">
-                                {filterCount}
-                              </span>
-                            )}
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-60">
-                          <DropdownMenuLabel className="text-xs">Filter by assignee</DropdownMenuLabel>
-                          <DropdownMenuSeparator />
-                          {boardAssignees.length === 0 ? (
-                            <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                              No assignees on this board.
-                            </p>
-                          ) : (
-                            <>
-                              <DropdownMenuCheckboxItem
-                                checked={tasks.assigneeFilter.has("__unassigned__")}
-                                onCheckedChange={() => tasks.toggleAssigneeFilter("__unassigned__")}
-                                onSelect={(e) => e.preventDefault()}
-                              >
-                                <span className="text-muted-foreground italic">Unassigned</span>
-                              </DropdownMenuCheckboxItem>
-                              <DropdownMenuSeparator />
-                              {boardAssignees.map((a) => (
-                                <DropdownMenuCheckboxItem
-                                  key={a.id}
-                                  checked={tasks.assigneeFilter.has(a.id)}
-                                  onCheckedChange={() => tasks.toggleAssigneeFilter(a.id)}
-                                  onSelect={(e) => e.preventDefault()}
-                                >
-                                  <span className="flex items-center gap-2">
-                                    <span
-                                      className="flex size-4 items-center justify-center rounded-full text-[9px] font-semibold text-white"
-                                      style={{ backgroundColor: a.color }}
-                                    >
-                                      {a.initials}
-                                    </span>
-                                    <span className="truncate">{a.name}</span>
-                                  </span>
-                                </DropdownMenuCheckboxItem>
-                              ))}
-                              {filterCount > 0 && (
-                                <>
-                                  <DropdownMenuSeparator />
-                                  <DropdownMenuItem
-                                    onSelect={() => tasks.clearAssigneeFilter()}
-                                    className="text-xs text-muted-foreground"
-                                  >
-                                    Clear filter
-                                  </DropdownMenuItem>
-                                </>
-                              )}
-                            </>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    );
-                  })()}
-
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" id="workspace-filter-dropdown-trigger">
-                        <SlidersHorizontalIcon className="h-3.5 w-3.5" />
-                        Filter
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56">
-                      <DropdownMenuRadioGroup
-                        value={tasks.sort}
-                        onValueChange={(value) => tasks.setSort(value as SortMode)}
-                      >
-                        {SORT_OPTIONS.map((option) => (
-                          <DropdownMenuRadioItem key={option.key} value={option.key}>
-                            {option.label}
-                          </DropdownMenuRadioItem>
-                        ))}
-                      </DropdownMenuRadioGroup>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuRadioGroup
-                        value={tasks.view}
-                        onValueChange={(value) => tasks.setView(value as ViewMode)}
-                      >
-                        {VIEW_OPTIONS.map((option) => (
-                          <DropdownMenuRadioItem key={option.key} value={option.key}>
-                            {option.label}
-                          </DropdownMenuRadioItem>
-                        ))}
-                      </DropdownMenuRadioGroup>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </>
+                <WorkspaceToolbar
+                  tasks={tasks}
+                  boardAssignees={assigneesByBoardId[tasks.activeBoardId] ?? []}
+                  boardLabels={labelsByBoardId[tasks.activeBoardId] ?? []}
+                  onManageAssignees={() => setManageAssigneesOpen(true)}
+                  onManageLabels={() => setManageLabelsOpen(true)}
+                  onEditBoard={() => tasks.openEditBoardModal(tasks.activeBoardId)}
+                  onCopyBoard={() => requestCopyBoard(tasks.activeBoardId, true)}
+                  onDeleteBoard={() => requestDeleteBoard(tasks.activeBoardId)}
+                />
               ) : (
                 <Button variant="outline" size="sm" className="gap-1.5 cursor-pointer" onClick={tasks.openCreateBoardModal}>
                   <PlusIcon className="h-4 w-4" />
@@ -834,12 +759,8 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
                     <KanbanView
                       board={tasks.board}
                       assigneeById={tasks.assigneeById}
+                      labelById={tasks.labelById}
                       visibleTicketIdsByColumn={tasks.visibleTicketIdsByColumn}
-                      renderedTicketIdsByColumn={tasks.renderedTicketIdsByColumn}
-                      hiddenCountByColumn={tasks.hiddenCountByColumn}
-                      onExpandColumn={tasks.expandColumn}
-                      onCollapseColumn={tasks.collapseColumn}
-                      expandedColumnIds={tasks.expandedColumnIds}
                       onAddTask={tasks.openCreateModal}
                       canDeleteList={tasks.canDeleteList}
                       onDeleteList={tasks.handleDeleteList}
@@ -873,6 +794,14 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
                       onClearSearch={tasks.clearSearch}
                     />
                   )}
+                  {tasks.view === "calendar" && (
+                    <CalendarView
+                      tickets={tasks.sortedFilteredTickets}
+                      assigneeById={tasks.assigneeById}
+                      labelById={tasks.labelById}
+                      onTicketClick={tasks.openDetailsModal}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -896,6 +825,8 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
         form={createTicketForm}
         board={tasks.board}
         assignees={assigneesByBoardId[tasks.activeBoardId] ?? []}
+        labels={labelsByBoardId[tasks.activeBoardId] ?? []}
+        boardId={tasks.activeBoardId}
         attachments={[]}
         attachmentsLoading={false}
         attachmentsUploading={false}
@@ -925,6 +856,7 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
             scheduledFor: patch.scheduledFor ?? prev.scheduledFor,
             tagsText: patch.tagsText ?? prev.tagsText,
             assigneeIds: patch.assigneeIds ?? prev.assigneeIds,
+            labelIds: patch.labelIds ?? prev.labelIds,
           }))
         }
         onUploadAttachments={() => {}}
@@ -978,6 +910,16 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
         onClose={() => setManageAssigneesOpen(false)}
       />
 
+      <ManageLabelsModal
+        open={manageLabelsOpen}
+        boardName={tasks.activeBoardName || "this board"}
+        labels={labelsByBoardId[tasks.activeBoardId] ?? []}
+        onCreate={handleCreateLabel}
+        onUpdate={handleUpdateLabel}
+        onDelete={handleDeleteLabel}
+        onClose={() => setManageLabelsOpen(false)}
+      />
+
       {tasks.detailsForm &&
         (() => {
           const detailsForm = tasks.detailsForm;
@@ -987,6 +929,8 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
               form={detailsForm}
               board={tasks.board}
               assignees={assigneesByBoardId[tasks.activeBoardId] ?? []}
+              labels={labelsByBoardId[tasks.activeBoardId] ?? []}
+              boardId={tasks.activeBoardId}
               attachments={tasks.detailsAttachments}
               attachmentsLoading={tasks.detailsAttachmentsLoading}
               attachmentsUploading={tasks.detailsAttachmentsUploading}

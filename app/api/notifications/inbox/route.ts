@@ -22,7 +22,14 @@ export async function GET(request: Request) {
 
     const sql = getSql();
     const wid = await workspaceId(sql);
-    if (!wid) return ok({ notifications: [], unread: 0 });
+    if (!wid) {
+      return ok({
+        notifications: [],
+        assignedTickets: [],
+        unread: 0,
+        diagnostics: { sessionEmail: session.email, hasMatchingAssignee: false, assigneeCountTotal: 0 },
+      });
+    }
 
     const url = new URL(request.url);
     const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 30), 1), 100);
@@ -56,6 +63,43 @@ export async function GET(request: Request) {
       where lower(recipient_email) = ${recipient} and workspace_id = ${wid} and read_at is null
     `;
 
+    // Resolve "me" across boards: every board_assignee row whose email matches the session.
+    const myAssignees = await sql`
+      select id::text from board_assignees where lower(email) = ${recipient}
+    ` as Array<{ id: string }>;
+    const myAssigneeIds = myAssignees.map((r) => r.id);
+
+    let assignedTickets: Array<Record<string, unknown>> = [];
+    if (myAssigneeIds.length > 0) {
+      // Tickets where assignee_ids overlaps any of my assignee ids on any board.
+      assignedTickets = await sql`
+        select
+          t.id,
+          t.title,
+          t.priority,
+          t.due_date,
+          t.board_id,
+          b.name as board_name,
+          c.title as column_title,
+          t.updated_at
+        from tickets t
+        join boards b on b.id = t.board_id
+        join columns c on c.id = t.column_id
+        where t.workspace_id = ${wid}
+          and t.assignee_ids && ${sql.array(myAssigneeIds)}::text[]
+        order by t.updated_at desc
+        limit 50
+      ` as Array<Record<string, unknown>>;
+    }
+
+    // Diagnostics so the bell can explain an empty state clearly.
+    const totalAssigneesRow = await sql`select count(*)::int as count from board_assignees`;
+    const diagnostics = {
+      sessionEmail: session.email,
+      hasMatchingAssignee: myAssigneeIds.length > 0,
+      assigneeCountTotal: Number(totalAssigneesRow[0]?.count || 0),
+    };
+
     // Backfill recipient_sub on first read by anyone with this email — cheap and idempotent.
     if (session.sub) {
       await sql`
@@ -65,7 +109,12 @@ export async function GET(request: Request) {
       `;
     }
 
-    return ok({ notifications: rows, unread: Number(unreadRow[0]?.count || 0) });
+    return ok({
+      notifications: rows,
+      assignedTickets,
+      unread: Number(unreadRow[0]?.count || 0),
+      diagnostics,
+    });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to load inbox", 500);
   }

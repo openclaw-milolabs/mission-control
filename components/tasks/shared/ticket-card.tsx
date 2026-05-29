@@ -10,12 +10,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { type Assignee, type Ticket, formatDue } from "@/types/tasks";
+import { type Assignee, type Label, type Ticket, formatDue } from "@/types/tasks";
 import { cn } from "@/lib/utils";
 
 type Props = {
   ticket: Ticket;
   assigneeById: Record<string, Assignee>;
+  labelById?: Record<string, Label>;
   onClick: () => void;
   onCopy?: () => void;
   onDelete?: () => void;
@@ -43,6 +44,7 @@ const priorityLabel = (p: Ticket["priority"]) => p.charAt(0).toUpperCase() + p.s
 export function TicketCard({
   ticket,
   assigneeById,
+  labelById,
   onClick,
   onCopy,
   onDelete,
@@ -50,6 +52,9 @@ export function TicketCard({
   dragHandleProps,
   isDragging,
 }: Props) {
+  const ticketLabels = (ticket.labelIds ?? [])
+    .map((id) => labelById?.[id])
+    .filter(Boolean) as Label[];
   const visibleAssignees = ticket.assigneeIds.slice(0, 3);
   const extra = ticket.assigneeIds.length - visibleAssignees.length;
   const shortDesc = ticket.description?.trim().replace(/\s+/g, " ") ?? "";
@@ -71,6 +76,24 @@ export function TicketCard({
       {...dragHandleProps}
     >
       <CardContent className={cn("flex flex-col gap-2", dense ? "p-2.5" : "p-3.5")}>
+        {/* Label chips strip */}
+        {ticketLabels.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {ticketLabels.slice(0, 4).map((l) => (
+              <span
+                key={l.id}
+                className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium text-white"
+                style={{ backgroundColor: l.color }}
+                title={l.name}
+              >
+                {l.name}
+              </span>
+            ))}
+            {ticketLabels.length > 4 && (
+              <span className="text-[9px] text-muted-foreground/60">+{ticketLabels.length - 4}</span>
+            )}
+          </div>
+        )}
         {/* Top row: priority pill + tags + kebab */}
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-h-5 min-w-0 flex-wrap items-center gap-1">

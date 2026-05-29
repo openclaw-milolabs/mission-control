@@ -59,6 +59,7 @@ export type TicketRecord = {
   priority: TicketPriority;
   dueDate: string | null;
   tags: string[];
+  labelIds: string[];
   assigneeIds: string[];
   assignedAgentId: string;
   executionMode: TicketExecutionMode;
@@ -108,6 +109,7 @@ export type CreateTicketPayload = {
   priority?: TicketPriority;
   dueDate?: string | null;
   tags?: string[];
+  labelIds?: string[];
   assigneeIds?: string[];
   assignedAgentId?: string;
   executionMode?: TicketExecutionMode;
@@ -129,6 +131,7 @@ export type UpdateTicketPatch = {
   priority?: TicketPriority;
   dueDate?: string | null;
   tags?: string[];
+  labelIds?: string[];
   assigneeIds?: string[];
   assignedAgentId?: string;
   executionMode?: TicketExecutionMode;

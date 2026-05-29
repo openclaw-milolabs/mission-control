@@ -48,6 +48,7 @@ type TicketRow = {
   priority: TicketRecord["priority"];
   due_date?: string | null;
   tags?: string[] | null;
+  label_ids?: string[] | null;
   assignee_ids?: string[] | null;
   assigned_agent_id?: string | null;
   execution_mode?: TicketRecord["executionMode"] | null;
@@ -442,6 +443,7 @@ function toTicketRecord(row: TicketRow): TicketRecord {
     priority: row.priority,
     dueDate: row.due_date,
     tags: row.tags ?? [],
+    labelIds: row.label_ids ?? [],
     assigneeIds: row.assignee_ids ?? [],
     assignedAgentId: row.assigned_agent_id ?? "",
     executionMode: row.execution_mode ?? "direct",

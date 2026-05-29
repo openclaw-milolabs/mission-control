@@ -14,6 +14,7 @@ import type {
 } from "@/lib/db/adapter";
 import {
   type Assignee,
+  type Label,
   type BoardHydration,
   type BoardSummary,
   type TicketActivity,
@@ -80,6 +81,7 @@ type UseTasksOptions = {
   initialBoardId: string | null;
   initialBoards: BoardHydration[];
   assigneesByBoardId: Record<string, Assignee[]>;
+  labelsByBoardId: Record<string, Label[]>;
 };
 
 const sameText = (a: string, b: string) => a.trim() === b.trim();
@@ -96,6 +98,7 @@ const cloneBoard = (board: BoardState): BoardState => ({
       {
         ...ticket,
         tags: [...ticket.tags],
+        labelIds: [...(ticket.labelIds ?? [])],
         assigneeIds: [...ticket.assigneeIds],
       },
     ]),
@@ -205,6 +208,7 @@ function hydrateBoards(
         priority: isTicketPriority(t.priority) ? t.priority : "medium",
         dueDate: t.due_date,
         tags: t.tags ?? [],
+        labelIds: t.label_ids ?? [],
         assigneeIds: t.assignee_ids ?? [],
         scheduledFor: t.scheduled_for ? t.scheduled_for.slice(0, 10) : null,
         checklistDone: t.checklist_done ?? 0,
@@ -259,6 +263,7 @@ const toTicket = (row: TicketRecord): Ticket => ({
   priority: isTicketPriority(row.priority) ? row.priority : "low",
   dueDate: formatDueDateInput(row.dueDate),
   tags: row.tags,
+  labelIds: row.labelIds ?? [],
   assigneeIds: row.assigneeIds,
   scheduledFor: formatDueDateInput(row.scheduledFor),
   checklistDone: row.checklistDone,
@@ -357,7 +362,7 @@ const buildBoardState = (columnRows: ColumnRecord[], ticketRows: TicketRecord[])
   };
 };
 
-export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: UseTasksOptions) {
+export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId, labelsByBoardId }: UseTasksOptions) {
   const adapter = useMemo(() => getDataAdapter(), []);
   const [boardMap, setBoardMap] = useState<Record<string, BoardEntry>>(() =>
     Object.fromEntries(initialBoards.map((board) => [board.id, cloneBoardEntry(board)])),
@@ -379,9 +384,11 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
   // Assignee filter: empty Set = no filter (show all). Sentinel "__unassigned__"
   // matches tickets with empty assignee_ids.
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(() => new Set<string>());
-  // Per-column pagination cap: render up to LIST_PAGE_SIZE tickets per column by default;
-  // user can expand a column to see the rest. Prevents 130-ticket walls of cards.
-  const [expandedColumnIds, setExpandedColumnIds] = useState<Set<string>>(() => new Set<string>());
+  // Label filter mirrors assigneeFilter — Set of board_label ids, sentinel "__unlabeled__".
+  const [labelFilter, setLabelFilter] = useState<Set<string>>(() => new Set<string>());
+  // Due filter: "all" / "overdue" / "today" / "thisWeek" / "noDue".
+  type DueFilter = "all" | "overdue" | "today" | "thisWeek" | "noDue";
+  const [dueFilter, setDueFilter] = useState<DueFilter>("all");
   const [modal, setModal] = useState<ModalKind>(null);
   const [discardTarget, setDiscardTarget] = useState<"create" | "details" | null>(null);
   const [createForm, setCreateForm] = useState<CreateTicketForm>(() => emptyCreateForm(""));
@@ -517,15 +524,41 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
     () => Object.fromEntries(assignees.map((a) => [a.id, a])),
     [assignees],
   );
+  const labels = useMemo(
+    () => labelsByBoardId[activeBoardId] ?? [],
+    [labelsByBoardId, activeBoardId],
+  );
+  const labelById = useMemo(
+    () => Object.fromEntries(labels.map((l) => [l.id, l])),
+    [labels],
+  );
+  const validLabelIds = useCallback(
+    (ids: string[]) => ids.filter((id) => Boolean(labelById[id])),
+    [labelById],
+  );
   const validAssigneeIds = (ids: string[]) => ids.filter((id) => Boolean(assigneeById[id]));
   const resolveAssigneeName = useCallback((id: string) => assigneeById[id]?.name ?? id, [assigneeById]);
 
   const ticketsList = useMemo(() => Object.values(board.tickets), [board.tickets]);
 
+  // Compute date-bucket boundaries once per render so filter is consistent.
+  const dueBuckets = useMemo(() => {
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const day = now.getDay(); // 0=Sun
+    const daysUntilEndOfWeek = day === 0 ? 0 : 7 - day;
+    const endOfWeek = new Date(now);
+    endOfWeek.setDate(endOfWeek.getDate() + daysUntilEndOfWeek);
+    const endOfWeekStr = `${endOfWeek.getFullYear()}-${String(endOfWeek.getMonth() + 1).padStart(2, "0")}-${String(endOfWeek.getDate()).padStart(2, "0")}`;
+    return { todayStr, endOfWeekStr };
+  }, []);
+
   const filteredTicketIds = useMemo(() => {
     const hasSearch = Boolean(searchQuery);
     const hasAssigneeFilter = assigneeFilter.size > 0;
-    if (!hasSearch && !hasAssigneeFilter) {
+    const hasLabelFilter = labelFilter.size > 0;
+    const hasDueFilter = dueFilter !== "all";
+    if (!hasSearch && !hasAssigneeFilter && !hasLabelFilter && !hasDueFilter) {
       return new Set<string>(ticketsList.map((ticket) => ticket.id));
     }
     return new Set<string>(
@@ -538,11 +571,36 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
             const matchesUnassigned = wantsUnassigned && !hasAny;
             if (!matchesNamed && !matchesUnassigned) return false;
           }
+          if (hasLabelFilter) {
+            const wantsUnlabeled = labelFilter.has("__unlabeled__");
+            const ticketLabels = ticket.labelIds ?? [];
+            const hasAny = ticketLabels.length > 0;
+            const matchesNamed = ticketLabels.some((id) => labelFilter.has(id));
+            const matchesUnlabeled = wantsUnlabeled && !hasAny;
+            if (!matchesNamed && !matchesUnlabeled) return false;
+          }
+          if (hasDueFilter) {
+            const d = ticket.dueDate;
+            if (dueFilter === "noDue") {
+              if (d) return false;
+            } else if (!d) {
+              return false;
+            } else if (dueFilter === "overdue") {
+              if (d >= dueBuckets.todayStr) return false;
+            } else if (dueFilter === "today") {
+              if (d !== dueBuckets.todayStr) return false;
+            } else if (dueFilter === "thisWeek") {
+              if (d > dueBuckets.endOfWeekStr || d < dueBuckets.todayStr) return false;
+            }
+          }
           if (hasSearch) {
             const names = ticket.assigneeIds
               .map((id) => resolveAssigneeName(id))
               .join(" ");
-            const haystack = [ticket.title, ticket.description, ticket.tags.join(" "), names]
+            const labelNames = (ticket.labelIds ?? [])
+              .map((id) => labelById[id]?.name ?? "")
+              .join(" ");
+            const haystack = [ticket.title, ticket.description, ticket.tags.join(" "), names, labelNames]
               .join(" ")
               .toLowerCase();
             if (!haystack.includes(searchQuery)) return false;
@@ -551,7 +609,7 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
         })
         .map((ticket) => ticket.id),
     );
-  }, [assigneeFilter, resolveAssigneeName, searchQuery, ticketsList]);
+  }, [assigneeFilter, labelFilter, dueFilter, dueBuckets, resolveAssigneeName, labelById, searchQuery, ticketsList]);
 
   const toggleAssigneeFilter = useCallback((assigneeId: string) => {
     setAssigneeFilter((prev) => {
@@ -562,6 +620,15 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
     });
   }, []);
   const clearAssigneeFilter = useCallback(() => setAssigneeFilter(new Set<string>()), []);
+  const toggleLabelFilter = useCallback((labelId: string) => {
+    setLabelFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(labelId)) next.delete(labelId);
+      else next.add(labelId);
+      return next;
+    });
+  }, []);
+  const clearLabelFilter = useCallback(() => setLabelFilter(new Set<string>()), []);
 
   const sortedFilteredTickets = useMemo(() => {
     return ticketsList
@@ -587,43 +654,6 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
     }
     return result;
   }, [board.columnOrder, board.ticketIdsByColumn, filteredTicketIds]);
-
-  const LIST_PAGE_SIZE = 25;
-  // After filtering, cap rendering per column unless the user expanded it.
-  // `hiddenCountByColumn` is what the UI needs to render "Show more (N hidden)".
-  const renderedTicketIdsByColumn = useMemo(() => {
-    const result: Record<string, string[]> = {};
-    for (const columnId of board.columnOrder) {
-      const full = visibleTicketIdsByColumn[columnId] ?? [];
-      result[columnId] = expandedColumnIds.has(columnId) ? full : full.slice(0, LIST_PAGE_SIZE);
-    }
-    return result;
-  }, [board.columnOrder, expandedColumnIds, visibleTicketIdsByColumn]);
-
-  const hiddenCountByColumn = useMemo(() => {
-    const result: Record<string, number> = {};
-    for (const columnId of board.columnOrder) {
-      const total = (visibleTicketIdsByColumn[columnId] ?? []).length;
-      const rendered = (renderedTicketIdsByColumn[columnId] ?? []).length;
-      result[columnId] = Math.max(0, total - rendered);
-    }
-    return result;
-  }, [board.columnOrder, visibleTicketIdsByColumn, renderedTicketIdsByColumn]);
-
-  const expandColumn = useCallback((columnId: string) => {
-    setExpandedColumnIds((prev) => {
-      const next = new Set(prev);
-      next.add(columnId);
-      return next;
-    });
-  }, []);
-  const collapseColumn = useCallback((columnId: string) => {
-    setExpandedColumnIds((prev) => {
-      const next = new Set(prev);
-      next.delete(columnId);
-      return next;
-    });
-  }, []);
 
   const createDirty = useMemo(
     () =>
@@ -715,6 +745,7 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
       scheduledFor: ticket.scheduledFor ?? "",
       tagsText: ticket.tags.join(", "),
       assigneeIds: validAssigneeIds(ticket.assigneeIds),
+      labelIds: validLabelIds(ticket.labelIds ?? []),
       checklistDone: ticket.checklistDone,
       checklistTotal: ticket.checklistTotal,
       comments: ticket.comments,
@@ -1583,6 +1614,7 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
       .map((tag) => tag.trim())
       .filter(Boolean);
     const assigneeIds = validAssigneeIds(createForm.assigneeIds);
+    const labelIds = validLabelIds(createForm.labelIds ?? []);
 
     const tempId = `temp-${Date.now()}`;
     let rollbackBoard: BoardState | null = null;
@@ -1608,6 +1640,7 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
         priority: createForm.priority,
         dueDate: createForm.dueDate || null,
         tags,
+        labelIds,
         assigneeIds,
         scheduledFor: createForm.scheduledFor || null,
         checklistDone: 0,
@@ -1643,6 +1676,7 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
       dueDate: toIsoDueDate(createForm.dueDate),
       scheduledFor: toIsoDueDate(createForm.scheduledFor),
       tags,
+      labelIds,
       assigneeIds,
       checklistDone: 0,
       checklistTotal: 0,
@@ -1865,6 +1899,7 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
         dueDate: toIsoDueDate(sourceTicket.dueDate ?? ""),
         tags: [...sourceTicket.tags],
         assigneeIds: validAssigneeIds([...sourceTicket.assigneeIds]),
+        labelIds: validLabelIds([...(sourceTicket.labelIds ?? [])]),
         checklistDone: sourceTicket.checklistDone,
         checklistTotal: sourceTicket.checklistTotal,
         attachmentsCount: 0,
@@ -2071,6 +2106,7 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
       .map((tag) => tag.trim())
       .filter(Boolean);
     const assigneeIds = validAssigneeIds(detailsForm.assigneeIds);
+    const labelIds = validLabelIds(detailsForm.labelIds ?? []);
 
     let rollbackBoard: BoardState | null = null;
     let nextStatusId = detailsForm.statusId;
@@ -2092,6 +2128,7 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
         priority: detailsForm.priority,
         dueDate: detailsForm.dueDate || null,
         tags,
+        labelIds,
         assigneeIds,
         scheduledFor: detailsForm.scheduledFor || null,
         checklistDone: detailsForm.checklistDone,
@@ -2126,6 +2163,7 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
         dueDate: toIsoDueDate(detailsForm.dueDate),
         scheduledFor: toIsoDueDate(detailsForm.scheduledFor),
         tags,
+        labelIds,
         assigneeIds,
         checklistDone: detailsForm.checklistDone,
         checklistTotal: detailsForm.checklistTotal,
@@ -2423,18 +2461,19 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
     deleteDetailsComment,
     assignees,
     assigneeById,
+    labels,
+    labelById,
     filteredTicketIds,
     sortedFilteredTickets,
     visibleTicketIdsByColumn,
-    renderedTicketIdsByColumn,
-    hiddenCountByColumn,
-    expandColumn,
-    collapseColumn,
-    expandedColumnIds,
-    listPageSize: LIST_PAGE_SIZE,
     assigneeFilter,
     toggleAssigneeFilter,
     clearAssigneeFilter,
+    labelFilter,
+    toggleLabelFilter,
+    clearLabelFilter,
+    dueFilter,
+    setDueFilter,
     totalVisible: sortedFilteredTickets.length,
     openCreateModal,
     openDetailsModal,

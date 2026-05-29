@@ -142,89 +142,130 @@ export function BoardActivityFeed({ activity, loading, onTicketClick }: Props) {
             <p className="text-[10px] text-muted-foreground/60 mt-0.5">Activity will appear here when tickets are executed</p>
           </div>
         ) : (
-          <div className="flex flex-col gap-1.5">
-            {activity.slice(0, 30).map((entry, index) => {
-              const config = LEVEL_CONFIG[entry.level || "info"] || LEVEL_CONFIG.info;
-              const LevelIcon = config.icon;
-              const isExpanded = expandedId === entry.id;
-              const isNew = index === 0 && activity.length > 1;
-              const isWorker = entry.source === "Worker";
-
-              return (
-                <button
-                  key={entry.id}
-                  onClick={() => {
-                    if (entry.ticket_id) onTicketClick(entry.ticket_id);
-                  }}
-                  className={cn(
-                    "w-full text-left rounded-lg border-l-[3px] border border-border/40 px-3 py-2 transition-all duration-200 cursor-pointer",
-                    "hover:bg-muted/40 hover:border-border/60",
-                    config.border,
-                    isNew && "animate-in fade-in slide-in-from-top-2 duration-300",
-                  )}
-                >
-                  {/* Top row: icon + event + time */}
-                  <div className="flex items-center gap-2">
-                    <LevelIcon className={cn("size-3 shrink-0", config.text)} />
-                    <span className={cn("text-[11px] font-semibold flex-1 truncate", config.text)}>
-                      {entry.event}
-                    </span>
-                    {entry.occurred_at && (
-                      <span className="text-[9px] text-muted-foreground/60 shrink-0 tabular-nums">
-                        {relativeTime(entry.occurred_at)}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Ticket title */}
-                  {entry.ticket_title && (
-                    <p className="text-[11px] font-medium text-foreground/80 truncate mt-0.5 pl-5">
-                      {entry.ticket_title}
-                    </p>
-                  )}
-
-                  {/* Actor + source badge */}
-                  {(entry.actor_name || (entry.source && !isWorker)) && (
-                    <div className="flex items-center gap-1.5 mt-1 pl-5 text-[9px] text-muted-foreground/70">
-                      {entry.actor_name ? (
-                        <span
-                          className="inline-flex items-center gap-1"
-                          title={entry.actor_email || undefined}
-                        >
-                          <UserIcon className="size-2.5 text-muted-foreground/60" />
-                          <span className="font-medium text-muted-foreground">{entry.actor_name}</span>
-                        </span>
-                      ) : null}
-                      {entry.source && !isWorker && (
-                        <span className="inline-flex items-center gap-1">
-                          {entry.actor_name ? <span className="text-muted-foreground/30">·</span> : null}
-                          <BotIcon className="size-2.5 text-muted-foreground/50" />
-                          <span className="text-muted-foreground/60">{entry.source}</span>
-                        </span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Details — expandable */}
-                  {entry.details && (
-                    <div className="mt-1 pl-5">
-                      <p
-                        onClick={(e) => { e.stopPropagation(); toggleExpand(entry.id); }}
-                        className={cn(
-                          "text-[10px] text-muted-foreground/70 leading-relaxed cursor-pointer hover:text-muted-foreground transition-colors",
-                          !isExpanded && "line-clamp-1",
-                        )}
-                      >
-                        {entry.details}
-                      </p>
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+          <ActivityList
+            activity={activity}
+            expandedId={expandedId}
+            toggleExpand={toggleExpand}
+            onTicketClick={onTicketClick}
+          />
         )}
       </div>
     </div>
   );
+}
+
+function ActivityList({
+  activity,
+  expandedId,
+  toggleExpand,
+  onTicketClick,
+}: {
+  activity: LiveLog[];
+  expandedId: string | null;
+  toggleExpand: (id: string) => void;
+  onTicketClick: (ticketId: string) => void;
+}) {
+  const now = Date.now();
+  const startOfToday = new Date(new Date(now).getFullYear(), new Date(now).getMonth(), new Date(now).getDate()).getTime();
+  const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
+  const fmtMonth = (d: Date) =>
+    d.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const bucketFor = (iso: string | undefined) => {
+    if (!iso) return "Earlier";
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return "Earlier";
+    if (t >= startOfToday) return "Today";
+    if (t >= startOfYesterday) return "Yesterday";
+    return fmtMonth(new Date(t));
+  };
+  const rows = activity.slice(0, 30);
+  let lastBucket: string | null = null;
+  const out: React.ReactNode[] = [];
+  rows.forEach((entry, index) => {
+    const bucket = bucketFor(entry.occurred_at);
+    if (bucket !== lastBucket) {
+      out.push(
+        <div
+          key={`hdr-${bucket}-${index}`}
+          className="mt-2 first:mt-0 px-1 pt-1 text-[9px] font-bold uppercase tracking-widest text-muted-foreground/60"
+        >
+          {bucket}
+        </div>,
+      );
+      lastBucket = bucket;
+    }
+
+    const config = LEVEL_CONFIG[entry.level || "info"] || LEVEL_CONFIG.info;
+    const LevelIcon = config.icon;
+    const isExpanded = expandedId === entry.id;
+    const isNew = index === 0 && activity.length > 1;
+    const isWorker = entry.source === "Worker";
+
+    out.push(
+      <button
+        key={entry.id}
+        onClick={() => {
+          if (entry.ticket_id) onTicketClick(entry.ticket_id);
+        }}
+        className={cn(
+          "w-full text-left rounded-lg border-l-[3px] border border-border/40 px-2.5 py-1.5 transition-all duration-200 cursor-pointer",
+          "hover:bg-muted/40 hover:border-border/60",
+          config.border,
+          isNew && "animate-in fade-in slide-in-from-top-2 duration-300",
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <LevelIcon className={cn("size-3 shrink-0", config.text)} />
+          <span className={cn("text-[11px] font-semibold flex-1 truncate", config.text)}>
+            {entry.event}
+          </span>
+          {entry.occurred_at && (
+            <span className="text-[9px] text-muted-foreground/60 shrink-0 tabular-nums">
+              {relativeTime(entry.occurred_at)}
+            </span>
+          )}
+        </div>
+        {entry.ticket_title && (
+          <p className="text-[11px] font-medium text-foreground/80 truncate mt-0.5 pl-5">
+            {entry.ticket_title}
+          </p>
+        )}
+        {(entry.actor_name || (entry.source && !isWorker)) && (
+          <div className="flex items-center gap-1.5 mt-0.5 pl-5 text-[9px] text-muted-foreground/70">
+            {entry.actor_name ? (
+              <span
+                className="inline-flex items-center gap-1"
+                title={entry.actor_email || undefined}
+              >
+                <UserIcon className="size-2.5 text-muted-foreground/60" />
+                <span className="font-medium text-muted-foreground">{entry.actor_name}</span>
+              </span>
+            ) : null}
+            {entry.source && !isWorker && (
+              <span className="inline-flex items-center gap-1">
+                {entry.actor_name ? <span className="text-muted-foreground/30">·</span> : null}
+                <BotIcon className="size-2.5 text-muted-foreground/50" />
+                <span className="text-muted-foreground/60">{entry.source}</span>
+              </span>
+            )}
+          </div>
+        )}
+        {entry.details && (
+          <div className="mt-0.5 pl-5">
+            <p
+              onClick={(e) => { e.stopPropagation(); toggleExpand(entry.id); }}
+              className={cn(
+                "text-[10px] text-muted-foreground/70 leading-relaxed cursor-pointer hover:text-muted-foreground transition-colors",
+                !isExpanded && "line-clamp-1",
+              )}
+            >
+              {entry.details}
+            </p>
+          </div>
+        )}
+      </button>,
+    );
+  });
+
+  return <div className="flex flex-col gap-1">{out}</div>;
 }

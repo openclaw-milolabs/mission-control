@@ -2,9 +2,11 @@
 
 **The OpenClaw native dashboard** — manage scheduled agenda tasks, multi-step processes, Kanban boards, agent logs, file browsing, and system settings from a single UI.
 
-**Version 3.5.3** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
+**Version 3.5.4** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
 
-> **Latest changes (2026-05-29):** Kanban sprint — board assignees gained an `email` column tying them to logged-in users; `@<assignee>` mentions in comments fan out into a new `notifications` table; in-app bell in the sidebar with unread badge, per-row read, live SSE updates and click-to-open-ticket. Every activity / audit row now carries the logged-in user's name and email (`actor_name`/`actor_email`). New Assignee filter dropdown on the boards toolbar (multi-select + Unassigned). Kanban columns cap at 25 tickets with Show more / Show less. Comment input has inline `@` autocomplete. Trello feature-gap research doc at [docs/trello-feature-gap.md](docs/trello-feature-gap.md). See [CHANGELOG.md](./CHANGELOG.md) for full list.
+> **Latest changes (2026-05-29):** Kanban polish + Trello-parity sprint — per-board labels with colour (Manage Labels modal, label chips on cards, multi-select picker on tickets); calendar view as a 4th ViewMode (month grid, click ticket to open); filter by label and by due (overdue / today / this-week / no-due); shareable per-ticket URLs (`?board=X&ticket=Y`) plus Copy-link button on the ticket modal. The notifications bell now has two segments — Mentions and My tickets — with diagnostic empty states ("no board assignee has the email <session email>"). Removed the 25-cap on Kanban columns — they now scroll naturally. Activity feed gets day-bucket headers. See [CHANGELOG.md](./CHANGELOG.md) for full list.
+
+> **Previous (3.5.3):** @mentions + notifications bell + actor attribution in activity logs + assignee filter + per-list 25-cap (now removed in 3.5.4) + Trello feature-gap research doc.
 
 > **Previous (2026-04-18):** File-manager dual-root reverted to single-root; agenda "Output folder" card now opens directly in the file manager. Altinstar social post guides hardened.
 

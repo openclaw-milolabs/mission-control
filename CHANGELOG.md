@@ -3,6 +3,26 @@
 All notable changes to Mission Control are documented here.
 
 
+## [3.5.4] - 2026-05-29
+
+### Added
+- **Per-board labels with colour.** New `board_labels` table (id, board_id, name, color) plus `tickets.label_ids text[]`. New "Labels" button on the boards toolbar opens a Manage Labels modal (name + 12-color swatch, inline edit + delete with cascading removal from tickets). Ticket modal has a chip-style multi-select label picker; ticket cards show label chips at the top.
+- **Filter by label and by due date.** Two new dropdowns on the workspace toolbar next to "Assignee": "Label" (multi-select with "Unlabeled" sentinel and "Clear filter") and "Due" (radio: All / Overdue / Today / This week / No due date). Filter sets combine with the existing search + assignee filter inside `filteredTicketIds` in `useTasks`.
+- **Calendar view as a 4th ViewMode.** Month grid with prev / next / Today nav; up to three tickets visible per cell with overflow shown as "+N more"; each ticket cell shows the first label's color (or falls back to priority). Click to open the ticket. Routes alongside Kanban / List / Grid.
+- **Shareable per-ticket URL.** Pasting `/boards?board=X&ticket=Y` opens the ticket once on mount and strips `?ticket=` from the URL after (preserves the 3.4.x "don't re-add on every click" fix). New "Copy link" button on the ticket modal footer writes the URL to the clipboard.
+- **Notifications bell rebuilt with two segments.** Tab control between "Mentions" (count + Mark-all-read, the previous behavior) and "My tickets" (live list of every ticket whose `assignee_ids` contain a board assignee whose email matches your session). Empty state now diagnoses why — e.g. "No board assignee has the email <your-session-email>", with a pointer to the Assignees toolbar.
+- **Notifications inbox now returns `assignedTickets[]` + `diagnostics`.** `/api/notifications/inbox` joins `board_assignees` on `lower(email) = lower(session.email)` and returns the resolved assignee ids plus all tickets where `assignee_ids && <those ids>`. Diagnostics carry `sessionEmail`, `hasMatchingAssignee`, `assigneeCountTotal`.
+- **Activity feed polish.** Day-bucket headers (`Today` / `Yesterday` / `Mon, May 26`) for visual rhythm, tighter row padding, same icons and color tokens — no skeleton changes.
+
+### Changed
+- **Per-column cap removed.** Kanban columns no longer cap at 25 tickets; they scroll naturally inside the column's existing `ScrollArea`. Removed `Show more` / `Show less` UI and the `renderedTicketIdsByColumn` / `hiddenCountByColumn` plumbing.
+- **Bell handles 401 distinctly** — when the bell hits an unauthenticated response, it shows "Sign in to see your inbox" instead of silently rendering "All caught up". Reload-on-open keeps the assigned tickets segment fresh.
+- **Workspace toolbar collapsed from 7 buttons to 3.** The board toolbar got out of hand as features were added (Board, Assignees, Labels, Add, Label-filter, Due, Assignee-filter, Sort/View). It is now: `[Add ticket]` (primary CTA) · `Board ▾` (Add list, Manage assignees, Manage labels, Edit / Copy / Delete board) · `View ▾` (filter sub-menus for Assignee / Label / Due with active-count badges, plus Sort and View-mode radio groups). Aggregate filter count is shown on the View trigger so you can tell something is filtered without opening the menu; one "Clear all" affordance resets every filter. The new toolbar lives in `components/tasks/boards/workspace-toolbar.tsx`.
+
+### Database
+- New `board_labels` table + `board_id` index. `tickets.label_ids text[] not null default '{}'`.
+- Migrations are idempotent and live in both `db/schema.sql` (canonical) and as boot safety nets in `app/api/tasks/route.ts`.
+
 ## [3.5.3] - 2026-05-29
 
 ### Added

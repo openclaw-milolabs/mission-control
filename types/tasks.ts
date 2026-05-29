@@ -1,4 +1,4 @@
-export type ViewMode = "kanban" | "list" | "grid";
+export type ViewMode = "kanban" | "list" | "grid" | "calendar";
 export type SortMode = "newest" | "oldest" | "dueDate" | "title";
 export type ModalKind = "create" | "details" | "discard" | null;
 
@@ -9,6 +9,13 @@ export type Assignee = {
   color: string;
   email?: string | null;
   source?: "static" | "runtime";
+};
+
+export type Label = {
+  id: string;
+  boardId: string;
+  name: string;
+  color: string;
 };
 
 export type TicketPriority = "low" | "medium" | "high" | "urgent";
@@ -42,6 +49,7 @@ export type Ticket = {
   priority: TicketPriority;
   dueDate: string | null;
   tags: string[];
+  labelIds: string[];
   assigneeIds: string[];
   assignedAgentId?: string;
   executionMode?: TicketExecutionMode;
@@ -150,6 +158,7 @@ export type CreateTicketForm = {
   scheduledFor: string;
   tagsText: string;
   assigneeIds: string[];
+  labelIds: string[];
 };
 
 export type TicketDetailsForm = {
@@ -162,6 +171,7 @@ export type TicketDetailsForm = {
   scheduledFor: string;
   tagsText: string;
   assigneeIds: string[];
+  labelIds: string[];
   checklistDone: number;
   checklistTotal: number;
   comments: number;
@@ -180,6 +190,7 @@ export const VIEW_OPTIONS: Array<{ key: ViewMode; label: string }> = [
   { key: "kanban", label: "Kanban" },
   { key: "list", label: "List" },
   { key: "grid", label: "Grid" },
+  { key: "calendar", label: "Calendar" },
 ];
 
 export const SORT_OPTIONS: Array<{ key: SortMode; label: string }> = [
@@ -213,6 +224,7 @@ export const initialBoard: BoardState = {
       priority: "medium",
       dueDate: "2026-03-12",
       tags: ["Design", "UX"],
+      labelIds: [],
       assigneeIds: ["4e2c7ac2-8d2f-4d4f-a8a8-2a3f84d8f8d1", "77b37fa2-4d3f-4c3e-bf83-6b4b9e327b77"],
       checklistDone: 2,
       checklistTotal: 5,
@@ -228,6 +240,7 @@ export const initialBoard: BoardState = {
       priority: "low",
       dueDate: "2026-03-14",
       tags: ["Planning"],
+      labelIds: [],
       assigneeIds: ["c7b2a6c9-3e73-4d93-a6f0-1b9df8c8a3ab"],
       checklistDone: 1,
       checklistTotal: 3,
@@ -243,6 +256,7 @@ export const initialBoard: BoardState = {
       priority: "high",
       dueDate: "2026-03-08",
       tags: ["Frontend"],
+      labelIds: [],
       assigneeIds: ["9f4a90fd-2608-4ccd-a625-6fa9a8aa6f28", "4e2c7ac2-8d2f-4d4f-a8a8-2a3f84d8f8d1"],
       checklistDone: 3,
       checklistTotal: 6,
@@ -258,6 +272,7 @@ export const initialBoard: BoardState = {
       priority: "medium",
       dueDate: "2026-03-10",
       tags: ["Data", "Frontend"],
+      labelIds: [],
       assigneeIds: ["77b37fa2-4d3f-4c3e-bf83-6b4b9e327b77"],
       checklistDone: 4,
       checklistTotal: 5,
@@ -273,6 +288,7 @@ export const initialBoard: BoardState = {
       priority: "high",
       dueDate: "2026-03-06",
       tags: ["QA"],
+      labelIds: [],
       assigneeIds: ["0f9f5ce8-7f37-49cd-8f0f-d11a2ef44546", "9f4a90fd-2608-4ccd-a625-6fa9a8aa6f28"],
       checklistDone: 5,
       checklistTotal: 6,
@@ -288,6 +304,7 @@ export const initialBoard: BoardState = {
       priority: "low",
       dueDate: "2026-03-02",
       tags: ["Docs"],
+      labelIds: [],
       assigneeIds: ["c7b2a6c9-3e73-4d93-a6f0-1b9df8c8a3ab", "4e2c7ac2-8d2f-4d4f-a8a8-2a3f84d8f8d1"],
       checklistDone: 4,
       checklistTotal: 4,
@@ -313,6 +330,7 @@ export const emptyCreateForm = (statusId: string): CreateTicketForm => ({
   scheduledFor: "",
   tagsText: "",
   assigneeIds: [],
+  labelIds: [],
 });
 
 const MONTH_SHORT = [

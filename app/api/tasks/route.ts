@@ -183,15 +183,16 @@ export async function GET() {
     const wid = await workspaceId(sql);
     if (!wid) return ok({ boards: [], columns: [], tickets: [], workerSettings: { enabled: true, pollIntervalSeconds: 20, maxConcurrency: 3, lastTickAt: null } });
 
-    const [boards, columns, tickets, boardAssignees, workerSettings] = await Promise.all([
+    const [boards, columns, tickets, boardAssignees, boardLabels, workerSettings] = await Promise.all([
       sql`select * from boards where workspace_id=${wid} order by created_at asc`,
       sql`select * from columns where board_id in (select id from boards where workspace_id=${wid}) order by position asc, created_at asc`,
       sql`select * from tickets where workspace_id=${wid} order by position asc, created_at asc`,
       sql`select * from board_assignees where board_id in (select id from boards where workspace_id=${wid}) order by name asc`.catch(() => []),
+      sql`select * from board_labels where board_id in (select id from boards where workspace_id=${wid}) order by name asc`.catch(() => []),
       getWorkerSettings(sql),
     ]);
 
-    return ok({ boards, columns, tickets, boardAssignees, workerSettings });
+    return ok({ boards, columns, tickets, boardAssignees, boardLabels, workerSettings });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to load tasks", 500);
   }
@@ -244,6 +245,20 @@ export async function POST(request: Request) {
     `;
     await sql`CREATE INDEX IF NOT EXISTS notifications_recipient_unread_idx ON notifications(lower(recipient_email), created_at desc) WHERE read_at IS NULL`;
     await sql`CREATE INDEX IF NOT EXISTS notifications_recipient_recent_idx ON notifications(lower(recipient_email), created_at desc)`;
+    // board_labels + tickets.label_ids — same idempotent shape as board_assignees.
+    await sql`
+      CREATE TABLE IF NOT EXISTS board_labels (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        board_id uuid NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+        name text NOT NULL,
+        color text NOT NULL DEFAULT '#94a3b8',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (board_id, name)
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS board_labels_board_id_idx ON board_labels(board_id)`;
+    await sql`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS label_ids text[] NOT NULL DEFAULT '{}'::text[]`;
     await sql`ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS board_assignees_migrated_at timestamptz`;
     const migRows = await sql`select board_assignees_migrated_at from app_settings where id = 1 limit 1`;
     if (!migRows[0]?.board_assignees_migrated_at) {
@@ -409,6 +424,61 @@ export async function POST(request: Request) {
       return ok({ assignee: rows[0] });
     }
 
+    if (action === "listBoardLabels") {
+      const boardId = String(body.boardId || "");
+      if (!boardId) return fail("Board id is required.");
+      const rows = await sql`select * from board_labels where board_id=${boardId} order by name asc`;
+      return ok({ labels: rows });
+    }
+
+    if (action === "createBoardLabel") {
+      const boardId = String(body.boardId || "");
+      const name = String(body.name || "").trim();
+      const color = String(body.color || "#94a3b8").trim() || "#94a3b8";
+      if (!boardId || !name) return fail("Board id and name are required.");
+      try {
+        const rows = await sql`
+          insert into board_labels (board_id, name, color)
+          values (${boardId}, ${name}, ${color})
+          returning *
+        `;
+        await audit({ event: 'Label added', details: `${name} on board ${boardId}`, level: 'success' });
+        return ok({ label: rows[0] });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("board_labels_board_id_name_key") || msg.includes("duplicate key")) {
+          return fail("A label with that name already exists on this board.");
+        }
+        throw err;
+      }
+    }
+
+    if (action === "updateBoardLabel") {
+      const labelId = String(body.labelId || "");
+      if (!labelId) return fail("Label id is required.");
+      const name = body.name !== undefined ? String(body.name).trim() || null : null;
+      const color = body.color !== undefined ? String(body.color).trim() || null : null;
+      const rows = await sql`
+        update board_labels
+        set name = coalesce(${name}, name),
+            color = coalesce(${color}, color),
+            updated_at = now()
+        where id = ${labelId}
+        returning *
+      `;
+      await audit({ event: 'Label updated', details: rows[0]?.name || labelId, level: 'info' });
+      return ok({ label: rows[0] });
+    }
+
+    if (action === "deleteBoardLabel") {
+      const labelId = String(body.labelId || "");
+      if (!labelId) return fail("Label id is required.");
+      await sql`update tickets set label_ids = array_remove(label_ids, ${labelId}), updated_at = now() where ${labelId} = ANY(label_ids)`;
+      const rows = await sql`delete from board_labels where id=${labelId} returning name`;
+      await audit({ event: 'Label removed', details: rows[0]?.name || labelId, level: 'warning' });
+      return ok();
+    }
+
     if (action === "deleteBoardAssignee") {
       const assigneeId = String(body.assigneeId || "");
       if (!assigneeId) return fail("Assignee id is required.");
@@ -437,18 +507,19 @@ export async function POST(request: Request) {
       const position = Number(posRows[0]?.pos ?? 0);
       const tags = Array.isArray(body.tags) ? body.tags.map(String) : [];
       const assigneeIds = Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : [];
+      const labelIds = Array.isArray(body.labelIds) ? body.labelIds.map(String) : [];
       const scheduled = validateScheduledFor(body.scheduledFor, body.timeStepMinutes);
       if (scheduled.error) return fail(scheduled.error);
 
       const rows = await sql`
         insert into tickets (
           workspace_id, board_id, column_id, title, description, priority, due_date,
-          tags, assignee_ids, assigned_agent_id, execution_mode, plan_text, plan_approved, scheduled_for,
+          tags, assignee_ids, label_ids, assigned_agent_id, execution_mode, plan_text, plan_approved, scheduled_for,
           checklist_done, checklist_total, comments_count, attachments_count, position, telegram_chat_id,
           execution_window_minutes, fallback_model
         ) values (
           ${wid}, ${boardId}, ${columnId}, ${title}, ${String(body.description || "")}, ${String(body.priority || "low")}, ${body.dueDate || null},
-          ${sql.array(tags)}, ${sql.array(assigneeIds)}, '', 'auto', '', false, ${scheduled.iso},
+          ${sql.array(tags)}, ${sql.array(assigneeIds)}, ${sql.array(labelIds)}, '', 'auto', '', false, ${scheduled.iso},
           ${Number(body.checklistDone || 0)}, ${Number(body.checklistTotal || 0)}, ${Number(body.commentsCount || 0)}, ${Number(body.attachmentsCount || 0)}, ${position}, ${body.telegramChatId || null},
           60, ''
         )
@@ -466,6 +537,7 @@ export async function POST(request: Request) {
       if (!ticketId) return fail("Ticket id is required.");
       const tags = Array.isArray(body.tags) ? body.tags.map(String) : [];
       const assigneeIds = Array.isArray(body.assigneeIds) ? body.assigneeIds.map(String) : [];
+      const labelIds = Array.isArray(body.labelIds) ? body.labelIds.map(String) : [];
 
       const beforeRows = await sql`select * from tickets where id=${ticketId} limit 1`;
       const before = beforeRows[0];
@@ -488,6 +560,7 @@ export async function POST(request: Request) {
           due_date = case when ${body.dueDate === undefined} then due_date else ${body.dueDate ?? null} end,
           tags = case when ${body.tags === undefined} then tags else ${sql.array(tags)} end,
           assignee_ids = case when ${body.assigneeIds === undefined} then assignee_ids else ${sql.array(assigneeIds)} end,
+          label_ids = case when ${body.labelIds === undefined} then label_ids else ${sql.array(labelIds)} end,
           scheduled_for = case when ${body.scheduledFor === undefined} then scheduled_for else ${scheduledIsoForUpdate} end,
           checklist_done = coalesce(${body.checklistDone ?? null}, checklist_done),
           checklist_total = coalesce(${body.checklistTotal ?? null}, checklist_total),

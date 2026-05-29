@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import { TICKET_PRIORITY_OPTIONS } from "@/types/tasks";
 import type {
   Assignee,
+  Label,
   BoardState,
   TicketActivity,
   TicketAttachment,
@@ -48,6 +49,7 @@ import {
   CheckSquareIcon,
   ClipboardListIcon,
   CopyIcon,
+  LinkIcon,
   DownloadIcon,
   EyeIcon,
   FileIcon,
@@ -79,6 +81,8 @@ type Props = {
   form: TicketDetailsForm;
   board: BoardState;
   assignees: Assignee[];
+  labels: Label[];
+  boardId: string;
   attachments: TicketAttachment[];
   attachmentsLoading: boolean;
   attachmentsUploading: boolean;
@@ -183,7 +187,7 @@ function ActivityMarkdown({ text }: { text: string }) {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function TicketDetailsModal({
-  mode = "edit", open, form, board, assignees,
+  mode = "edit", open, form, board, assignees, labels, boardId,
   attachments,
   subtasks,
   onAddSubtask, onToggleSubtask, onDeleteSubtask,
@@ -805,6 +809,41 @@ export function TicketDetailsModal({
                 />
               </div>
 
+              {/* Labels */}
+              <div className="flex flex-col gap-1.5">
+                <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Labels</Label>
+                {labels.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No labels on this board. Use "Labels" on the board toolbar to add some.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {labels.map((l) => {
+                      const selected = form.labelIds.includes(l.id);
+                      return (
+                        <button
+                          key={l.id}
+                          type="button"
+                          onClick={() => {
+                            const next = selected
+                              ? form.labelIds.filter((id) => id !== l.id)
+                              : [...form.labelIds, l.id];
+                            onChange({ labelIds: next });
+                          }}
+                          className={cn(
+                            "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-white transition-opacity",
+                            selected ? "opacity-100" : "opacity-50 hover:opacity-80",
+                          )}
+                          style={{ backgroundColor: l.color }}
+                          aria-pressed={selected}
+                          title={selected ? `Remove ${l.name}` : `Add ${l.name}`}
+                        >
+                          {l.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
               {/* Assignees */}
               <div className="flex flex-col gap-1.5">
                 <Label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Assignees</Label>
@@ -850,6 +889,22 @@ export function TicketDetailsModal({
 
           {/* Footer */}
           <DialogFooter className="px-6 py-3 border-t">
+            {isEditing && form.id && boardId && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mr-auto gap-1.5 text-xs text-muted-foreground"
+                onClick={() => {
+                  if (typeof window === "undefined") return;
+                  const url = `${window.location.origin}/boards?board=${boardId}&ticket=${form.id}`;
+                  void navigator.clipboard?.writeText(url);
+                }}
+                title="Copy link to this ticket"
+              >
+                <LinkIcon className="size-3.5" />
+                Copy link
+              </Button>
+            )}
             <Button variant="ghost" onClick={onClose} className="cursor-pointer">Cancel</Button>
             <Button
               onClick={() => {
