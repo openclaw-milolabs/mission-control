@@ -24,6 +24,11 @@ type Props = {
   board: BoardState;
   assigneeById: Record<string, Assignee>;
   visibleTicketIdsByColumn: Record<string, string[]>;
+  renderedTicketIdsByColumn?: Record<string, string[]>;
+  hiddenCountByColumn?: Record<string, number>;
+  onExpandColumn?: (columnId: string) => void;
+  onCollapseColumn?: (columnId: string) => void;
+  expandedColumnIds?: Set<string>;
   onAddTask: (statusId: string) => void;
   canDeleteList: (columnId: string) => boolean;
   onDeleteList: (columnId: string) => void;
@@ -45,6 +50,11 @@ export function KanbanView({
   board,
   assigneeById,
   visibleTicketIdsByColumn,
+  renderedTicketIdsByColumn,
+  hiddenCountByColumn,
+  onExpandColumn,
+  onCollapseColumn,
+  expandedColumnIds,
   onAddTask,
   canDeleteList,
   onDeleteList,
@@ -196,14 +206,23 @@ export function KanbanView({
             const column = board.columns[colId];
             if (!column) return null;
             const visibleIds = visibleTicketIdsByColumn[colId] ?? [];
-            const tickets = visibleIds.map((id) => board.tickets[id]).filter(Boolean) as Ticket[];
+            const renderedIds = (renderedTicketIdsByColumn?.[colId] ?? visibleIds);
+            const tickets = renderedIds.map((id) => board.tickets[id]).filter(Boolean) as Ticket[];
+            const hiddenCount = hiddenCountByColumn?.[colId] ?? 0;
+            const isExpanded = expandedColumnIds?.has(colId) ?? false;
+            const totalVisible = visibleIds.length;
 
             return (
               <KanbanColumn
                 key={colId}
                 column={column}
                 tickets={tickets}
-                allTicketIds={visibleIds}
+                allTicketIds={renderedIds}
+                totalVisible={totalVisible}
+                hiddenCount={hiddenCount}
+                isExpanded={isExpanded}
+                onShowMore={onExpandColumn ? () => onExpandColumn(colId) : undefined}
+                onCollapse={onCollapseColumn ? () => onCollapseColumn(colId) : undefined}
                 assigneeById={assigneeById}
                 isActive={activeColumnId === colId}
                 onAddTask={() => onAddTask(colId)}

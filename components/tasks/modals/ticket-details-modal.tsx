@@ -571,18 +571,76 @@ export function TicketDetailsModal({
                   <Label className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
                     <SquarePenIcon className="size-3" /> Comments
                   </Label>
-                  <div className="flex gap-2">
-                    <Input
-                      value={commentDraft}
-                      onChange={(e) => onCommentDraftChange(e.target.value)}
-                      placeholder="Write a comment..."
-                      className="h-8 text-sm flex-1"
-                      onKeyDown={(e) => { if (e.key === "Enter" && commentDraft.trim()) { e.preventDefault(); onAddComment(); } }}
-                    />
-                    <Button size="icon-sm" variant="ghost" onClick={onAddComment} disabled={!commentDraft.trim()} className="h-8 w-8 cursor-pointer">
-                      <SendHorizonalIcon className="size-3.5" />
-                    </Button>
-                  </div>
+                  {(() => {
+                    // Detect an active `@<partial>` token at the caret so we can suggest assignees.
+                    // Simpler than full caret-tracking: match the last `@…` token at end of draft.
+                    const match = commentDraft.match(/(^|\s)@([^\s@]{0,40})$/);
+                    const partial = match ? match[2].toLowerCase() : null;
+                    const suggestions = match
+                      ? assignees
+                          .filter((a) =>
+                            partial === ""
+                              ? Boolean(a.email)
+                              : a.name.toLowerCase().includes(partial!) && Boolean(a.email),
+                          )
+                          .slice(0, 6)
+                      : [];
+                    const pick = (name: string) => {
+                      const before = commentDraft.replace(/(^|\s)@([^\s@]{0,40})$/, (_m, lead) => `${lead}@${name} `);
+                      onCommentDraftChange(before);
+                    };
+                    return (
+                      <>
+                        <div className="flex gap-2">
+                          <Input
+                            value={commentDraft}
+                            onChange={(e) => onCommentDraftChange(e.target.value)}
+                            placeholder="Write a comment... use @name to mention"
+                            className="h-8 text-sm flex-1"
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && commentDraft.trim() && suggestions.length === 0) {
+                                e.preventDefault();
+                                onAddComment();
+                              }
+                              if (e.key === "Enter" && suggestions.length > 0) {
+                                e.preventDefault();
+                                pick(suggestions[0].name);
+                              }
+                            }}
+                          />
+                          <Button size="icon-sm" variant="ghost" onClick={onAddComment} disabled={!commentDraft.trim()} className="h-8 w-8 cursor-pointer">
+                            <SendHorizonalIcon className="size-3.5" />
+                          </Button>
+                        </div>
+                        {suggestions.length > 0 && (
+                          <div className="rounded-md border bg-popover p-1 shadow-sm">
+                            {suggestions.map((a, idx) => (
+                              <button
+                                key={a.id}
+                                type="button"
+                                onClick={() => pick(a.name)}
+                                className={cn(
+                                  "flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-accent",
+                                  idx === 0 && "bg-accent/40",
+                                )}
+                              >
+                                <span
+                                  className="flex size-5 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+                                  style={{ backgroundColor: a.color }}
+                                >
+                                  {a.initials}
+                                </span>
+                                <span className="flex-1 truncate">{a.name}</span>
+                                {a.email && (
+                                  <span className="truncate text-[10px] text-muted-foreground">{a.email}</span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                   {comments.length > 0 && (
                     <ScrollArea className="max-h-[160px]">
                       <div className="space-y-1.5">
@@ -656,6 +714,15 @@ export function TicketDetailsModal({
                                 </div>
                                 <span className="text-[9px] text-muted-foreground shrink-0">{formatDate(e.occurredAt)}</span>
                               </div>
+
+                              {e.actorName && (
+                                <p
+                                  className="text-[10px] text-muted-foreground/80 mb-0.5"
+                                  title={e.actorEmail || undefined}
+                                >
+                                  by <span className="font-medium text-foreground/70">{e.actorName}</span>
+                                </p>
+                              )}
 
                               {hasDetails && (isAgentOutput || isPlan) ? (
                                 <div className="rounded-md bg-card border p-3 mt-1.5">

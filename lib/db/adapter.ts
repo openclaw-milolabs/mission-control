@@ -200,6 +200,8 @@ export type TicketActivityRecord = {
   event: string;
   details: string;
   level: TicketActivityLevel;
+  actorName: string | null;
+  actorEmail: string | null;
   occurredAt: string;
 };
 

@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/local-db";
+import { getSession } from "@/lib/auth/session";
+
+type Actor = { name: string | null; email: string | null };
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- action-based route with validated body fields */
 type Json = Record<string, any>;
@@ -52,14 +55,16 @@ async function ensureTasksAgentId(sql: ReturnType<typeof getSql>, wid: string) {
 async function logTaskAudit(
   sql: ReturnType<typeof getSql>,
   wid: string,
-  params: { event: string; details?: string; level?: "info" | "success" | "warning" | "error"; ticketId?: string | null },
+  params: { event: string; details?: string; level?: "info" | "success" | "warning" | "error"; ticketId?: string | null; actor?: Actor },
 ) {
   const level = params.level || "info";
   const details = params.details || "";
-  await sql`insert into activity_logs (workspace_id, source, event, details, level) values (${wid}, 'Tasks', ${params.event}, ${details}, ${level})`;
+  const actorName = params.actor?.name ?? null;
+  const actorEmail = params.actor?.email ?? null;
+  await sql`insert into activity_logs (workspace_id, source, event, details, level, actor_name, actor_email) values (${wid}, 'Tasks', ${params.event}, ${details}, ${level}, ${actorName}, ${actorEmail})`;
 
   if (params.ticketId) {
-    const activityInsert = await sql`insert into ticket_activity (ticket_id, source, event, details, level) values (${params.ticketId}, 'Tasks', ${params.event}, ${details}, ${level}) returning id::text`;
+    const activityInsert = await sql`insert into ticket_activity (ticket_id, source, event, details, level, actor_name, actor_email) values (${params.ticketId}, 'Tasks', ${params.event}, ${details}, ${level}, ${actorName}, ${actorEmail}) returning id::text`;
     const activityId = activityInsert[0]?.id;
     if (activityId) {
       await sql`select pg_notify('ticket_activity', ${activityId})`;
@@ -71,13 +76,49 @@ async function logTaskAudit(
     insert into agent_logs (
       workspace_id, agent_id, runtime_agent_id, occurred_at, level, type, message, event_type, message_preview, raw_payload
     ) values (
-      ${wid}, ${tasksAgentId}, 'tasks', now(), ${level}, 'workflow', ${`${params.event}${details ? ` — ${details}` : ''}`}, 'task.event', ${`${params.event}${details ? ` — ${details}` : ''}`.slice(0, 240)}, ${JSON.stringify({ event: params.event, details, ticketId: params.ticketId || null })}::jsonb
+      ${wid}, ${tasksAgentId}, 'tasks', now(), ${level}, 'workflow', ${`${params.event}${details ? ` — ${details}` : ''}`}, 'task.event', ${`${params.event}${details ? ` — ${details}` : ''}`.slice(0, 240)}, ${JSON.stringify({ event: params.event, details, ticketId: params.ticketId || null, actor: { name: actorName, email: actorEmail } })}::jsonb
     ) returning id::text
   `;
   const insertedId = inserted[0]?.id;
   if (insertedId) {
     await sql`select pg_notify('agent_logs', ${insertedId})`;
   }
+}
+
+// Parse `@<assignee name>` mentions out of a comment body.
+// Greedy match: prefer the longest matching board assignee name first so
+// `@Alex Rivera` resolves to "Alex Rivera" not "Alex".
+function extractMentions(
+  content: string,
+  assignees: Array<{ id: string; name: string; email: string }>,
+): Array<{ id: string; name: string; email: string }> {
+  const byLength = [...assignees].sort((a, b) => b.name.length - a.name.length);
+  const seen = new Set<string>();
+  const matched: Array<{ id: string; name: string; email: string }> = [];
+  // Find every `@` token and try to match each assignee name at that position.
+  const text = content;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== "@") continue;
+    if (i > 0 && /[A-Za-z0-9_]/.test(text[i - 1])) continue;
+    const tail = text.slice(i + 1);
+    for (const a of byLength) {
+      if (!a.name) continue;
+      if (tail.toLowerCase().startsWith(a.name.toLowerCase())) {
+        const afterIdx = i + 1 + a.name.length;
+        const after = text[afterIdx];
+        // Must be terminated by non-word (or end of string).
+        if (after === undefined || !/[A-Za-z0-9_]/.test(after)) {
+          if (!seen.has(a.id)) {
+            seen.add(a.id);
+            matched.push(a);
+          }
+          i = afterIdx - 1;
+          break;
+        }
+      }
+    }
+  }
+  return matched;
 }
 
 async function hasTableColumn(sql: ReturnType<typeof getSql>, tableName: string, columnName: string): Promise<boolean> {
@@ -176,6 +217,33 @@ export async function POST(request: Request) {
       )
     `;
     await sql`CREATE INDEX IF NOT EXISTS board_assignees_board_id_idx ON board_assignees(board_id)`;
+    // Boot migration safety net for activity actor columns (also in db/schema.sql).
+    await sql`ALTER TABLE ticket_activity ADD COLUMN IF NOT EXISTS actor_name text`;
+    await sql`ALTER TABLE ticket_activity ADD COLUMN IF NOT EXISTS actor_email text`;
+    await sql`ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS actor_name text`;
+    await sql`ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS actor_email text`;
+    // board_assignees.email + notifications table — safety net mirrors of db/schema.sql
+    await sql`ALTER TABLE board_assignees ADD COLUMN IF NOT EXISTS email text`;
+    await sql`CREATE INDEX IF NOT EXISTS board_assignees_email_idx ON board_assignees(lower(email)) WHERE email IS NOT NULL`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        recipient_email text NOT NULL,
+        recipient_sub text,
+        kind text NOT NULL DEFAULT 'mention',
+        actor_name text,
+        actor_email text,
+        board_id uuid REFERENCES boards(id) ON DELETE CASCADE,
+        ticket_id uuid REFERENCES tickets(id) ON DELETE CASCADE,
+        comment_id uuid REFERENCES ticket_comments(id) ON DELETE CASCADE,
+        preview text NOT NULL DEFAULT '',
+        read_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS notifications_recipient_unread_idx ON notifications(lower(recipient_email), created_at desc) WHERE read_at IS NULL`;
+    await sql`CREATE INDEX IF NOT EXISTS notifications_recipient_recent_idx ON notifications(lower(recipient_email), created_at desc)`;
     await sql`ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS board_assignees_migrated_at timestamptz`;
     const migRows = await sql`select board_assignees_migrated_at from app_settings where id = 1 limit 1`;
     if (!migRows[0]?.board_assignees_migrated_at) {
@@ -200,6 +268,18 @@ export async function POST(request: Request) {
     const wid = await workspaceId(sql);
     if (!wid) return fail("Workspace not found", 500);
 
+    // Resolve the current actor once for all audit/comment writes in this request.
+    // proxy.ts gates /api/tasks behind auth — we still tolerate a missing session
+    // (e.g. internal service calls) by writing nulls into the actor columns.
+    const session = await getSession().catch(() => null);
+    const actor: Actor = {
+      name: session?.name?.trim() || null,
+      email: session?.email?.trim() || null,
+    };
+    // Per-request audit binding so every write attributes to the logged-in user.
+    const audit = (params: { event: string; details?: string; level?: "info" | "success" | "warning" | "error"; ticketId?: string | null }) =>
+      logTaskAudit(sql, wid, { ...params, actor });
+
     const removedExecutionActions = new Set(["approvePlan", "rejectPlan", "startExecution", "retryExecution", "retryFromNeedsRetry"]);
     if (removedExecutionActions.has(action)) {
       return fail("Ticket agent execution has been removed from Boards.", 410);
@@ -210,7 +290,7 @@ export async function POST(request: Request) {
       const description = String(body.description || "").trim();
       if (!name) return fail("Board name is required.");
       const rows = await sql`insert into boards (workspace_id, name, description) values (${wid}, ${name}, ${description || null}) returning *`;
-      await logTaskAudit(sql, wid, { event: 'Board created', details: name, level: 'success' });
+      await audit({ event: 'Board created', details: name, level: 'success' });
       return ok({ board: rows[0] });
     }
 
@@ -220,7 +300,7 @@ export async function POST(request: Request) {
       const description = String(body.description || "").trim();
       if (!boardId || !name) return fail("Board id and name are required.");
       const rows = await sql`update boards set name=${name}, description=${description || null}, updated_at=now() where id=${boardId} returning *`;
-      await logTaskAudit(sql, wid, { event: 'Board updated', details: name, level: 'info' });
+      await audit({ event: 'Board updated', details: name, level: 'info' });
       return ok({ board: rows[0] });
     }
 
@@ -228,7 +308,7 @@ export async function POST(request: Request) {
       const boardId = String(body.boardId || "");
       if (!boardId) return fail("Board id is required.");
       await sql`delete from boards where id=${boardId}`;
-      await logTaskAudit(sql, wid, { event: 'Board deleted', details: boardId, level: 'warning' });
+      await audit({ event: 'Board deleted', details: boardId, level: 'warning' });
       return ok();
     }
 
@@ -241,7 +321,7 @@ export async function POST(request: Request) {
       const posRows = await sql`select coalesce(max(position), -1) + 1 as pos from columns where board_id=${boardId}`;
       const position = Number(posRows[0]?.pos ?? 0);
       const rows = await sql`insert into columns (board_id, title, color_key, is_default, position) values (${boardId}, ${title}, ${colorKey}, ${isDefault}, ${position}) returning *`;
-      await logTaskAudit(sql, wid, { event: 'List created', details: title, level: 'success' });
+      await audit({ event: 'List created', details: title, level: 'success' });
       await sql`select pg_notify('ticket_activity', ${`column:created:${rows[0]?.id || ''}`})`;
       return ok({ column: rows[0] });
     }
@@ -252,7 +332,7 @@ export async function POST(request: Request) {
       const rows = await sql`update columns set title=coalesce(${body.title || null}, title), color_key=coalesce(${body.colorKey || null}, color_key), is_default=coalesce(${body.isDefault ?? null}, is_default), updated_at=now() where id=${columnId} returning *`;
       const updatedCol = rows[0];
       if (updatedCol?.id) {
-        await logTaskAudit(sql, wid, { event: 'List updated', details: updatedCol.title || columnId, level: 'info' });
+        await audit({ event: 'List updated', details: updatedCol.title || columnId, level: 'info' });
         await sql`select pg_notify('ticket_activity', ${`column:updated:${updatedCol.id}`})`;
       }
       return ok({ column: updatedCol });
@@ -262,7 +342,7 @@ export async function POST(request: Request) {
       const columnId = String(body.columnId || "");
       if (!columnId) return fail("Column id is required.");
       await sql`delete from columns where id=${columnId}`;
-      await logTaskAudit(sql, wid, { event: 'List deleted', details: columnId, level: 'warning' });
+      await audit({ event: 'List deleted', details: columnId, level: 'warning' });
       return ok();
     }
 
@@ -277,6 +357,7 @@ export async function POST(request: Request) {
       const boardId = String(body.boardId || "");
       const name = String(body.name || "").trim();
       const color = String(body.color || "#94a3b8").trim() || "#94a3b8";
+      const email = body.email ? String(body.email).trim() || null : null;
       if (!boardId || !name) return fail("Board id and name are required.");
       const initials = name
         .split(/\s+/)
@@ -286,11 +367,11 @@ export async function POST(request: Request) {
         .join("") || name.slice(0, 2).toUpperCase();
       try {
         const rows = await sql`
-          insert into board_assignees (board_id, name, color, initials)
-          values (${boardId}, ${name}, ${color}, ${initials})
+          insert into board_assignees (board_id, name, color, initials, email)
+          values (${boardId}, ${name}, ${color}, ${initials}, ${email})
           returning *
         `;
-        await logTaskAudit(sql, wid, { event: 'Assignee added', details: `${name} on board ${boardId}`, level: 'success' });
+        await audit({ event: 'Assignee added', details: `${name} on board ${boardId}`, level: 'success' });
         return ok({ assignee: rows[0] });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -307,6 +388,9 @@ export async function POST(request: Request) {
       const rawName = body.name === undefined ? null : String(body.name).trim();
       const name = rawName === "" ? null : rawName;
       const color = body.color === undefined ? null : String(body.color).trim() || null;
+      // For email an explicit empty string means "clear it"; undefined means "leave it".
+      const emailProvided = body.email !== undefined;
+      const emailValue = emailProvided ? (String(body.email || "").trim() || null) : null;
       const initials = name
         ? name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase() || "").join("") || name.slice(0, 2).toUpperCase()
         : null;
@@ -316,11 +400,12 @@ export async function POST(request: Request) {
           name = coalesce(${name}, name),
           color = coalesce(${color}, color),
           initials = coalesce(${initials}, initials),
+          email = case when ${emailProvided} then ${emailValue} else email end,
           updated_at = now()
         where id = ${assigneeId}
         returning *
       `;
-      await logTaskAudit(sql, wid, { event: 'Assignee updated', details: rows[0]?.name || assigneeId, level: 'info' });
+      await audit({ event: 'Assignee updated', details: rows[0]?.name || assigneeId, level: 'info' });
       return ok({ assignee: rows[0] });
     }
 
@@ -330,7 +415,7 @@ export async function POST(request: Request) {
       // Remove from all tickets that reference it on this board
       await sql`update tickets set assignee_ids = array_remove(assignee_ids, ${assigneeId}), updated_at = now() where ${assigneeId} = ANY(assignee_ids)`;
       const rows = await sql`delete from board_assignees where id=${assigneeId} returning name`;
-      await logTaskAudit(sql, wid, { event: 'Assignee removed', details: rows[0]?.name || assigneeId, level: 'warning' });
+      await audit({ event: 'Assignee removed', details: rows[0]?.name || assigneeId, level: 'warning' });
       return ok();
     }
 
@@ -371,7 +456,7 @@ export async function POST(request: Request) {
       `;
       const created = rows[0];
       if (created?.id) {
-        await logTaskAudit(sql, wid, { event: 'Ticket created', details: created.title || title, level: 'success' });
+        await audit({ event: 'Ticket created', details: created.title || title, level: 'success' });
       }
       return ok({ ticket: created });
     }
@@ -414,7 +499,7 @@ export async function POST(request: Request) {
       `;
       const updated = rows[0];
       if (updated?.id) {
-        await logTaskAudit(sql, wid, {
+        await audit({
           event: 'Ticket updated',
           details: updated.title || String(body.title || '') || ticketId,
           level: 'info',
@@ -429,7 +514,7 @@ export async function POST(request: Request) {
       if (!ticketId) return fail("Ticket id is required.");
       await sql`delete from tickets where id=${ticketId}`;
       // Note: ticket_activity entry is created by the UI hook — only log to activity_logs/agent_logs here
-      await logTaskAudit(sql, wid, { event: 'Ticket deleted', details: ticketId, level: 'warning' });
+      await audit({ event: 'Ticket deleted', details: ticketId, level: 'warning' });
       return ok();
     }
 
@@ -448,7 +533,7 @@ export async function POST(request: Request) {
       const toColRows = await sql`select title from columns where id=${toColumnId} limit 1`;
       const fromColTitle = String(fromColRows[0]?.title || 'Unknown');
       const toColTitle = String(toColRows[0]?.title || 'Unknown');
-      await logTaskAudit(sql, wid, { event: 'Moved ticket', details: `Moved from ${fromColTitle} to ${toColTitle}.`, level: 'info', ticketId });
+      await audit({ event: 'Moved ticket', details: `Moved from ${fromColTitle} to ${toColTitle}.`, level: 'info', ticketId });
 
       if (beforeTicketId) {
         const beforeRows = await sql`select position from tickets where id=${beforeTicketId} limit 1`;
@@ -604,9 +689,44 @@ export async function POST(request: Request) {
       const ticketId = String(body.ticketId || "");
       const content = String(body.content || "").trim();
       if (!ticketId || !content) return fail("Ticket and content are required.");
-      const rows = await sql`insert into ticket_comments (ticket_id, author_name, content) values (${ticketId}, 'Operator', ${content}) returning *`;
+      const authorName = actor.name || "Operator";
+      const authorId = session?.sub || null;
+      const commentRows = await sql`insert into ticket_comments (ticket_id, author_id, author_name, content) values (${ticketId}, ${authorId}, ${authorName}, ${content}) returning *`;
+      const comment = commentRows[0];
       await sql`update tickets set comments_count = coalesce((select count(*) from ticket_comments where ticket_id=${ticketId}), 0), updated_at=now() where id=${ticketId}`;
-      return ok({ comment: rows[0] });
+
+      // Resolve the ticket's board so we know which assignees are eligible to be mentioned.
+      const ticketCtx = await sql`select board_id from tickets where id=${ticketId} limit 1`;
+      const boardId = ticketCtx[0]?.board_id as string | undefined;
+      if (boardId) {
+        const boardAssignees = await sql`
+          select id, name, email from board_assignees
+          where board_id = ${boardId} and email is not null and email <> ''
+        ` as Array<{ id: string; name: string; email: string }>;
+        const mentioned = extractMentions(content, boardAssignees);
+        // Don't notify yourself when you @ yourself.
+        const selfEmail = actor.email?.toLowerCase() || null;
+        const preview = content.length > 240 ? `${content.slice(0, 237)}...` : content;
+        for (const target of mentioned) {
+          if (selfEmail && target.email.toLowerCase() === selfEmail) continue;
+          const notifInsert = await sql`
+            insert into notifications (
+              workspace_id, recipient_email, recipient_sub, kind,
+              actor_name, actor_email, board_id, ticket_id, comment_id, preview
+            ) values (
+              ${wid}, ${target.email}, ${null}, 'mention',
+              ${actor.name}, ${actor.email}, ${boardId}, ${ticketId}, ${comment?.id || null}, ${preview}
+            )
+            returning id::text
+          `;
+          const notifId = notifInsert[0]?.id;
+          if (notifId) {
+            await sql`select pg_notify('notification', ${notifId})`;
+          }
+        }
+      }
+
+      return ok({ comment });
     }
 
     if (action === "deleteComment") {
@@ -637,6 +757,8 @@ export async function POST(request: Request) {
           ta.event,
           ta.details,
           ta.level,
+          ta.actor_name,
+          ta.actor_email,
           ta.occurred_at,
           t.title as ticket_title
         from ticket_activity ta
@@ -763,7 +885,7 @@ export async function POST(request: Request) {
       }
 
       const workerSettings = await getWorkerSettings(sql);
-      await logTaskAudit(sql, wid, {
+      await audit({
         event: "Worker settings updated",
         details: `enabled=${workerSettings.enabled}, interval=${workerSettings.pollIntervalSeconds}s, concurrency=${workerSettings.maxConcurrency}`,
         level: "info",

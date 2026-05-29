@@ -25,24 +25,27 @@ type Props = {
   open: boolean;
   boardName: string;
   assignees: Assignee[];
-  onCreate: (name: string, color: string) => Promise<{ ok: boolean; error?: string }>;
-  onUpdate: (assigneeId: string, name: string, color: string) => Promise<{ ok: boolean; error?: string }>;
+  onCreate: (name: string, color: string, email: string) => Promise<{ ok: boolean; error?: string }>;
+  onUpdate: (assigneeId: string, name: string, color: string, email: string) => Promise<{ ok: boolean; error?: string }>;
   onDelete: (assigneeId: string) => Promise<{ ok: boolean; error?: string }>;
   onClose: () => void;
 };
 
 export function ManageAssigneesModal({ open, boardName, assignees, onCreate, onUpdate, onDelete, onClose }: Props) {
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [color, setColor] = useState(SWATCHES[0]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
   const [editColor, setEditColor] = useState(SWATCHES[0]);
 
   useEffect(() => {
     if (!open) {
       setName("");
+      setEmail("");
       setColor(SWATCHES[0]);
       setError("");
       setEditingId(null);
@@ -57,19 +60,21 @@ export function ManageAssigneesModal({ open, boardName, assignees, onCreate, onU
     }
     setBusy(true);
     setError("");
-    const result = await onCreate(trimmed, color);
+    const result = await onCreate(trimmed, color, email.trim());
     setBusy(false);
     if (!result.ok) {
       setError(result.error || "Failed to add assignee.");
       return;
     }
     setName("");
+    setEmail("");
     setColor(SWATCHES[0]);
   };
 
   const startEdit = (a: Assignee) => {
     setEditingId(a.id);
     setEditName(a.name);
+    setEditEmail(a.email ?? "");
     setEditColor(a.color);
   };
 
@@ -87,7 +92,7 @@ export function ManageAssigneesModal({ open, boardName, assignees, onCreate, onU
     }
     setBusy(true);
     setError("");
-    const result = await onUpdate(editingId, trimmed, editColor);
+    const result = await onUpdate(editingId, trimmed, editColor, editEmail.trim());
     setBusy(false);
     if (!result.ok) {
       setError(result.error || "Failed to update assignee.");
@@ -118,8 +123,8 @@ export function ManageAssigneesModal({ open, boardName, assignees, onCreate, onU
 
         <div className="flex flex-col gap-3 py-2">
           <div className="rounded-md border bg-muted/30 p-3">
-            <div className="flex items-end gap-2">
-              <div className="flex-1">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
                 <Label htmlFor="ma-name" className="mb-1.5 block text-xs">Name</Label>
                 <Input
                   id="ma-name"
@@ -129,6 +134,21 @@ export function ManageAssigneesModal({ open, boardName, assignees, onCreate, onU
                   onKeyDown={(e) => { if (e.key === "Enter") void handleAdd(); }}
                 />
               </div>
+              <div>
+                <Label htmlFor="ma-email" className="mb-1.5 block text-xs">
+                  Email <span className="text-muted-foreground/60">(optional, enables mentions)</span>
+                </Label>
+                <Input
+                  id="ma-email"
+                  type="email"
+                  placeholder="alex@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void handleAdd(); }}
+                />
+              </div>
+            </div>
+            <div className="mt-2 flex justify-end">
               <Button onClick={() => void handleAdd()} disabled={busy} size="sm" className="gap-1.5">
                 <PlusIcon className="h-4 w-4" /> Add
               </Button>
@@ -177,6 +197,18 @@ export function ManageAssigneesModal({ open, boardName, assignees, onCreate, onU
                               if (e.key === "Escape") cancelEdit();
                             }}
                             className="h-8"
+                            placeholder="Name"
+                          />
+                          <Input
+                            type="email"
+                            value={editEmail}
+                            onChange={(e) => setEditEmail(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void commitEdit();
+                              if (e.key === "Escape") cancelEdit();
+                            }}
+                            className="h-8"
+                            placeholder="Email (optional)"
                           />
                           <div className="flex flex-wrap gap-1">
                             {SWATCHES.map((swatch) => (
@@ -209,7 +241,12 @@ export function ManageAssigneesModal({ open, boardName, assignees, onCreate, onU
                         >
                           {a.initials}
                         </div>
-                        <span className="flex-1 truncate text-sm">{a.name}</span>
+                        <div className="flex flex-1 min-w-0 flex-col">
+                          <span className="truncate text-sm">{a.name}</span>
+                          {a.email && (
+                            <span className="truncate text-[10px] text-muted-foreground">{a.email}</span>
+                          )}
+                        </div>
                         <Button size="icon-sm" variant="ghost" onClick={() => startEdit(a)} aria-label={`Edit ${a.name}`}>
                           <PencilIcon className="h-4 w-4" />
                         </Button>

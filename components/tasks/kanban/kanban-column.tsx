@@ -19,6 +19,11 @@ type Props = {
   column: Column;
   tickets: Ticket[];
   allTicketIds: string[];
+  totalVisible?: number;
+  hiddenCount?: number;
+  isExpanded?: boolean;
+  onShowMore?: () => void;
+  onCollapse?: () => void;
   assigneeById: Record<string, Assignee>;
   isActive?: boolean;
   onAddTask: () => void;
@@ -47,6 +52,11 @@ export function KanbanColumn({
   column,
   tickets,
   allTicketIds,
+  totalVisible,
+  hiddenCount = 0,
+  isExpanded = false,
+  onShowMore,
+  onCollapse,
   assigneeById,
   isActive,
   onAddTask,
@@ -94,7 +104,11 @@ export function KanbanColumn({
       >
         <span className={cn("h-2 w-2 rounded-full shrink-0", toneColor[column.tone])} />
         <span className="flex-1 text-sm font-semibold text-foreground truncate">{column.title}</span>
-        <span className="text-xs text-muted-foreground tabular-nums">{tickets.length}</span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {totalVisible !== undefined && totalVisible !== tickets.length
+            ? `${tickets.length} / ${totalVisible}`
+            : tickets.length}
+        </span>
         <div
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
@@ -146,6 +160,32 @@ export function KanbanColumn({
           </div>
         </SortableContext>
       </ScrollArea>
+
+      {/* Pagination footer */}
+      {hiddenCount > 0 && onShowMore && (
+        <div className="px-2 pt-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full justify-center text-xs h-7"
+            onClick={onShowMore}
+          >
+            Show {hiddenCount} more
+          </Button>
+        </div>
+      )}
+      {isExpanded && onCollapse && (
+        <div className="px-2 pt-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-center text-muted-foreground text-xs h-7"
+            onClick={onCollapse}
+          >
+            Show less
+          </Button>
+        </div>
+      )}
 
       {/* Footer */}
       <div className="p-2 border-t">

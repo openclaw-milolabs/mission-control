@@ -306,6 +306,8 @@ const toTicketActivity = (row: TicketActivityRecord): TicketActivity => ({
   event: row.event,
   details: row.details,
   level: row.level,
+  actorName: row.actorName ?? null,
+  actorEmail: row.actorEmail ?? null,
   occurredAt: row.occurredAt,
 });
 
@@ -374,6 +376,12 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
   const [sort, setSort] = useState<SortMode>("newest");
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  // Assignee filter: empty Set = no filter (show all). Sentinel "__unassigned__"
+  // matches tickets with empty assignee_ids.
+  const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(() => new Set<string>());
+  // Per-column pagination cap: render up to LIST_PAGE_SIZE tickets per column by default;
+  // user can expand a column to see the rest. Prevents 130-ticket walls of cards.
+  const [expandedColumnIds, setExpandedColumnIds] = useState<Set<string>>(() => new Set<string>());
   const [modal, setModal] = useState<ModalKind>(null);
   const [discardTarget, setDiscardTarget] = useState<"create" | "details" | null>(null);
   const [createForm, setCreateForm] = useState<CreateTicketForm>(() => emptyCreateForm(""));
@@ -515,21 +523,45 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
   const ticketsList = useMemo(() => Object.values(board.tickets), [board.tickets]);
 
   const filteredTicketIds = useMemo(() => {
-    if (!searchQuery) return new Set<string>(ticketsList.map((ticket) => ticket.id));
+    const hasSearch = Boolean(searchQuery);
+    const hasAssigneeFilter = assigneeFilter.size > 0;
+    if (!hasSearch && !hasAssigneeFilter) {
+      return new Set<string>(ticketsList.map((ticket) => ticket.id));
+    }
     return new Set<string>(
       ticketsList
         .filter((ticket) => {
-          const names = ticket.assigneeIds
-            .map((id) => resolveAssigneeName(id))
-            .join(" ");
-          const haystack = [ticket.title, ticket.description, ticket.tags.join(" "), names]
-            .join(" ")
-            .toLowerCase();
-          return haystack.includes(searchQuery);
+          if (hasAssigneeFilter) {
+            const wantsUnassigned = assigneeFilter.has("__unassigned__");
+            const hasAny = ticket.assigneeIds.length > 0;
+            const matchesNamed = ticket.assigneeIds.some((id) => assigneeFilter.has(id));
+            const matchesUnassigned = wantsUnassigned && !hasAny;
+            if (!matchesNamed && !matchesUnassigned) return false;
+          }
+          if (hasSearch) {
+            const names = ticket.assigneeIds
+              .map((id) => resolveAssigneeName(id))
+              .join(" ");
+            const haystack = [ticket.title, ticket.description, ticket.tags.join(" "), names]
+              .join(" ")
+              .toLowerCase();
+            if (!haystack.includes(searchQuery)) return false;
+          }
+          return true;
         })
         .map((ticket) => ticket.id),
     );
-  }, [resolveAssigneeName, searchQuery, ticketsList]);
+  }, [assigneeFilter, resolveAssigneeName, searchQuery, ticketsList]);
+
+  const toggleAssigneeFilter = useCallback((assigneeId: string) => {
+    setAssigneeFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(assigneeId)) next.delete(assigneeId);
+      else next.add(assigneeId);
+      return next;
+    });
+  }, []);
+  const clearAssigneeFilter = useCallback(() => setAssigneeFilter(new Set<string>()), []);
 
   const sortedFilteredTickets = useMemo(() => {
     return ticketsList
@@ -555,6 +587,43 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
     }
     return result;
   }, [board.columnOrder, board.ticketIdsByColumn, filteredTicketIds]);
+
+  const LIST_PAGE_SIZE = 25;
+  // After filtering, cap rendering per column unless the user expanded it.
+  // `hiddenCountByColumn` is what the UI needs to render "Show more (N hidden)".
+  const renderedTicketIdsByColumn = useMemo(() => {
+    const result: Record<string, string[]> = {};
+    for (const columnId of board.columnOrder) {
+      const full = visibleTicketIdsByColumn[columnId] ?? [];
+      result[columnId] = expandedColumnIds.has(columnId) ? full : full.slice(0, LIST_PAGE_SIZE);
+    }
+    return result;
+  }, [board.columnOrder, expandedColumnIds, visibleTicketIdsByColumn]);
+
+  const hiddenCountByColumn = useMemo(() => {
+    const result: Record<string, number> = {};
+    for (const columnId of board.columnOrder) {
+      const total = (visibleTicketIdsByColumn[columnId] ?? []).length;
+      const rendered = (renderedTicketIdsByColumn[columnId] ?? []).length;
+      result[columnId] = Math.max(0, total - rendered);
+    }
+    return result;
+  }, [board.columnOrder, visibleTicketIdsByColumn, renderedTicketIdsByColumn]);
+
+  const expandColumn = useCallback((columnId: string) => {
+    setExpandedColumnIds((prev) => {
+      const next = new Set(prev);
+      next.add(columnId);
+      return next;
+    });
+  }, []);
+  const collapseColumn = useCallback((columnId: string) => {
+    setExpandedColumnIds((prev) => {
+      const next = new Set(prev);
+      next.delete(columnId);
+      return next;
+    });
+  }, []);
 
   const createDirty = useMemo(
     () =>
@@ -2357,6 +2426,15 @@ export function useTasks({ initialBoardId, initialBoards, assigneesByBoardId }: 
     filteredTicketIds,
     sortedFilteredTickets,
     visibleTicketIdsByColumn,
+    renderedTicketIdsByColumn,
+    hiddenCountByColumn,
+    expandColumn,
+    collapseColumn,
+    expandedColumnIds,
+    listPageSize: LIST_PAGE_SIZE,
+    assigneeFilter,
+    toggleAssigneeFilter,
+    clearAssigneeFilter,
     totalVisible: sortedFilteredTickets.length,
     openCreateModal,
     openDetailsModal,

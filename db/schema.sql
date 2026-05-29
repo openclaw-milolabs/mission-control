@@ -145,8 +145,12 @@ create table if not exists ticket_activity (
   event text not null,
   details text not null default '',
   level text not null default 'info',
+  actor_name text,
+  actor_email text,
   occurred_at timestamptz not null default now()
 );
+alter table ticket_activity add column if not exists actor_name text;
+alter table ticket_activity add column if not exists actor_email text;
 
 create table if not exists board_assignees (
   id uuid primary key default gen_random_uuid(),
@@ -154,11 +158,37 @@ create table if not exists board_assignees (
   name text not null,
   color text not null default '#94a3b8',
   initials text,
+  email text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (board_id, name)
 );
 create index if not exists board_assignees_board_id_idx on board_assignees(board_id);
+alter table board_assignees add column if not exists email text;
+create index if not exists board_assignees_email_idx on board_assignees(lower(email)) where email is not null;
+
+-- In-app bell notifications. Lookup is by recipient_email so it ties to the
+-- session user's email; recipient_sub may be filled in later as users log in.
+create table if not exists notifications (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references workspaces(id) on delete cascade,
+  recipient_email text not null,
+  recipient_sub text,
+  kind text not null default 'mention',
+  actor_name text,
+  actor_email text,
+  board_id uuid references boards(id) on delete cascade,
+  ticket_id uuid references tickets(id) on delete cascade,
+  comment_id uuid references ticket_comments(id) on delete cascade,
+  preview text not null default '',
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists notifications_recipient_unread_idx
+  on notifications(lower(recipient_email), created_at desc)
+  where read_at is null;
+create index if not exists notifications_recipient_recent_idx
+  on notifications(lower(recipient_email), created_at desc);
 
 -- One-shot data migration: clear legacy runtime-agent assignee_ids on tickets.
 -- Tickets used to reference runtime agent IDs; switching to board-scoped custom
@@ -235,8 +265,12 @@ create table if not exists activity_logs (
   event text not null,
   details text not null default '',
   level text not null default 'info',
+  actor_name text,
+  actor_email text,
   created_at timestamptz not null default now()
 );
+alter table activity_logs add column if not exists actor_name text;
+alter table activity_logs add column if not exists actor_email text;
 
 create table if not exists notification_channels (
   id uuid primary key default gen_random_uuid(),

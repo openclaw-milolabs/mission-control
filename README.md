@@ -2,11 +2,13 @@
 
 **The OpenClaw native dashboard** — manage scheduled agenda tasks, multi-step processes, Kanban boards, agent logs, file browsing, and system settings from a single UI.
 
-**Version 3.3.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
+**Version 3.5.3** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
 
-> **Latest changes (2026-04-09):** CPU audit — watchdog bash spin fixed (variables now serialized via `declare -p`), `cache.ts` rewritten to read local files instead of spawning CLI subprocesses (~10s → 22ms), agenda-scheduler orphan sweep throttled from every 15s to every 5min. Total MC CPU: ~30% → ~3.5%.
+> **Latest changes (2026-05-29):** Kanban sprint — board assignees gained an `email` column tying them to logged-in users; `@<assignee>` mentions in comments fan out into a new `notifications` table; in-app bell in the sidebar with unread badge, per-row read, live SSE updates and click-to-open-ticket. Every activity / audit row now carries the logged-in user's name and email (`actor_name`/`actor_email`). New Assignee filter dropdown on the boards toolbar (multi-select + Unassigned). Kanban columns cap at 25 tickets with Show more / Show less. Comment input has inline `@` autocomplete. Trello feature-gap research doc at [docs/trello-feature-gap.md](docs/trello-feature-gap.md). See [CHANGELOG.md](./CHANGELOG.md) for full list.
 
-> **Previous (2026-04-07):** Kanban overhaul — sidebar Live Activity no longer puts `?ticket=` in the URL (custom DOM event flow), `updateTicket` preserves execution state, full `ticket_activity` audit on save/move, `createTicket` `process_version_ids` crash fixed, Kanban test panel removed, ticket card and modal UI redesigned.
+> **Previous (2026-04-18):** File-manager dual-root reverted to single-root; agenda "Output folder" card now opens directly in the file manager. Altinstar social post guides hardened.
+
+> **Earlier (2026-04-07):** Kanban overhaul — sidebar Live Activity no longer puts `?ticket=` in the URL (custom DOM event flow), `updateTicket` preserves execution state, full `ticket_activity` audit on save/move, `createTicket` `process_version_ids` crash fixed, Kanban test panel removed, ticket card and modal UI redesigned.
 
 > **No Redis. No BullMQ.** Execution is handled natively by the OpenClaw cron engine (v2+).
 

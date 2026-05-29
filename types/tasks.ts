@@ -7,6 +7,7 @@ export type Assignee = {
   name: string;
   initials: string;
   color: string;
+  email?: string | null;
   source?: "static" | "runtime";
 };
 
@@ -101,6 +102,8 @@ export type TicketActivity = {
   event: string;
   details: string;
   level: "info" | "success" | "warning" | "error";
+  actorName: string | null;
+  actorEmail: string | null;
   occurredAt: string;
 };
 

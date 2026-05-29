@@ -105,6 +105,8 @@ type TicketActivityRow = {
   event: string;
   details: string;
   level: TicketActivityRecord["level"];
+  actor_name: string | null;
+  actor_email: string | null;
   occurred_at: string;
 };
 
@@ -407,6 +409,8 @@ const adapter: TaskDataAdapter = {
       event: row.event,
       details: row.details,
       level: row.level,
+      actorName: row.actor_name ?? null,
+      actorEmail: row.actor_email ?? null,
       occurredAt: row.occurred_at,
     })) as TicketActivityRecord[];
   },
@@ -421,6 +425,8 @@ const adapter: TaskDataAdapter = {
       event: row.event,
       details: row.details,
       level: row.level,
+      actorName: row.actor_name ?? null,
+      actorEmail: row.actor_email ?? null,
       occurredAt: row.occurred_at,
     } as TicketActivityRecord;
   },

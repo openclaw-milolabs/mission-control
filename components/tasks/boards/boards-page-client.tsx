@@ -15,8 +15,10 @@ import { TicketDetailsModal } from "@/components/tasks/modals/ticket-details-mod
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
@@ -105,7 +107,7 @@ type Props = {
   } | null;
 };
 
-type RawBoardAssignee = { id: string; board_id: string; name: string; color: string; initials: string | null };
+type RawBoardAssignee = { id: string; board_id: string; name: string; color: string; initials: string | null; email: string | null };
 
 function deriveInitials(name: string): string {
   const parts = name.split(/\s+/).filter(Boolean).slice(0, 2);
@@ -122,6 +124,7 @@ function groupAssigneesByBoard(rows: RawBoardAssignee[]): Record<string, Assigne
       name: row.name,
       initials: row.initials || deriveInitials(row.name),
       color: row.color,
+      email: row.email,
     });
   }
   return out;
@@ -176,15 +179,15 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
 
   const boardParam = searchParams.get("board");
 
-  const handleCreateAssignee = async (name: string, color: string) => {
+  const handleCreateAssignee = async (name: string, color: string, email: string) => {
     if (!tasks.activeBoardId) return { ok: false, error: "No active board." };
-    const res = await postTasks({ action: "createBoardAssignee", boardId: tasks.activeBoardId, name, color });
+    const res = await postTasks({ action: "createBoardAssignee", boardId: tasks.activeBoardId, name, color, email });
     if (res.ok) await reloadAssignees();
     return { ok: res.ok, error: res.error };
   };
 
-  const handleUpdateAssignee = async (assigneeId: string, name: string, color: string) => {
-    const res = await postTasks({ action: "updateBoardAssignee", assigneeId, name, color });
+  const handleUpdateAssignee = async (assigneeId: string, name: string, color: string, email: string) => {
+    const res = await postTasks({ action: "updateBoardAssignee", assigneeId, name, color, email });
     if (res.ok) await reloadAssignees();
     return { ok: res.ok, error: res.error };
   };
@@ -567,6 +570,79 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
                     </DropdownMenuContent>
                   </DropdownMenu>
 
+                  {(() => {
+                    const filterCount = tasks.assigneeFilter.size;
+                    const boardAssignees = assigneesByBoardId[tasks.activeBoardId] ?? [];
+                    return (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant={filterCount > 0 ? "outline" : "ghost"}
+                            size="sm"
+                            className="gap-1.5"
+                            id="workspace-assignee-filter-trigger"
+                          >
+                            Assignee
+                            {filterCount > 0 && (
+                              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-foreground/10 px-1 text-[10px] font-medium tabular-nums">
+                                {filterCount}
+                              </span>
+                            )}
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-60">
+                          <DropdownMenuLabel className="text-xs">Filter by assignee</DropdownMenuLabel>
+                          <DropdownMenuSeparator />
+                          {boardAssignees.length === 0 ? (
+                            <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                              No assignees on this board.
+                            </p>
+                          ) : (
+                            <>
+                              <DropdownMenuCheckboxItem
+                                checked={tasks.assigneeFilter.has("__unassigned__")}
+                                onCheckedChange={() => tasks.toggleAssigneeFilter("__unassigned__")}
+                                onSelect={(e) => e.preventDefault()}
+                              >
+                                <span className="text-muted-foreground italic">Unassigned</span>
+                              </DropdownMenuCheckboxItem>
+                              <DropdownMenuSeparator />
+                              {boardAssignees.map((a) => (
+                                <DropdownMenuCheckboxItem
+                                  key={a.id}
+                                  checked={tasks.assigneeFilter.has(a.id)}
+                                  onCheckedChange={() => tasks.toggleAssigneeFilter(a.id)}
+                                  onSelect={(e) => e.preventDefault()}
+                                >
+                                  <span className="flex items-center gap-2">
+                                    <span
+                                      className="flex size-4 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+                                      style={{ backgroundColor: a.color }}
+                                    >
+                                      {a.initials}
+                                    </span>
+                                    <span className="truncate">{a.name}</span>
+                                  </span>
+                                </DropdownMenuCheckboxItem>
+                              ))}
+                              {filterCount > 0 && (
+                                <>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    onSelect={() => tasks.clearAssigneeFilter()}
+                                    className="text-xs text-muted-foreground"
+                                  >
+                                    Clear filter
+                                  </DropdownMenuItem>
+                                </>
+                              )}
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    );
+                  })()}
+
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" id="workspace-filter-dropdown-trigger">
@@ -759,6 +835,11 @@ export function BoardsPageClient({ initialBoardId, initialBoards, initialAssigne
                       board={tasks.board}
                       assigneeById={tasks.assigneeById}
                       visibleTicketIdsByColumn={tasks.visibleTicketIdsByColumn}
+                      renderedTicketIdsByColumn={tasks.renderedTicketIdsByColumn}
+                      hiddenCountByColumn={tasks.hiddenCountByColumn}
+                      onExpandColumn={tasks.expandColumn}
+                      onCollapseColumn={tasks.collapseColumn}
+                      expandedColumnIds={tasks.expandedColumnIds}
                       onAddTask={tasks.openCreateModal}
                       canDeleteList={tasks.canDeleteList}
                       onDeleteList={tasks.handleDeleteList}

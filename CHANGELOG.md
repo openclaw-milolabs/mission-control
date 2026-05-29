@@ -3,6 +3,24 @@
 All notable changes to Mission Control are documented here.
 
 
+## [3.5.3] - 2026-05-29
+
+### Added
+- **Per-board custom assignees now carry an email.** `board_assignees` gained an `email` column. The Manage Assignees modal has a Name + Email side-by-side form, and the inline edit row exposes the same. Email is what ties a board assignee to a real logged-in user for @mentions.
+- **@mention parsing in comments.** When you post a comment containing `@<assignee name>` (greedy longest-match against board assignees), the server resolves it via `extractMentions()` and inserts one row into the new `notifications` table per resolved email. Self-mentions are dropped. Comment input has an inline autocomplete dropdown — type `@` and matching board assignees with email show up; Enter or click inserts.
+- **In-app notifications bell.** New bell icon in the app sidebar header with unread count badge. Popover shows recent mentions ("X mentioned you in <ticket>"), per-row read state with a blue dot, and a "Mark all read" action. Click a row to jump to the ticket via the existing `mc:open-ticket` event. Live updates over the existing `/api/events` SSE stream — new `notification` channel scoped per session email.
+- **New API surfaces.** `GET /api/notifications/inbox` returns up to 30 rows scoped to `lower(session.email)` with unread count; `POST /api/notifications/inbox` accepts `markRead` / `markAllRead`. The inbox endpoint backfills `recipient_sub` on first read so future delivery can include the Azure AD subject.
+- **Actor attribution on every audit log.** `ticket_activity` and `activity_logs` gained `actor_name` and `actor_email`. POST `/api/tasks` resolves the current session once and binds an `audit()` closure used by every event write, so board / list / ticket / assignee / move / delete events all carry the logged-in user's name. Ticket comments now persist the session user's name and `sub` instead of the hardcoded `Operator`. The board activity feed and the ticket modal's Activity tab render "by <name>" on each row.
+- **Filter tickets by assignee.** New "Assignee" dropdown in the workspace toolbar with checkbox multi-select and color swatches. Includes a sentinel "Unassigned" option and a "Clear filter" action. Filter state combines with the existing search.
+- **Per-list pagination on Kanban.** `useTasks` now caps each column to 25 rendered tickets by default with `Show N more` / `Show less` buttons in the column footer. Header counter shows `25 / 130` on capped columns. Prevents 130-ticket walls on busy boards.
+- **Trello feature-gap research doc** at `docs/trello-feature-gap.md` — tiered comparison of Trello vs MC board surfaces (board / list / card / cross-cutting), ranked by user-pain × effort, with concrete recommended next-three after this sprint (per-board labels, archive-vs-delete, card watchers).
+
+### Database
+- New table `notifications` (workspace-scoped, email-recipient-scoped, with `read_at`, `kind`, actor + board / ticket / comment refs). Two indexes — one partial on unread rows, one on recent rows — both keyed by `lower(recipient_email)`.
+- `board_assignees.email` text column + `lower(email)` partial index.
+- `ticket_activity` and `activity_logs` gained `actor_name`, `actor_email`.
+- All migrations are idempotent and exist in both `db/schema.sql` (canonical, applied by `update.sh` / `npm run db:migrate`) and as boot safety nets in `app/api/tasks/route.ts`.
+
 ## [3.5.2] - 2026-04-18
 
 ### Fixed

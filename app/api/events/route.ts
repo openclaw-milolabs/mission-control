@@ -1,4 +1,5 @@
 import { getSql } from "@/lib/local-db";
+import { getSession } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,12 @@ export async function GET() {
 
   let keepAlive: ReturnType<typeof setInterval> | null = null;
   let listenerActivity: { unlisten: () => Promise<void> } | null = null;
+  let listenerNotification: { unlisten: () => Promise<void> } | null = null;
   let closed = false;
+
+  // Capture the current user once at stream start so we can scope notification fanout.
+  const session = await getSession().catch(() => null);
+  const recipientEmail = session?.email?.toLowerCase() || null;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -23,6 +29,8 @@ export async function GET() {
         keepAlive = null;
         if (listenerActivity) await listenerActivity.unlisten().catch(() => {});
         listenerActivity = null;
+        if (listenerNotification) await listenerNotification.unlisten().catch(() => {});
+        listenerNotification = null;
         try { controller.close(); } catch { /* already closed */ }
       };
 
@@ -56,6 +64,8 @@ export async function GET() {
               ta.event,
               ta.details,
               ta.level,
+              ta.actor_name,
+              ta.actor_email,
               ta.occurred_at,
               t.title as ticket_title,
               t.board_id
@@ -71,6 +81,41 @@ export async function GET() {
           // ignore
         }
       });
+
+      // Listen for notifications scoped to this session user.
+      if (recipientEmail) {
+        listenerNotification = await sql.listen("notification", async (payload) => {
+          const id = String(payload || "").trim();
+          if (!id) return;
+          try {
+            const rows = await sql`
+              select
+                n.id,
+                n.kind,
+                n.actor_name,
+                n.actor_email,
+                n.board_id,
+                n.ticket_id,
+                n.comment_id,
+                n.preview,
+                n.read_at,
+                n.created_at,
+                t.title as ticket_title,
+                b.name as board_name
+              from notifications n
+              left join tickets t on t.id = n.ticket_id
+              left join boards b on b.id = n.board_id
+              where n.id::text = ${id} and lower(n.recipient_email) = ${recipientEmail}
+              limit 1
+            `;
+            const row = rows[0] || null;
+            if (!row) return;
+            await send(sse({ row }, "notification"));
+          } catch {
+            // ignore
+          }
+        });
+      }
     },
     async cancel() {
       closed = true;
@@ -78,6 +123,8 @@ export async function GET() {
       keepAlive = null;
       if (listenerActivity) await listenerActivity.unlisten().catch(() => {});
       listenerActivity = null;
+      if (listenerNotification) await listenerNotification.unlisten().catch(() => {});
+      listenerNotification = null;
     },
   });
 

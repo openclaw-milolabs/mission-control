@@ -12,6 +12,7 @@ import {
   XCircleIcon,
   InfoIcon,
   BotIcon,
+  UserIcon,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -24,6 +25,8 @@ export type LiveLog = {
   event?: string;
   details?: string;
   level?: string;
+  actor_name?: string | null;
+  actor_email?: string | null;
   occurred_at?: string;
 };
 
@@ -180,11 +183,25 @@ export function BoardActivityFeed({ activity, loading, onTicketClick }: Props) {
                     </p>
                   )}
 
-                  {/* Source badge */}
-                  {entry.source && !isWorker && (
-                    <div className="flex items-center gap-1 mt-1 pl-5">
-                      <BotIcon className="size-2.5 text-muted-foreground/50" />
-                      <span className="text-[9px] text-muted-foreground/60">{entry.source}</span>
+                  {/* Actor + source badge */}
+                  {(entry.actor_name || (entry.source && !isWorker)) && (
+                    <div className="flex items-center gap-1.5 mt-1 pl-5 text-[9px] text-muted-foreground/70">
+                      {entry.actor_name ? (
+                        <span
+                          className="inline-flex items-center gap-1"
+                          title={entry.actor_email || undefined}
+                        >
+                          <UserIcon className="size-2.5 text-muted-foreground/60" />
+                          <span className="font-medium text-muted-foreground">{entry.actor_name}</span>
+                        </span>
+                      ) : null}
+                      {entry.source && !isWorker && (
+                        <span className="inline-flex items-center gap-1">
+                          {entry.actor_name ? <span className="text-muted-foreground/30">·</span> : null}
+                          <BotIcon className="size-2.5 text-muted-foreground/50" />
+                          <span className="text-muted-foreground/60">{entry.source}</span>
+                        </span>
+                      )}
                     </div>
                   )}
 

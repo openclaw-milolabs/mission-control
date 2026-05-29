@@ -18,6 +18,7 @@ import {
 import { NavMain } from "@/components/layout/nav-main"
 import { NavActivity } from "@/components/layout/nav-activity"
 import { NavUser } from "@/components/layout/nav-user"
+import { NotificationsBell } from "@/components/notifications/notifications-bell"
 import {
   Sidebar,
   SidebarContent,
@@ -134,15 +135,18 @@ export function AppSidebar({ initialUser, showActivity = true, ...props }: AppSi
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              asChild
-              className="data-[slot=sidebar-menu-button]:p-1.5!"
-            >
-              <a href="#">
-                <IconInnerShadowTop className="size-5!" />
-                <span className="text-base font-semibold">{instanceName || "\u00A0"}</span>
-              </a>
-            </SidebarMenuButton>
+            <div className="flex items-center gap-1.5 pr-1.5">
+              <SidebarMenuButton
+                asChild
+                className="data-[slot=sidebar-menu-button]:p-1.5! flex-1"
+              >
+                <a href="#">
+                  <IconInnerShadowTop className="size-5!" />
+                  <span className="text-base font-semibold">{instanceName || "\u00A0"}</span>
+                </a>
+              </SidebarMenuButton>
+              <NotificationsBell />
+            </div>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
