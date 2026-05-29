@@ -17,6 +17,7 @@ import {
 import { TicketDocumentsSection } from "@/components/tasks/modals/ticket-documents-section";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
@@ -862,41 +863,65 @@ export function TicketDetailsModal({
                   <p className="text-xs text-muted-foreground">
                     No assignees on this board. Open <span className="font-medium text-foreground">Board ▸ Manage assignees</span> to add some.
                   </p>
-                ) : (
-                  <div className="flex flex-wrap gap-1.5">
-                    {assignees.map((a) => {
-                      const selected = form.assigneeIds.includes(a.id);
-                      return (
+                ) : (() => {
+                  const selectedAssignees = assignees.filter((a) => form.assigneeIds.includes(a.id));
+                  return (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
                         <button
-                          key={a.id}
                           type="button"
-                          onClick={() => {
-                            const next = selected
-                              ? form.assigneeIds.filter((id) => id !== a.id)
-                              : [...form.assigneeIds, a.id];
-                            onChange({ assigneeIds: next });
-                          }}
-                          className={cn(
-                            "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-sm transition-colors",
-                            selected
-                              ? "border-foreground/40 bg-foreground/5 font-medium text-foreground"
-                              : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
-                          )}
-                          aria-pressed={selected}
-                          title={selected ? `Unassign ${a.name}` : `Assign ${a.name}`}
+                          className="flex w-full items-center gap-2 rounded-md border bg-background px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-accent"
                         >
-                          <span
-                            className="flex size-6 items-center justify-center rounded-full text-[10px] font-semibold text-white"
-                            style={{ backgroundColor: a.color }}
-                          >
-                            {a.initials}
-                          </span>
-                          <span className="truncate max-w-[140px]">{a.name}</span>
+                          {selectedAssignees.length === 0 ? (
+                            <span className="text-muted-foreground">Assign people…</span>
+                          ) : (
+                            <div className="flex flex-1 flex-wrap items-center gap-1.5">
+                              {selectedAssignees.map((a) => (
+                                <span key={a.id} className="inline-flex items-center gap-1">
+                                  <span
+                                    className="inline-block size-2 rounded-full"
+                                    style={{ backgroundColor: a.color }}
+                                  />
+                                  <span className="truncate max-w-[120px]">{a.name}</span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <span className="ml-auto text-[10px] text-muted-foreground/60">▾</span>
                         </button>
-                      );
-                    })}
-                  </div>
-                )}
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-[260px]">
+                        {assignees.map((a) => {
+                          const checked = form.assigneeIds.includes(a.id);
+                          return (
+                            <DropdownMenuCheckboxItem
+                              key={a.id}
+                              checked={checked}
+                              onCheckedChange={() => {
+                                const next = checked
+                                  ? form.assigneeIds.filter((id) => id !== a.id)
+                                  : [...form.assigneeIds, a.id];
+                                onChange({ assigneeIds: next });
+                              }}
+                              onSelect={(e) => e.preventDefault()}
+                            >
+                              <span className="flex items-center gap-2">
+                                <span
+                                  className="inline-block size-2.5 rounded-full"
+                                  style={{ backgroundColor: a.color }}
+                                />
+                                <span className="truncate">{a.name}</span>
+                                {a.email && (
+                                  <span className="ml-auto truncate text-[10px] text-muted-foreground">{a.email}</span>
+                                )}
+                              </span>
+                            </DropdownMenuCheckboxItem>
+                          );
+                        })}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  );
+                })()}
               </div>
 
             </div>

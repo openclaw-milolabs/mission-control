@@ -200,21 +200,21 @@ function htmlToMarkdownLike(html: string): string {
   // Very loose HTML → md conversion. Keeps existing HTML intact for things we
   // don't know how to convert.
   let out = html
-    .replace(/<p>(.*?)<\/p>/gis, "$1\n")
-    .replace(/<h1>(.*?)<\/h1>/gi, "# $1\n")
-    .replace(/<h2>(.*?)<\/h2>/gi, "## $1\n")
-    .replace(/<h3>(.*?)<\/h3>/gi, "### $1\n")
-    .replace(/<strong>(.*?)<\/strong>/gi, "**$1**")
-    .replace(/<b>(.*?)<\/b>/gi, "**$1**")
-    .replace(/<em>(.*?)<\/em>/gi, "*$1*")
-    .replace(/<i>(.*?)<\/i>/gi, "*$1*")
-    .replace(/<code>(.*?)<\/code>/gi, "`$1`")
-    .replace(/<a [^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi, "[$2]($1)")
-    .replace(/<blockquote>\s*<p>(.*?)<\/p>\s*<\/blockquote>/gis, "> $1\n")
-    .replace(/<ul>([\s\S]*?)<\/ul>/gi, (_m, inner) => inner.replace(/<li>(.*?)<\/li>/gis, "- $1\n"))
+    .replace(/<p>([\s\S]*?)<\/p>/g, "$1\n")
+    .replace(/<h1>([\s\S]*?)<\/h1>/gi, "# $1\n")
+    .replace(/<h2>([\s\S]*?)<\/h2>/gi, "## $1\n")
+    .replace(/<h3>([\s\S]*?)<\/h3>/gi, "### $1\n")
+    .replace(/<strong>([\s\S]*?)<\/strong>/gi, "**$1**")
+    .replace(/<b>([\s\S]*?)<\/b>/gi, "**$1**")
+    .replace(/<em>([\s\S]*?)<\/em>/gi, "*$1*")
+    .replace(/<i>([\s\S]*?)<\/i>/gi, "*$1*")
+    .replace(/<code>([\s\S]*?)<\/code>/gi, "`$1`")
+    .replace(/<a [^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)")
+    .replace(/<blockquote>\s*<p>([\s\S]*?)<\/p>\s*<\/blockquote>/g, "> $1\n")
+    .replace(/<ul>([\s\S]*?)<\/ul>/gi, (_m, inner) => String(inner).replace(/<li>([\s\S]*?)<\/li>/g, "- $1\n"))
     .replace(/<ol>([\s\S]*?)<\/ol>/gi, (_m, inner) => {
       let n = 1;
-      return String(inner).replace(/<li>(.*?)<\/li>/gis, () => `${n++}. $1\n`);
+      return String(inner).replace(/<li>([\s\S]*?)<\/li>/g, () => `${n++}. $1\n`);
     })
     .replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/gi, "```\n$1\n```\n")
     .replace(/<br\s*\/?>/gi, "\n");

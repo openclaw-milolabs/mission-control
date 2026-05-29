@@ -3,6 +3,42 @@
 All notable changes to Mission Control are documented here.
 
 
+## [3.6.0] - 2026-05-29
+
+### Added
+- **New `/documents` surface** — a doc/code editor that creates and edits any file the user wants under `<project_root>/documents/` (parallel to `runtime-artifacts/`). Real files at real extensions; the DB tracks metadata + audit only. Hybrid editor: **Tiptap** WYSIWYG (StarterKit + Link + Underline + TaskList + Code blocks, toolbar with bold/italic/headings/lists/quotes/code/link/undo) for `.md/.html/.txt/.rtf`; **Monaco** (VS Code's editor) for `.js/.ts/.json/.yaml/.sql/.py/.css/.scss/.html/.md/...` with syntax highlighting + minimap. Dynamic-imported so the editor bundle only loads on this route.
+- **Documents page UX.** Left sidebar with recursive folder tree (folder context menu: New file in here / New folder in here / Rename / Delete). Center area: breadcrumbs + Save button + Edit / Preview / History tabs. Right panel: file metadata + linked-tickets list. Recent-grid empty state shows the 12 most recently edited docs as cards. Ctrl/Cmd+S saves. Confirmation alert before delete. Renames + moves rewrite path prefixes for every descendant row.
+- **Audit log per document.** New `document_audit` table records `created` / `updated` / `renamed` / `moved` / `deleted` / `folder_created` / `linked_to_ticket` / `unlinked_from_ticket` events with actor_name + actor_email + jsonb details. The History tab renders this with actor + relative time; `details.from → details.to` for renames/moves.
+- **Many-to-many ticket ↔ document linking.** New `ticket_documents` join table (pointer-only). Ticket modal gets a new "Documents" section between Comments and Activity — lists linked docs with icon, path, last-edited-by, Open (jumps to `/documents`) and Unlink buttons. "+ Link document" opens a picker with the full document tree, multi-select checkboxes, full-text search across paths. Linking + unlinking both write to `ticket_activity` (so the board's live feed shows it) AND `document_audit` (so the doc's history shows it).
+- **Sidebar navigation** entry for Documents (between Boards and Agenda).
+- **API surface.**
+  - `GET /api/documents` → workspace-wide tree walk (or `?path=<rel>` for one folder, or `?recent=1&limit=N` for the recent grid).
+  - `GET /api/documents/content?path=<rel>` → file content as text (rejects binary heuristically and files > 4 MB).
+  - `POST /api/documents` actions: `createFolder`, `createFile`, `updateContent`, `rename`, `move`, `deleteDoc`, `listAudit`, `listDocumentTickets`.
+  - `POST /api/tasks` new actions: `listTicketDocuments`, `linkTicketDocument`, `unlinkTicketDocument`.
+- **Mission Control catalog skill — Documents capability.** Ten new scripts under `scripts/documents/`: `list.js`, `read.js`, `create.js`, `update.js`, `rename.js`, `move.js`, `delete.js`, `history.js`, `link-ticket.js`, `unlink-ticket.js`. All mutations require `--confirm`. Names resolve via the same snapshot mechanism the boards scripts use. `manifest.json` gains 10 new capabilities; `policies/action-routing.json` gains 10 new `mission-control.documents.*` route entries.
+- **Path safety.** A `lib/documents/fs.ts` helper centralises path sanitisation — rejects `..`, absolute paths, NULs/control chars, anything escaping the documents root. Dotfiles are hidden in listings.
+
+### Changed
+- **Ticket modal Assignees — chips → dropdown** with a colored dot per assignee. The dropdown trigger now shows the selected assignees as small pill-rows (color dot + name); opening it reveals the full list as checkbox items with color dots and email on the right. Less visual noise on tickets with many assignees; matches the new dropdown-heavy toolbar.
+- **Ticket modal "Labels" free-text field renamed to "Tags".** Was confusingly called "Labels" but writes to `tagsText`/`tags`; the new per-board colored labels keep the "Labels" name.
+
+### Database
+- `documents (id, workspace_id, relative_path, kind, size_bytes, extension, created_by_email/name, last_edited_by_email/name, created_at, updated_at, unique(workspace_id, relative_path))` + 2 indexes.
+- `document_audit (id, document_id, workspace_id, actor_email, actor_name, event, details jsonb, occurred_at)` + 2 indexes.
+- `ticket_documents (ticket_id, document_id, linked_by_email/name, linked_at, pk(ticket_id, document_id))` + 1 index.
+- All idempotent in `db/schema.sql` and as boot safety nets in `/api/documents/route.ts` and `/api/tasks/route.ts`.
+
+### Dependencies
+- Added: `@tiptap/react`, `@tiptap/starter-kit`, `@tiptap/extension-link`, `@tiptap/extension-task-item`, `@tiptap/extension-task-list`, `@tiptap/extension-underline`, `@tiptap/extension-code-block-lowlight`, `lowlight`, `@monaco-editor/react`. Run `npm install` before `npm run dev` / `npm run build`.
+
+### Out of scope this release
+- Real-time collaborative editing (no Yjs/CRDT).
+- Drag-and-drop file upload from desktop.
+- Inline image upload (Tiptap uses URLs only).
+- Per-doc permission overrides — every authenticated user reads and edits every doc; the audit log captures accountability.
+- Trash / restore — delete is permanent (skill `--confirm` gate, UI alert dialog).
+
 ## [3.5.4] - 2026-05-29
 
 ### Added

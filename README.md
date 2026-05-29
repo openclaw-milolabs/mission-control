@@ -2,9 +2,11 @@
 
 **The OpenClaw native dashboard** — manage scheduled agenda tasks, multi-step processes, Kanban boards, agent logs, file browsing, and system settings from a single UI.
 
-**Version 3.5.4** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
+**Version 3.6.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
 
-> **Latest changes (2026-05-29):** Kanban polish + Trello-parity sprint — per-board labels with colour (Manage Labels modal, label chips on cards, multi-select picker on tickets); calendar view as a 4th ViewMode (month grid, click ticket to open); filter by label and by due (overdue / today / this-week / no-due); shareable per-ticket URLs (`?board=X&ticket=Y`) plus Copy-link button on the ticket modal. The notifications bell now has two segments — Mentions and My tickets — with diagnostic empty states ("no board assignee has the email <session email>"). Removed the 25-cap on Kanban columns — they now scroll naturally. Activity feed gets day-bucket headers. See [CHANGELOG.md](./CHANGELOG.md) for full list.
+> **Latest changes (2026-05-29):** New **`/documents`** page — Tiptap WYSIWYG for `.md/.html/.txt/.rtf` and Monaco code editor for everything else (`.js/.ts/.json/.yaml/.sql/...`). Real files on disk under `<project_root>/documents/`, nested folders, audit log per file (who created / edited / renamed / deleted, when). Documents can be linked many-to-many to kanban tickets — new Documents section on the ticket modal with a tree-picker. Ticket modal Assignees swapped from chip pills to a dropdown with colored dots per name. Mission Control catalog skill gains 10 new `documents/*` scripts. Run `npm install` for the new Tiptap + Monaco deps. See [CHANGELOG.md](./CHANGELOG.md) for full list.
+
+> **Previous (3.5.4):** Per-board labels with colour, calendar view, filter by label/due, shareable ticket URLs, bell with Mentions + My-tickets segments, removed 25-ticket cap on Kanban columns.
 
 > **Previous (3.5.3):** @mentions + notifications bell + actor attribution in activity logs + assignee filter + per-list 25-cap (now removed in 3.5.4) + Trello feature-gap research doc.
 
