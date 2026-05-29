@@ -17,6 +17,7 @@ type TicketRow = {
   priority: string | null;
   due_date: string | null;
   tags: string[] | null;
+  label_ids: string[] | null;
   assignee_ids: string[] | null;
   assigned_agent_id: string | null;
   auto_approve: boolean | null;
@@ -172,6 +173,7 @@ export async function getBoardsPageData(): Promise<BoardHydration[]> {
         priority: (ticket.priority ?? "medium") as TicketPriority,
         dueDate: ticket.due_date,
         tags: ticket.tags ?? [],
+        labelIds: ticket.label_ids ?? [],
         assigneeIds: ticket.assignee_ids ?? [],
         assignedAgentId: ticket.assigned_agent_id ?? "",
         executionMode: (ticket.execution_mode as Ticket["executionMode"]) ?? "direct",
