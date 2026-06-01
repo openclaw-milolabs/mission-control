@@ -1,4 +1,4 @@
-import { promises as fsp } from "node:fs";
+import { promises as fsp, type Dirent } from "node:fs";
 import { resolve } from "node:path";
 import type { getSql } from "@/lib/local-db";
 
@@ -23,7 +23,7 @@ async function dirSize(dir: string): Promise<number> {
     const stack: string[] = [dir];
     while (stack.length > 0) {
       const cur = stack.shift()!;
-      let entries: Awaited<ReturnType<typeof fsp.readdir>>;
+      let entries: Dirent[];
       try { entries = await fsp.readdir(cur, { withFileTypes: true }); }
       catch { continue; }
       for (const ent of entries) {
