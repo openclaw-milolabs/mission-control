@@ -16,6 +16,7 @@
 
 import {
   IconCalendar,
+  IconChartBar,
   IconDashboard,
   IconFileText,
   IconListDetails,
@@ -29,6 +30,7 @@ export type ModuleId =
   | "agenda"
   | "processes"
   | "documents"
+  | "metrics"
   | "system";
 
 export type ModuleDefinition = {
@@ -103,6 +105,16 @@ export const MODULES: readonly ModuleDefinition[] = [
     nav: { title: "Documents", url: "/documents" },
     tables: ["documents", "document_audit"],
     paths: ["documents"],
+  },
+  {
+    id: "metrics",
+    name: "Metrics",
+    description:
+      "Custom SQL-backed charts against your external MySQL database (configured via ~/.config/openclaw/secrets.env). Paste a SELECT, pick a chart type, and switch windows daily / weekly / monthly / yearly. Disabling permanently deletes every saved chart and its run history; the external database is untouched.",
+    icon: IconChartBar,
+    core: false,
+    nav: { title: "Metrics", url: "/metrics" },
+    tables: ["metrics", "metric_runs"],
   },
   {
     id: "system",

@@ -287,6 +287,47 @@ create table if not exists allowed_users (
 );
 create index if not exists allowed_users_role_idx on allowed_users(role);
 
+-- Metrics module — custom SQL-backed charts that query an external MySQL
+-- database. Definitions live here (Postgres); the data queried lives in the
+-- external MySQL pointed at by ~/.config/openclaw/secrets.env (MYSQL_*).
+create table if not exists metrics (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references workspaces(id) on delete cascade,
+  name text not null,
+  description text,
+  sql_text text not null,
+  chart_type text not null default 'bar',
+  x_column text not null default '',
+  y_columns text[] not null default '{}'::text[],
+  default_window text not null default 'monthly',
+  position integer not null default 0,
+  created_by_email text,
+  created_by_name text,
+  updated_by_email text,
+  updated_by_name text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists metrics_workspace_idx on metrics(workspace_id);
+create index if not exists metrics_position_idx on metrics(workspace_id, position);
+
+create table if not exists metric_runs (
+  id uuid primary key default gen_random_uuid(),
+  metric_id uuid references metrics(id) on delete cascade,
+  workspace_id uuid not null references workspaces(id) on delete cascade,
+  ran_by_email text,
+  ran_by_name text,
+  window text not null default 'monthly',
+  since timestamptz,
+  until timestamptz,
+  status text not null default 'success',
+  error_message text,
+  row_count integer,
+  duration_ms integer,
+  occurred_at timestamptz not null default now()
+);
+create index if not exists metric_runs_metric_idx on metric_runs(metric_id, occurred_at desc);
+
 -- Modules registry state. The declarative manifest lives in code
 -- (lib/modules/registry.ts); only the enabled/disabled state lives here.
 create table if not exists module_state (

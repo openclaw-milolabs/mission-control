@@ -14,6 +14,7 @@ import {
   IconSettings,
   IconFolder,
   IconFileText,
+  IconChartBar,
 } from "@tabler/icons-react"
 
 import { NavMain } from "@/components/layout/nav-main"
@@ -41,6 +42,7 @@ const NAV_ENTRIES = [
   { title: "Dashboard", url: "/dashboard", icon: IconDashboard },
   { title: "Boards", url: "/boards", icon: IconListDetails, moduleId: "kanban" },
   { title: "Documents", url: "/documents", icon: IconFileText, moduleId: "documents" },
+  { title: "Metrics", url: "/metrics", icon: IconChartBar, moduleId: "metrics" },
   { title: "Agenda", url: "/agenda", icon: IconCalendar, moduleId: "agenda" },
   { title: "Processes", url: "/processes", icon: IconStack2, moduleId: "processes" },
   { title: "Agents", url: "/agents", icon: IconRobot },

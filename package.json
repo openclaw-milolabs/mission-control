@@ -1,6 +1,6 @@
 {
   "name": "dashboard",
-  "version": "3.8.0",
+  "version": "3.9.0",
   "private": true,
   "scripts": {
     "dev": "docker compose up -d db db-init && bash scripts/mc-services.sh restart --dev",
@@ -50,6 +50,7 @@
     "@tiptap/react": "^2.10.3",
     "@tiptap/starter-kit": "^2.10.3",
     "lowlight": "^3.3.0",
+    "mysql2": "^3.11.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",

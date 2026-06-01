@@ -2,9 +2,11 @@
 
 **The OpenClaw native dashboard** — manage scheduled agenda tasks, multi-step processes, Kanban boards, agent logs, file browsing, and system settings from a single UI.
 
-**Version 3.8.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
+**Version 3.9.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
 
-> **Latest changes (2026-05-29 — security hardening):** Closed every CVE-class issue from the 3.7.0 audit. New `allowed_users` table + roles (admin / member) — being in the Azure AD tenant is no longer enough; you also have to be on the allowlist. First sign-in on a fresh install auto-creates an admin. New Settings → "Allowed users" page (admin-only). CSRF Origin/Referer guard in [proxy.ts](proxy.ts) for state-changing API requests. `/api/files` allow-list narrowed (no more `~/.openclaw` exposure), with a deny-list for `.env` / `secrets` / SSH keys, and HTML/SVG forced to `attachment` disposition + tight CSP / nosniff headers — stored-XSS-via-attachment closed. Admin gate on `/api/services`, `/api/system`, `/api/modules`, `/api/file-manager` mutations. `uploadAttachment` capped at 10 MB and refuses HTML/SVG. `execSync` template literals in file-manager replaced with `execFileSync`. Boot-migration NOTICE spam silenced. See [CHANGELOG.md](./CHANGELOG.md) for full list.
+> **Latest changes (2026-05-29):** New **Metrics** module. Toggleable from Settings → Modules. When enabled, exposes `/metrics`: a dashboard of custom SQL-backed charts against your external MySQL (credentials in `~/.config/openclaw/secrets.env` — `MYSQL_HOST`, `MYSQL_USERNAME`, `MYSQL_PASS`). Paste a `SELECT`, reference `:since` / `:until` / `:bucket`, pick a chart type (bar / line / area / pie / donut / KPI), and switch the time window daily / weekly / monthly / yearly on the page or per-card. Two-layer SQL safety (SELECT-only parser plus a recommendation to use a read-only MySQL user). Per-run audit log. Run `npm install` for the new `mysql2` dep. See [CHANGELOG.md](./CHANGELOG.md) for full list.
+
+> **Previous (3.8.0):** Security hardening — allowed-users allowlist, admin/member roles, CSRF Origin guard, narrower `/api/files` roots, attachment XSS blocked, admin gates on infra routes.
 
 > **Previous (3.7.0):** Modular architecture (Documents as the first toggleable module). Settings → Modules with impact-preview disable + typed confirmation.
 

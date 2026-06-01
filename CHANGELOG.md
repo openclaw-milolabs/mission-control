@@ -3,6 +3,51 @@
 All notable changes to Mission Control are documented here.
 
 
+## [3.9.0] - 2026-05-29
+
+### Added — Metrics module
+
+New toggleable module **`metrics`** under [Settings → Modules](app/settings). When enabled, exposes `/metrics`: a dashboard of custom SQL-backed charts that query the external MySQL configured in `~/.config/openclaw/secrets.env` (`MYSQL_HOST`, `MYSQL_USERNAME`, `MYSQL_PASS`, optional `MYSQL_DATABASE`/`MYSQL_PORT`).
+
+- **Open authoring** (per the brainstorm pick): any signed-in user can create, edit, reorder, or delete metrics. Admin role isn't required for the module itself — only the toggle in Settings.
+- **Chart types:** `bar`, `line`, `area` (single + stacked), `pie`, `donut`, `kpi` (big-number summary with first-to-last delta). All wrap the existing shadcn `Chart` primitive so colors inherit the active theme accent.
+- **Time-window selector:** `Daily` / `Weekly` / `Monthly` / `Yearly` pills on the page header (global) and on each card (override). Server resolves the window into bind values `since`, `until`, and `bucket` (a MySQL `DATE_FORMAT` mask sized to the window) before substituting them into the saved SQL.
+- **SQL placeholders:** users write `:since`, `:until`, `:bucket` directly in their query. We replace each with `?` and bind the matching value — no string concatenation, no injection surface.
+- **Two-layer SQL safety:**
+  - [lib/metrics/sql-guard.ts](lib/metrics/sql-guard.ts) parses every save: strips comments, rejects multi-statement, requires first keyword to be `SELECT` / `WITH` / `SHOW` / `DESCRIBE` / `EXPLAIN`, and refuses any of `INSERT/UPDATE/DELETE/REPLACE/DROP/ALTER/CREATE/TRUNCATE/RENAME/GRANT/REVOKE/CALL/LOAD/HANDLER/USE/SET/ATTACH/DETACH/EXEC/EXECUTE/PREPARE/DEALLOCATE/LOCK/UNLOCK/BEGIN/COMMIT/ROLLBACK/SAVEPOINT/START/CHANGE` even disguised by trailing comments. Length cap 10 000 chars.
+  - We also report whether the configured MySQL user has write privileges (`SHOW GRANTS FOR CURRENT_USER()`) and surface a warning in the page banner if it does. **Recommended:** point `MYSQL_USERNAME` at a read-only user.
+- **mysql2 connection pool** (5 connections, 60s idle timeout, keep-alive) with a 15 s statement timeout (`SET STATEMENT max_execution_time`) and a hard 50 000-row JS-side cap to protect against runaway `SELECT *`.
+- **Editor:** Monaco SQL editor (reused from the Documents module) + side panel with name / description / chart type / X column / Y columns multi-select / default window. "Test query" button runs the SELECT through the same guard + bind path without saving, then auto-populates the column dropdowns from the result.
+- **Per-card UX:** title, description, "27 rows · 4ms" metadata line, per-card window pills + refresh, kebab menu (Edit / Delete). Each card maintains a per-window in-memory cache; per-card refresh button bypasses it.
+- **Health banner:** `GET /api/metrics/health` shows MySQL version, database name, and read-only-status; if credentials are missing the page renders a setup-instructions card pointing at the secrets file.
+- **Per-run audit:** every executed metric writes a row to `metric_runs` with actor, window, status, error message, row count, and duration.
+
+### Added — API
+
+- `GET /api/metrics` — list saved metrics.
+- `POST /api/metrics` — actions: `createMetric`, `updateMetric`, `deleteMetric`, `reorderMetrics`, `runMetric`, `previewSql` (ad-hoc, doesn't persist).
+- `GET /api/metrics/health` — `pingMysql` plus version/grants/secrets-path metadata.
+- All routes gated by `requireModuleEnabled("metrics")` and authenticated session.
+
+### Database
+
+- New `metrics` table (id, workspace_id, name, description, sql_text, chart_type, x_column, y_columns text[], default_window, position, audit fields).
+- New `metric_runs` table (metric_id, ran_by_*, window, since/until, status, error_message, row_count, duration_ms, occurred_at) + per-metric `occurred_at desc` index.
+- Boot-time setup in [lib/modules/handlers/metrics.ts](lib/modules/handlers/metrics.ts); canonical schema in [db/schema.sql](db/schema.sql).
+
+### Dependencies
+
+- `mysql2 ^3.11.0` added to `package.json`. Run `npm install` before `npm run build`. ~1.5 MB unzipped, server-only — no client bundle impact.
+
+### Out of scope this release
+
+- Multi-MySQL support (single `MYSQL_*` block).
+- Querying Mission Control's own Postgres (everything is the external MySQL).
+- Alerts ("notify when value crosses X").
+- Scheduled refresh / cached metric snapshots.
+- Catalog skill scripts (`scripts/metrics/*`).
+- CSV export from cards.
+
 ## [3.8.0] - 2026-05-29
 
 Security hardening release. **All listed CVE-class issues from the 3.7.0 audit are closed.** No data leaks left wide-open. Required follow-ups (ops-side) are called out at the bottom.

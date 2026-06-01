@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth/session";
 import { MODULES, type ModuleId } from "@/lib/modules/registry";
 import { invalidateModuleCache, readModuleSnapshot } from "@/lib/modules/state";
 import { documentsHandler } from "@/lib/modules/handlers/documents";
+import { metricsHandler } from "@/lib/modules/handlers/metrics";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,7 @@ const fail = (message: string, status = 400) =>
 // so they never need preview/cleanup/setup logic.
 const HANDLERS: Partial<Record<ModuleId, typeof documentsHandler>> = {
   documents: documentsHandler,
+  metrics: metricsHandler,
 };
 
 async function workspaceId(sql: ReturnType<typeof getSql>) {
