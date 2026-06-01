@@ -3,6 +3,35 @@
 All notable changes to Mission Control are documented here.
 
 
+## [3.7.0] - 2026-05-29
+
+### Added
+- **Modular architecture.** Mission Control now has a "module" concept. **Core** modules (Kanban Boards, Agenda, Processes, System) are always on. **Toggleable** modules can be enabled or disabled from Settings. The first toggleable module is **Documents**.
+- **Declarative module registry** at [lib/modules/registry.ts](lib/modules/registry.ts) — typed `MODULES` array declaring id, name, description, icon, core flag, optional nav entry, tables owned, on-disk paths. Adding a module is a code change; toggling is a DB write.
+- **`module_state` table** keeps the enabled flag, who toggled it, and when. Defaults seed on first boot with `enabled=true` for every module — nothing disappears on the next deploy.
+- **`/api/modules`** route — `GET` returns every module's metadata and current state, `POST { action: "previewDisable" | "disable" | "enable", moduleId }`. Disable preview returns counts (47 documents, 12 folders, 312 audit rows, 3 ticket links, 8.4 MB on disk) plus sample affected items.
+- **Settings page → Modules section** with one card per module: icon, name, description, status badge (`Core` / `Enabled` / `Disabled`), toggle, last-toggle attribution ("Disabled by Cem · 5m ago"). Core modules show a disabled toggle and the `Core` badge.
+- **Disable flow.** Toggling an enabled non-core module opens a dialog with the impact preview and a typed-confirmation input ("Type `documents` to confirm"). On confirm: filesystem wiped, tables dropped (FK cascade nukes `ticket_documents` link rows), state row updated, activity log entry written, modules cache invalidated. UI updates everywhere via the modules React context.
+- **Enable flow.** One-click confirm — recreates the module's tables (idempotent) and on-disk paths, flips state, refreshes UI.
+- **Cross-module gating.** A `useModules()` React context exposes `isEnabled(id)`; the sidebar, the `/documents` page, and the ticket modal's Documents section all gate themselves with it. Server-side `requireModuleEnabled` / `isModuleEnabled` helpers wrap API routes that own module data: `/api/documents/*` returns 503 when disabled, `/api/tasks` document actions (`listTicketDocuments`, `linkTicketDocument`, `unlinkTicketDocument`) become graceful no-ops so the ticket modal's Documents section silently hides.
+- **Re-fetch on focus.** The modules provider re-pulls module state when the window regains focus, so a toggle in another tab updates the current tab without a manual refresh.
+
+### Changed
+- **Documents page empty state** now centers via a CSS grid layout — `grid h-full place-items-center` instead of the previous flex that wasn't being constrained by its parent. "No documents yet" now sits dead-center of the editor pane regardless of viewport height.
+- **Recent-docs grid + link-document picker** share a unified file-row look: rounded icon tile + filename as title + parent folder path as description + meta line (size · time · who). The picker is a more compact variant of the same template.
+- **Documents page redirects** to `/settings#modules` when the module is disabled (covers toggling in another tab while the page is open).
+
+### Database
+- New `module_state` table (`module_id`, `enabled`, `enabled_at`, `disabled_at`, `enabled_by_email/name`, `disabled_by_email/name`, `updated_at`).
+- Idempotent boot migration auto-seeds known module ids with `enabled=true` on first request.
+
+### Out of scope this release
+- Module marketplace / install from catalog skill.
+- Per-user module visibility.
+- Module-to-module dependency graph (e.g. "Documents requires Kanban") — current Documents *integrates with* Kanban but doesn't *depend on* it.
+- Snapshot-to-zip on disable for later restore (disable is permanent deletion).
+- Catalog skill awareness of module state (currently the skill will see 503 with a clear message; structured awareness is a follow-up).
+
 ## [3.6.0] - 2026-05-29
 
 ### Added

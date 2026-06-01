@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { LinkDocumentDialog } from "@/components/tasks/modals/link-document-dialog";
+import { useModules } from "@/components/modules/modules-provider";
 
 type LinkedDocument = {
   id: string;
@@ -52,12 +53,14 @@ function bytes(n: number): string {
 }
 
 export function TicketDocumentsSection({ ticketId }: Props) {
+  const { isEnabled } = useModules();
+  const moduleEnabled = isEnabled("documents");
   const [docs, setDocs] = useState<LinkedDocument[]>([]);
   const [loading, setLoading] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const load = useCallback(async () => {
-    if (!ticketId) return;
+    if (!ticketId || !moduleEnabled) return;
     setLoading(true);
     try {
       const res = await fetch("/api/tasks", {
@@ -87,6 +90,8 @@ export function TicketDocumentsSection({ ticketId }: Props) {
   const alreadyLinkedIds = useMemo(() => new Set(docs.map((d) => d.id)), [docs]);
 
   if (!ticketId) return null;
+  // Module disabled — render nothing at all (silent integration).
+  if (!moduleEnabled) return null;
 
   return (
     <div className="flex flex-col gap-2">

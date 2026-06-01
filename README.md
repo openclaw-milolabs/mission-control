@@ -2,9 +2,11 @@
 
 **The OpenClaw native dashboard** — manage scheduled agenda tasks, multi-step processes, Kanban boards, agent logs, file browsing, and system settings from a single UI.
 
-**Version 3.6.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
+**Version 3.7.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
 
-> **Latest changes (2026-05-29):** New **`/documents`** page — Tiptap WYSIWYG for `.md/.html/.txt/.rtf` and Monaco code editor for everything else (`.js/.ts/.json/.yaml/.sql/...`). Real files on disk under `<project_root>/documents/`, nested folders, audit log per file (who created / edited / renamed / deleted, when). Documents can be linked many-to-many to kanban tickets — new Documents section on the ticket modal with a tree-picker. Ticket modal Assignees swapped from chip pills to a dropdown with colored dots per name. Mission Control catalog skill gains 10 new `documents/*` scripts. Run `npm install` for the new Tiptap + Monaco deps. See [CHANGELOG.md](./CHANGELOG.md) for full list.
+> **Latest changes (2026-05-29):** Mission Control is now **modular**. Core features (Kanban, Agenda, Processes, System) are always on; toggleable modules (currently **Documents**) can be enabled / disabled from Settings → Modules. Disabling a module shows an impact preview (e.g. "47 documents, 12 folders, 3 ticket links") and requires typing the module id to confirm. On confirm, data is permanently deleted and the UI hides itself everywhere (sidebar nav, ticket modal sections, route guard redirects to Settings). New `module_state` table; new `/api/modules` route; new `useModules()` React context plus server `isModuleEnabled` / `requireModuleEnabled` helpers. Documents page empty-state centered; file display unified across recent grid + link picker (icon tile + filename + parent folder). See [CHANGELOG.md](./CHANGELOG.md) for full list.
+
+> **Previous (3.6.0):** New `/documents` page with Tiptap + Monaco editors, audit log per file, ticket↔document linking, assignee dropdown with colored dots.
 
 > **Previous (3.5.4):** Per-board labels with colour, calendar view, filter by label/due, shareable ticket URLs, bell with Mentions + My-tickets segments, removed 25-ticket cap on Kanban columns.
 

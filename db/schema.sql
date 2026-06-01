@@ -250,6 +250,20 @@ create table if not exists ticket_documents (
 );
 create index if not exists ticket_documents_doc_idx on ticket_documents(document_id);
 
+-- Modules registry state. The declarative manifest lives in code
+-- (lib/modules/registry.ts); only the enabled/disabled state lives here.
+create table if not exists module_state (
+  module_id text primary key,
+  enabled boolean not null default true,
+  enabled_at timestamptz,
+  disabled_at timestamptz,
+  enabled_by_email text,
+  enabled_by_name text,
+  disabled_by_email text,
+  disabled_by_name text,
+  updated_at timestamptz not null default now()
+);
+
 -- One-shot data migration: clear legacy runtime-agent assignee_ids on tickets.
 -- Tickets used to reference runtime agent IDs; switching to board-scoped custom
 -- assignees would leave orphans. The flag column makes this idempotent.

@@ -14,6 +14,7 @@ import {
   IconLoader2,
   IconPalette,
   IconBell,
+  IconBox,
   IconCalendarCog,
   IconCloudDownload,
   IconShieldBolt,
@@ -41,6 +42,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { ModulesSection } from "@/components/settings/modules-section";
 import {
   loadNotificationSettings,
   saveNotificationSettings,
@@ -78,11 +80,12 @@ function setDevMode(enabled: boolean) {
   window.dispatchEvent(new Event("mc-dev-mode-changed"));
 }
 
-type SectionKey = "appearance" | "general" | "notifications" | "agenda" | "updates" | "developer" | "danger";
+type SectionKey = "appearance" | "general" | "modules" | "notifications" | "agenda" | "updates" | "developer" | "danger";
 
 const BASE_NAV_ITEMS: { key: SectionKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "appearance", label: "Appearance", icon: IconPalette },
   { key: "general", label: "General", icon: IconSettings },
+  { key: "modules", label: "Modules", icon: IconBox },
   { key: "notifications", label: "Notifications", icon: IconBell },
   { key: "agenda", label: "Agenda", icon: IconCalendarCog },
   { key: "updates", label: "Updates", icon: IconCloudDownload },
@@ -760,6 +763,7 @@ export function SettingsPageClient(): React.ReactNode {
   const sections: Record<SectionKey, () => React.ReactNode> = {
     appearance: renderAppearance,
     general: renderGeneral,
+    modules: () => <ModulesSection />,
     notifications: renderNotifications,
     agenda: renderAgenda,
     updates: renderUpdates,

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import {
   ChevronRightIcon,
   FilePlusIcon,
@@ -28,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useModules } from "@/components/modules/modules-provider";
 import {
   Dialog,
   DialogContent,
@@ -138,6 +140,14 @@ function iconForFile(ext: string | null): typeof FileTextIcon {
 }
 
 export function DocumentsClient() {
+  const router = useRouter();
+  const { ready, isEnabled } = useModules();
+  // Redirect to settings if the module was switched off in another tab.
+  useEffect(() => {
+    if (ready && !isEnabled("documents")) {
+      router.replace("/settings#modules");
+    }
+  }, [ready, isEnabled, router]);
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [recent, setRecent] = useState<RecentDoc[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -769,11 +779,16 @@ function DocTree({
 
 function RecentGrid({ recent, onOpen }: { recent: RecentDoc[]; onOpen: (path: string) => void }) {
   if (recent.length === 0) {
+    // Fully fill the available area and center vertically — the parent of this
+    // pane is `flex-1 min-w-0 min-h-0`, so use h-full to inherit and `grid place-items-center`
+    // for reliable centering regardless of flex direction.
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center text-muted-foreground">
-        <FileTextIcon className="size-10 text-muted-foreground/40" />
-        <p className="text-sm font-medium">No documents yet</p>
-        <p className="text-xs">Use the sidebar to create your first file or folder.</p>
+      <div className="grid h-full place-items-center p-8">
+        <div className="flex flex-col items-center gap-2 text-center text-muted-foreground">
+          <FileTextIcon className="size-10 text-muted-foreground/40" />
+          <p className="text-sm font-medium text-foreground">No documents yet</p>
+          <p className="text-xs">Use the sidebar to create your first file or folder.</p>
+        </div>
       </div>
     );
   }
@@ -786,24 +801,24 @@ function RecentGrid({ recent, onOpen }: { recent: RecentDoc[]; onOpen: (path: st
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {recent.map((doc) => {
             const Icon = iconForFile(doc.extension);
+            const description = dirname(doc.relative_path) || "in root";
             return (
               <button
                 key={doc.id}
                 onClick={() => onOpen(doc.relative_path)}
-                className="group flex flex-col gap-2 rounded-lg border border-border/60 bg-background p-4 text-left transition-all hover:-translate-y-0.5 hover:border-border hover:shadow-md"
+                className="group flex items-start gap-3 rounded-lg border border-border/60 bg-background p-3 text-left transition-all hover:-translate-y-0.5 hover:border-border hover:shadow-md"
               >
-                <Icon className="size-6 text-muted-foreground transition-colors group-hover:text-foreground" />
-                <div className="min-w-0">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted/40 transition-colors group-hover:bg-muted/80">
+                  <Icon className="size-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+                </div>
+                <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{basename(doc.relative_path)}</p>
-                  <p className="truncate text-[10px] text-muted-foreground">{doc.relative_path}</p>
+                  <p className="truncate text-[11px] text-muted-foreground">{description}</p>
+                  <p className="mt-1 text-[10px] text-muted-foreground/70">
+                    {bytes(doc.size_bytes)} · {relTime(doc.updated_at)}
+                    {doc.last_edited_by_name ? ` · ${doc.last_edited_by_name}` : ""}
+                  </p>
                 </div>
-                <div className="mt-auto flex items-center justify-between text-[10px] text-muted-foreground/80">
-                  <span>{bytes(doc.size_bytes)}</span>
-                  <span>{relTime(doc.updated_at)}</span>
-                </div>
-                {doc.last_edited_by_name && (
-                  <div className="text-[10px] text-muted-foreground/60">by {doc.last_edited_by_name}</div>
-                )}
               </button>
             );
           })}

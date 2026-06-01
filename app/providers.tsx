@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { ThemeProvider } from "@/components/providers/theme-provider";
 import { NotificationProvider } from "@/components/providers/notification-provider";
+import { ModulesProvider } from "@/components/modules/modules-provider";
 
 function StartupEventHook() {
   const mountedRef = useRef(false);
@@ -41,9 +42,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeProvider>
-      {!disableGlobalRealtime ? <StartupEventHook /> : null}
-      {!disableGlobalRealtime ? <NotificationProvider /> : null}
-      {children}
+      <ModulesProvider>
+        {!disableGlobalRealtime ? <StartupEventHook /> : null}
+        {!disableGlobalRealtime ? <NotificationProvider /> : null}
+        {children}
+      </ModulesProvider>
     </ThemeProvider>
   );
 }

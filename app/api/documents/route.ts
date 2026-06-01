@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/local-db";
 import { getSession } from "@/lib/auth/session";
+import { isModuleEnabled } from "@/lib/modules/state";
 import {
   DOCUMENTS_ROOT,
   ensureRoot,
@@ -142,6 +143,9 @@ export async function GET(request: Request) {
   try {
     const session = await getSession();
     if (!session?.email) return fail("Not authenticated", 401);
+    if (!(await isModuleEnabled("documents"))) {
+      return fail("Documents module is disabled. Enable it in Settings to use this feature.", 503);
+    }
     const sql = getSql();
     await ensureSchema(sql);
     const wid = await workspaceId(sql);
@@ -185,6 +189,9 @@ export async function POST(request: Request) {
   try {
     const session = await getSession();
     if (!session?.email) return fail("Not authenticated", 401);
+    if (!(await isModuleEnabled("documents"))) {
+      return fail("Documents module is disabled. Enable it in Settings to use this feature.", 503);
+    }
 
     const sql = getSql();
     await ensureSchema(sql);

@@ -20,6 +20,7 @@ import { NavMain } from "@/components/layout/nav-main"
 import { NavActivity } from "@/components/layout/nav-activity"
 import { NavUser } from "@/components/layout/nav-user"
 import { NotificationsBell } from "@/components/notifications/notifications-bell"
+import { useModules } from "@/components/modules/modules-provider"
 import {
   Sidebar,
   SidebarContent,
@@ -33,19 +34,20 @@ import { getDataAdapter } from "@/lib/db"
 import packageJson from "../../package.json"
 import { toast } from "sonner"
 
-const data = {
-  navMain: [
-    { title: "Dashboard", url: "/dashboard", icon: IconDashboard },
-    { title: "Boards", url: "/boards", icon: IconListDetails },
-    { title: "Documents", url: "/documents", icon: IconFileText },
-    { title: "Agenda", url: "/agenda", icon: IconCalendar },
-    { title: "Processes", url: "/processes", icon: IconStack2 },
-    { title: "Agents", url: "/agents", icon: IconRobot },
-    { title: "File Manager", url: "/file-manager", icon: IconFolder },
-    { title: "System", url: "/logs", icon: IconLogs },
-    { title: "Settings", url: "/settings", icon: IconSettings },
-  ],
-}
+// `moduleId` ties an entry to a module in lib/modules/registry.ts.
+// When a module is disabled, its nav entries are hidden client-side.
+// Entries without a moduleId are always visible.
+const NAV_ENTRIES = [
+  { title: "Dashboard", url: "/dashboard", icon: IconDashboard },
+  { title: "Boards", url: "/boards", icon: IconListDetails, moduleId: "kanban" },
+  { title: "Documents", url: "/documents", icon: IconFileText, moduleId: "documents" },
+  { title: "Agenda", url: "/agenda", icon: IconCalendar, moduleId: "agenda" },
+  { title: "Processes", url: "/processes", icon: IconStack2, moduleId: "processes" },
+  { title: "Agents", url: "/agents", icon: IconRobot },
+  { title: "File Manager", url: "/file-manager", icon: IconFolder },
+  { title: "System", url: "/logs", icon: IconLogs },
+  { title: "Settings", url: "/settings", icon: IconSettings },
+] as const;
 
 const APP_VERSION = packageJson.version || "0.1.0"
 
@@ -63,6 +65,8 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 export function AppSidebar({ initialUser, showActivity = true, ...props }: AppSidebarProps) {
   const router = useRouter()
   const { user: authUser } = useAuth()
+  const { isEnabled } = useModules()
+  const visibleNav = NAV_ENTRIES.filter((e) => !("moduleId" in e) || isEnabled(e.moduleId as string))
 
   const sessionUser: SidebarUser | null = authUser
     ? { name: authUser.name, email: authUser.email, avatar: "" }
@@ -153,7 +157,7 @@ export function AppSidebar({ initialUser, showActivity = true, ...props }: AppSi
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} />
+        <NavMain items={visibleNav} />
         {showActivity ? <NavActivity /> : null}
       </SidebarContent>
       <SidebarFooter>

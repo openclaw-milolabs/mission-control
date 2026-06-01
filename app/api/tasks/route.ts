@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/local-db";
 import { getSession } from "@/lib/auth/session";
+import { isModuleEnabled } from "@/lib/modules/state";
 
 type Actor = { name: string | null; email: string | null };
 
@@ -490,6 +491,10 @@ export async function POST(request: Request) {
     }
 
     if (action === "listTicketDocuments") {
+      if (!(await isModuleEnabled("documents"))) {
+        // Graceful — return empty so ticket-modal UI hides itself without an error.
+        return ok({ documents: [] });
+      }
       const ticketId = String(body.ticketId || "");
       if (!ticketId) return fail("Ticket id is required.");
       // ticket_documents may not exist yet on a stale dev DB; create it on demand.
@@ -524,6 +529,9 @@ export async function POST(request: Request) {
     }
 
     if (action === "linkTicketDocument") {
+      if (!(await isModuleEnabled("documents"))) {
+        return fail("Documents module is disabled. Enable it in Settings to link documents.", 503);
+      }
       const ticketId = String(body.ticketId || "");
       const documentId = String(body.documentId || "");
       if (!ticketId || !documentId) return fail("Ticket id and document id are required.");
@@ -550,6 +558,11 @@ export async function POST(request: Request) {
     }
 
     if (action === "unlinkTicketDocument") {
+      // Allow unlink even when module disabled? No — if module is off, the link
+      // table is already gone via the FK cascade. Be silent on success.
+      if (!(await isModuleEnabled("documents"))) {
+        return ok();
+      }
       const ticketId = String(body.ticketId || "");
       const documentId = String(body.documentId || "");
       if (!ticketId || !documentId) return fail("Ticket id and document id are required.");

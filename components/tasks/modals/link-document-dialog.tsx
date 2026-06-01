@@ -168,16 +168,22 @@ export function LinkDocumentDialog({ open, ticketId, alreadyLinkedIds, onClose, 
                   const Icon = iconForFile(e.extension);
                   const id = idsByPath[e.relativePath];
                   const isAlready = id ? alreadyLinkedIds.has(id) : false;
+                  const description = dirname(e.relativePath) || "in root";
                   return (
-                    <li key={e.relativePath} className="flex items-center gap-2 px-3 py-1.5 text-xs">
+                    <li key={e.relativePath} className="flex items-center gap-2 px-3 py-2 text-xs">
                       <input
                         type="checkbox"
                         disabled={isAlready || !id}
                         checked={selected.has(e.relativePath)}
                         onChange={() => toggle(e.relativePath)}
                       />
-                      <Icon className="size-3.5 text-muted-foreground" />
-                      <span className="flex-1 truncate">{e.relativePath}</span>
+                      <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted/40">
+                        <Icon className="size-3.5 text-muted-foreground" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{e.name}</p>
+                        <p className="truncate text-[10px] text-muted-foreground">{description}</p>
+                      </div>
                       {isAlready && <span className="text-[10px] text-muted-foreground">already linked</span>}
                     </li>
                   );

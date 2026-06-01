@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { exists, readFile, sanitizeRelPath, stat } from "@/lib/documents/fs";
+import { isModuleEnabled } from "@/lib/modules/state";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,9 @@ export async function GET(request: Request) {
   try {
     const session = await getSession();
     if (!session?.email) return fail("Not authenticated", 401);
+    if (!(await isModuleEnabled("documents"))) {
+      return fail("Documents module is disabled. Enable it in Settings to use this feature.", 503);
+    }
 
     const url = new URL(request.url);
     const path = url.searchParams.get("path");
