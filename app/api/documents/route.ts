@@ -36,8 +36,13 @@ async function workspaceId(sql: ReturnType<typeof getSql>) {
 /**
  * Boot-time safety net for documents tables. Mirrors db/schema.sql so a running
  * dev app self-heals before the operator runs npm run db:migrate.
+ *
+ * Runs once per process. Subsequent calls are no-ops to keep the Postgres NOTICE
+ * spam out of nextjs.log (every "already exists, skipping" was flooding the log).
  */
+let _docsSchemaEnsured = false;
 async function ensureSchema(sql: ReturnType<typeof getSql>) {
+  if (_docsSchemaEnsured) return;
   await sql`
     CREATE TABLE IF NOT EXISTS documents (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -82,6 +87,7 @@ async function ensureSchema(sql: ReturnType<typeof getSql>) {
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS ticket_documents_doc_idx ON ticket_documents(document_id)`;
+  _docsSchemaEnsured = true;
 }
 
 async function audit(

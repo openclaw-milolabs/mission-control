@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { createSession, getSession, sessionCookieAttrs, SESSION_DURATION_SECONDS } from "@/lib/auth/session";
+import { checkAndBootstrapAllowedUser } from "@/lib/auth/roles";
 
 // Lazily initialised — not evaluated at build time, only on first request.
 let _jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -43,13 +44,23 @@ export async function POST(request: Request) {
       audience: clientId,
     });
 
-    const sessionToken = await createSession({
+    const sessionUser = {
       sub: payload.sub ?? "",
       name: (payload.name as string) ?? (payload.preferred_username as string) ?? "User",
       email: (payload.preferred_username as string) ?? (payload.email as string) ?? "",
-    });
+    };
 
-    const res = NextResponse.json({ ok: true });
+    // Allowlist gate — being in the right Azure AD tenant is necessary but not
+    // sufficient. The first sign-in on a fresh install bootstraps the inviter
+    // as 'admin'; every subsequent sign-in must already be on the allowlist.
+    const access = await checkAndBootstrapAllowedUser(sessionUser);
+    if (!access.ok) {
+      return NextResponse.json({ ok: false, error: access.reason }, { status: 403 });
+    }
+
+    const sessionToken = await createSession(sessionUser);
+
+    const res = NextResponse.json({ ok: true, role: access.role, bootstrapped: access.bootstrapped });
     res.cookies.set({ ...sessionCookieAttrs(SESSION_DURATION_SECONDS), value: sessionToken });
     return res;
   } catch (error) {

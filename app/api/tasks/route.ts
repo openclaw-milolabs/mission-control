@@ -199,13 +199,18 @@ export async function GET() {
   }
 }
 
+// Boot migrations run once per process to avoid flooding nextjs.log with
+// Postgres NOTICE messages on every request. The canonical schema lives in
+// db/schema.sql; these are best-effort self-heal mirrors.
+let _tasksSchemaEnsured = false;
+
 export async function POST(request: Request) {
   try {
     const sql = getSql();
-    // Boot migration: add checklist_name if not present
-    await sql`ALTER TABLE ticket_subtasks ADD COLUMN IF NOT EXISTS checklist_name text NOT NULL DEFAULT 'Checklist'`;
-    // Boot migration safety net for board_assignees — also lives in db/schema.sql (applied via update.sh / npm run db:migrate),
-    // but mirrored here so a running app without a re-migrated DB self-heals on first POST.
+    // ── Boot migrations (once per process) ─────────────────────────────────
+    if (!_tasksSchemaEnsured) {
+      // Boot migration: add checklist_name if not present
+      await sql`ALTER TABLE ticket_subtasks ADD COLUMN IF NOT EXISTS checklist_name text NOT NULL DEFAULT 'Checklist'`;
     await sql`
       CREATE TABLE IF NOT EXISTS board_assignees (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -265,6 +270,8 @@ export async function POST(request: Request) {
     if (!migRows[0]?.board_assignees_migrated_at) {
       await sql`update tickets set assignee_ids = '{}'::text[], updated_at = now() where assignee_ids <> '{}'::text[]`;
       await sql`update app_settings set board_assignees_migrated_at = now() where id = 1`;
+    }
+      _tasksSchemaEnsured = true;
     }
     const contentType = request.headers.get("content-type") || "";
     const isMultipart = contentType.includes("multipart/form-data");
@@ -736,8 +743,28 @@ export async function POST(request: Request) {
       const ticketId = String(form.get("ticketId") || "");
       const file = form.get("file");
       if (!ticketId || !(file instanceof File)) return fail("Ticket and file are required.");
+      // Reject HTML/SVG outright (script-execution vectors when later opened).
+      // Other types are size-capped to keep one ticket from blowing up the row.
+      const declaredType = (file.type || "application/octet-stream").toLowerCase();
+      if (
+        declaredType === "text/html" ||
+        declaredType === "application/xhtml+xml" ||
+        declaredType === "image/svg+xml" ||
+        file.name.toLowerCase().endsWith(".html") ||
+        file.name.toLowerCase().endsWith(".htm") ||
+        file.name.toLowerCase().endsWith(".svg")
+      ) {
+        return fail("HTML/SVG attachments are not allowed.", 415);
+      }
+      const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+      if (file.size > MAX_UPLOAD_BYTES) {
+        return fail(`File too large (max ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB).`, 413);
+      }
       const buffer = Buffer.from(await file.arrayBuffer());
-      const mimeType = file.type || "application/octet-stream";
+      if (buffer.length > MAX_UPLOAD_BYTES) {
+        return fail(`File too large (max ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB).`, 413);
+      }
+      const mimeType = declaredType;
       const base64 = buffer.toString("base64");
       const url = `data:${mimeType};base64,${base64}`;
 
@@ -751,11 +778,17 @@ export async function POST(request: Request) {
     }
 
     if (action === "attachFileFromPath") {
-      // Attach a local file by its path
+      // Attach a local file by its path. Gated by isAllowedAttachmentPath which
+      // restricts to documents/, runtime-artifacts/, storage/, /tmp/ and denies
+      // .env / secrets / ssh keys regardless of root.
       const ticketId = String(body.ticketId || "");
       const filePath = String(body.filePath || "");
       if (!ticketId || !filePath) return fail("Ticket id and file path are required.");
 
+      const { isAllowedAttachmentPath } = await import("@/app/api/files/route");
+      if (!isAllowedAttachmentPath(filePath)) {
+        return fail("That path is not allowed as an attachment source.", 403);
+      }
       const fs = await import("node:fs");
       const path = await import("node:path");
       const resolved = path.resolve(filePath);

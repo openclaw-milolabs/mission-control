@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import AdmZip from "adm-zip";
 
 const ROOT = "/home/clawdbot/.openclaw";
@@ -16,10 +16,13 @@ const uidNameCache = new Map<number, string>();
 const gidNameCache = new Map<number, string>();
 
 function getUidName(uid: number): string {
+  // Defensive: uid comes from fs.statSync so it's a number, but resolve via
+  // execFileSync's argv (never a shell template) to make string-injection
+  // impossible if a future caller passes anything else.
   const cached = uidNameCache.get(uid);
   if (cached !== undefined) return cached;
   try {
-    const name = execSync(`id -nu ${uid} 2>/dev/null`, { timeout: 2000 }).toString().trim();
+    const name = execFileSync("id", ["-nu", String(uid)], { timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
     uidNameCache.set(uid, name);
     return name;
   } catch {
@@ -33,7 +36,8 @@ function getGidName(gid: number): string {
   const cached = gidNameCache.get(gid);
   if (cached !== undefined) return cached;
   try {
-    const name = execSync(`getent group ${gid} 2>/dev/null | cut -d: -f1`, { timeout: 2000 }).toString().trim() || String(gid);
+    const entry = execFileSync("getent", ["group", String(gid)], { timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    const name = entry.split(":")[0] || String(gid);
     gidNameCache.set(gid, name);
     return name;
   } catch {
@@ -480,6 +484,9 @@ export async function POST(
   request: NextRequest,
 ): Promise<NextResponse> {
   try {
+    const { guardAdmin } = await import("@/lib/auth/roles");
+    const guard = await guardAdmin();
+    if ("error" in guard) return guard.error;
     const contentType = request.headers.get("content-type") ?? "";
 
     // Multipart upload (and zip extraction)
@@ -634,6 +641,9 @@ export async function PUT(
   request: NextRequest,
 ): Promise<NextResponse> {
   try {
+    const { guardAdmin } = await import("@/lib/auth/roles");
+    const guard = await guardAdmin();
+    if ("error" in guard) return guard.error;
     const body = await request.json();
     const { action, id, newName, ids, targetId, content } = body as {
       action?: string;
@@ -781,6 +791,9 @@ export async function DELETE(
   request: NextRequest,
 ): Promise<NextResponse> {
   try {
+    const { guardAdmin } = await import("@/lib/auth/roles");
+    const guard = await guardAdmin();
+    if ("error" in guard) return guard.error;
     const body = await request.json();
     const { ids } = body as { ids?: string[] };
 

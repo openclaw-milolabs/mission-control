@@ -2,9 +2,11 @@
 
 **The OpenClaw native dashboard** — manage scheduled agenda tasks, multi-step processes, Kanban boards, agent logs, file browsing, and system settings from a single UI.
 
-**Version 3.7.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
+**Version 3.8.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
 
-> **Latest changes (2026-05-29):** Mission Control is now **modular**. Core features (Kanban, Agenda, Processes, System) are always on; toggleable modules (currently **Documents**) can be enabled / disabled from Settings → Modules. Disabling a module shows an impact preview (e.g. "47 documents, 12 folders, 3 ticket links") and requires typing the module id to confirm. On confirm, data is permanently deleted and the UI hides itself everywhere (sidebar nav, ticket modal sections, route guard redirects to Settings). New `module_state` table; new `/api/modules` route; new `useModules()` React context plus server `isModuleEnabled` / `requireModuleEnabled` helpers. Documents page empty-state centered; file display unified across recent grid + link picker (icon tile + filename + parent folder). See [CHANGELOG.md](./CHANGELOG.md) for full list.
+> **Latest changes (2026-05-29 — security hardening):** Closed every CVE-class issue from the 3.7.0 audit. New `allowed_users` table + roles (admin / member) — being in the Azure AD tenant is no longer enough; you also have to be on the allowlist. First sign-in on a fresh install auto-creates an admin. New Settings → "Allowed users" page (admin-only). CSRF Origin/Referer guard in [proxy.ts](proxy.ts) for state-changing API requests. `/api/files` allow-list narrowed (no more `~/.openclaw` exposure), with a deny-list for `.env` / `secrets` / SSH keys, and HTML/SVG forced to `attachment` disposition + tight CSP / nosniff headers — stored-XSS-via-attachment closed. Admin gate on `/api/services`, `/api/system`, `/api/modules`, `/api/file-manager` mutations. `uploadAttachment` capped at 10 MB and refuses HTML/SVG. `execSync` template literals in file-manager replaced with `execFileSync`. Boot-migration NOTICE spam silenced. See [CHANGELOG.md](./CHANGELOG.md) for full list.
+
+> **Previous (3.7.0):** Modular architecture (Documents as the first toggleable module). Settings → Modules with impact-preview disable + typed confirmation.
 
 > **Previous (3.6.0):** New `/documents` page with Tiptap + Monaco editors, audit log per file, ticket↔document linking, assignee dropdown with colored dots.
 

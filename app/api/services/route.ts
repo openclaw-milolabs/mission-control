@@ -88,6 +88,9 @@ export async function GET(): Promise<NextResponse> {
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
+    const { guardAdmin } = await import("@/lib/auth/roles");
+    const guard = await guardAdmin();
+    if ("error" in guard) return guard.error;
     const body = (await request.json()) as Json;
     const action = String(body.action || "");
     const service = String(body.service || "");

@@ -3,17 +3,48 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
- * GET /api/files?path=/home/clawdbot/.openclaw/workspace/hello.md
+ * GET /api/files?path=<absolute path>
  *
- * Serves files from allowed directories for ticket attachment downloads.
- * Only paths under ALLOWED_ROOTS can be served.
+ * Serves files from a narrow set of approved roots for ticket-attachment
+ * downloads. The roots used to be the whole openclaw home, which included
+ * secrets and tokens — now restricted to the project's `documents/`,
+ * `runtime-artifacts/`, and `storage/` directories. `/tmp` is kept so the
+ * agenda/file-manager-staged downloads still work but is hardened by an
+ * extension deny-list.
  */
 
+const PROJECT_ROOT = process.cwd();
+
+// Restrict reachable directories. /home/clawdbot/.openclaw (the parent of
+// secrets/, agents/sessions/, etc.) is intentionally NOT here anymore.
 const ALLOWED_ROOTS = [
-  "/home/clawdbot/.openclaw/workspace",
-  "/home/clawdbot/.openclaw",
-  "/storage",
+  path.resolve(PROJECT_ROOT, "documents"),
+  path.resolve(PROJECT_ROOT, "runtime-artifacts"),
+  path.resolve(PROJECT_ROOT, "storage"),
   "/tmp",
+];
+
+// Names that should NEVER be served, even from an otherwise-allowed root.
+// Most are credential/configuration files that don't belong in attachments.
+const DENY_FILE_NAMES = new Set([
+  ".env",
+  ".env.local",
+  ".env.production",
+  ".env.development",
+  ".env.production.local",
+  "secrets.env",
+  "openclaw-token",
+  "session.json",
+  "id_rsa",
+  "id_ed25519",
+]);
+
+const DENY_PATH_FRAGMENTS = [
+  "/.openclaw/secrets/",
+  "/.openclaw/agents/",
+  "/.ssh/",
+  "/.aws/",
+  "/.config/openclaw/secrets",
 ];
 
 const MIME_MAP: Record<string, string> = {
@@ -61,13 +92,21 @@ function getMimeType(filePath: string): string {
   return MIME_MAP[ext] || "application/octet-stream";
 }
 
-function isAllowed(filePath: string): boolean {
+export function isAllowedAttachmentPath(filePath: string): boolean {
+  if (typeof filePath !== "string" || !filePath) return false;
   const resolved = path.resolve(filePath);
-  // Prevent path traversal
-  if (resolved !== filePath && resolved !== path.normalize(filePath)) {
-    // Allow both — resolve handles symlinks, normalize handles ..
+  if (resolved.includes("\0")) return false;
+  // Reject any segment-based deny match before doing the root check.
+  for (const frag of DENY_PATH_FRAGMENTS) {
+    if (resolved.includes(frag)) return false;
   }
-  return ALLOWED_ROOTS.some((root) => resolved.startsWith(root + "/") || resolved === root);
+  const base = path.basename(resolved);
+  if (DENY_FILE_NAMES.has(base) || base.toLowerCase().endsWith(".env")) return false;
+  return ALLOWED_ROOTS.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+}
+
+function isAllowed(filePath: string): boolean {
+  return isAllowedAttachmentPath(filePath);
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
@@ -93,9 +132,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const fileName = path.basename(resolved);
     const forceDownload = request.nextUrl.searchParams.get("download") === "1";
 
-    // For images and PDFs, allow inline viewing; for others, force download
-    const inlineTypes = ["image/", "application/pdf", "text/"];
-    const isInline = !forceDownload && inlineTypes.some((t) => mimeType.startsWith(t));
+    // Inline rendering only for safe types — never HTML or SVG (script vectors)
+    // and never text/javascript / text/css (mime confusion).
+    const SAFE_INLINE_TYPES = [
+      "image/png", "image/jpeg", "image/gif", "image/webp", "image/x-icon",
+      "application/pdf",
+      "text/plain", "text/markdown", "text/csv",
+    ];
+    const safeInline = SAFE_INLINE_TYPES.includes(mimeType);
+    const isInline = !forceDownload && safeInline;
     const disposition = isInline
       ? `inline; filename="${fileName}"`
       : `attachment; filename="${fileName}"`;
@@ -107,6 +152,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         "Content-Disposition": disposition,
         "Content-Length": String(buffer.length),
         "Cache-Control": "private, max-age=60",
+        // Defense-in-depth: block MIME sniffing and forbid this response from
+        // being framed, which neutralises clickjacking on PDF/text previews.
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+        "Referrer-Policy": "no-referrer",
       },
     });
   } catch (err: unknown) {

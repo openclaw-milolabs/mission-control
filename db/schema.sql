@@ -250,6 +250,43 @@ create table if not exists ticket_documents (
 );
 create index if not exists ticket_documents_doc_idx on ticket_documents(document_id);
 
+-- One-shot audit: scrub any ticket_attachments rows whose `path` points
+-- outside the new narrow allowlist (e.g. left over from when /api/files
+-- exposed the whole ~/.openclaw home). Idempotent: only runs once.
+alter table app_settings add column if not exists attachment_paths_audited_at timestamptz;
+do $$
+begin
+  if not exists (select 1 from app_settings where id = 1 and attachment_paths_audited_at is not null) then
+    delete from ticket_attachments
+    where path is not null
+      and path <> ''
+      and path <> 'inline'
+      and path not like '%/documents/%'
+      and path not like '%/runtime-artifacts/%'
+      and path not like '%/storage/%'
+      and path not like '/tmp/%';
+    update app_settings set attachment_paths_audited_at = now() where id = 1;
+  end if;
+end $$;
+
+-- Allowlist of users who can sign in to this Mission Control instance.
+-- Any Azure AD user from the configured tenant can present a valid id-token,
+-- so we additionally require their email to be in this table. Role is either
+-- 'admin' (full power: services, system, modules, file-manager) or 'member'
+-- (everyday use: boards, agenda, documents).
+-- Bootstrap rule: when the table has zero rows the FIRST successful sign-in is
+-- auto-added as 'admin', so a fresh install can get going without DB surgery.
+create table if not exists allowed_users (
+  email text primary key,
+  role text not null default 'member',
+  display_name text,
+  created_at timestamptz not null default now(),
+  created_by_email text,
+  updated_at timestamptz not null default now(),
+  last_signed_in_at timestamptz
+);
+create index if not exists allowed_users_role_idx on allowed_users(role);
+
 -- Modules registry state. The declarative manifest lives in code
 -- (lib/modules/registry.ts); only the enabled/disabled state lives here.
 create table if not exists module_state (

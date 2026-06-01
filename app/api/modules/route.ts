@@ -104,6 +104,14 @@ export async function POST(request: Request) {
     if (!def) return fail(`Unknown module: ${moduleId}`);
     const actor = { name: session.name?.trim() || null, email: session.email.toLowerCase() };
 
+    if (action === "previewDisable" || action === "disable" || action === "enable") {
+      const { getSessionRole } = await import("@/lib/auth/roles");
+      const role = await getSessionRole(session);
+      if (role !== "admin") {
+        return fail("Admin role required to toggle modules.", 403);
+      }
+    }
+
     if (action === "previewDisable") {
       if (def.core) return fail("Core modules cannot be disabled.");
       const handler = HANDLERS[moduleId];

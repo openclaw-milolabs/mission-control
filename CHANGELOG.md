@@ -3,6 +3,50 @@
 All notable changes to Mission Control are documented here.
 
 
+## [3.8.0] - 2026-05-29
+
+Security hardening release. **All listed CVE-class issues from the 3.7.0 audit are closed.** No data leaks left wide-open. Required follow-ups (ops-side) are called out at the bottom.
+
+### Added — Security
+
+- **User allowlist + roles.** New `allowed_users` table (email PK, role: `admin` | `member`). Auth at `/api/auth/session` now verifies the Azure AD id-token AND checks the user is on the allowlist before issuing a session — being in the tenant is no longer enough. **Bootstrap rule:** when the table is empty the first successful sign-in is auto-promoted to admin so a fresh install still works without DB surgery.
+- **Settings → "Allowed users"** admin-only section. Add / remove users, change roles (admin / member). You can't demote or remove yourself.
+- **CSRF Origin guard in [proxy.ts](proxy.ts).** All state-changing requests (POST / PUT / PATCH / DELETE) under `/api/*` must come from the same origin as the request itself; checked against `Origin`, falling back to `Referer`. Missing both → 403. Honours `X-Forwarded-Host` so reverse proxies still work.
+- **`isAllowedAttachmentPath()`** export from [/api/files](app/api/files/route.ts). Used by `attachFileFromPath` so the same allow/deny rules apply on the write side, not just on read.
+- **Boot-migration audit** scrubs any pre-existing `ticket_attachments` rows whose `path` points outside the new narrow allow-list. Idempotent (gated by `app_settings.attachment_paths_audited_at`).
+
+### Changed — Security
+
+- **`/api/files` allow-list narrowed** to `documents/`, `runtime-artifacts/`, `storage/` (under project root), plus `/tmp`. The previous list included `/home/clawdbot/.openclaw` which exposed `secrets/`, `agents/sessions/`, `.env`. A new deny-list rejects anything matching `.env*`, `secrets.env`, `*-token`, `session.json`, `id_rsa`, `id_ed25519`, or path fragments `/.openclaw/secrets/`, `/.openclaw/agents/`, `/.ssh/`, `/.aws/` even inside an allowed root.
+- **`/api/files` no longer serves HTML or SVG inline.** Old behaviour: `Content-Disposition: inline` for any `text/*` or `image/*`. New behaviour: only known-safe types (`image/png|jpeg|gif|webp|x-icon`, `application/pdf`, `text/plain|markdown|csv`) render inline. HTML / SVG / JS / CSS attachments are always forced to `attachment`. Every response also gets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and a tight `Content-Security-Policy: default-src 'none'; sandbox`. Stored XSS via attachment download is closed.
+- **`uploadAttachment` rejects HTML/SVG outright** and caps payload size at 10 MB (was unbounded → DoS risk).
+- **`attachFileFromPath`** now refuses any path outside the allow-list. Previously accepted any absolute path on the filesystem.
+- **Admin gates** on every endpoint that touches infra:
+  - `/api/services` POST (start/stop/restart) — admin
+  - `/api/system` POST (update / rebuild / restart) — admin
+  - `/api/modules` POST (enable / disable / previewDisable) — admin
+  - `/api/file-manager` POST / PUT / DELETE (all mutating ops) — admin
+  - `/api/users` GET + POST — admin
+  - `/api/setup` POST refuses after `setup_completed=true` unless caller is admin (prevents anyone from flipping the setup flag back to lock everyone out).
+- **`/api/file-manager` `getUidName` / `getGidName` switched from `execSync` template literals to `execFileSync` with an args array.** Numeric uid/gid was the only attacker-vector before, but the template literal would have been a shell-injection if anyone later passed a string. Defense in depth.
+- **Boot-migration NOTICE spam silenced.** `ensureSchema` in `/api/documents` and the boot-migration block in `/api/tasks` now run once per process (cached in a `_*SchemaEnsured` flag). Previously every API hit re-ran every `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, which flooded `nextjs.log` with `42P07` / `42701` NOTICE messages and made real errors hard to find.
+
+### Database
+
+- New `allowed_users` table (`email` PK, `role`, `display_name`, `created_at`, `created_by_email`, `updated_at`, `last_signed_in_at`) + `allowed_users_role_idx`.
+- New `app_settings.attachment_paths_audited_at` column gating a one-shot scrub of legacy rogue attachment paths.
+- All migrations are idempotent in `db/schema.sql` and have boot safety nets in `lib/auth/roles.ts`.
+
+### Required ops-side follow-ups (NOT codebase-fixable)
+
+- `chmod 600 ~/.openclaw/workspace/mission-control/.env` so backup tooling can't accidentally include it.
+- Rotate any credentials that were ever exposed via the old `/api/files` allow-list if anyone outside the Azure AD tenant could have hit the route. (Behind sameSite cookies + tenant-gated SSO this is very unlikely, but rotate to be safe.)
+- Make sure the gateway token in `app_settings.gateway_token` was set by an admin, not an attacker mid-window.
+
+### Audit trail
+
+Every module enable / disable, services start / stop, attachment upload, and user-list change is recorded with `actor_email` + `actor_name` in `activity_logs`. The new allowed-users CRUD operations also update `allowed_users.last_signed_in_at` per sign-in so you can see who's actually using their access.
+
 ## [3.7.0] - 2026-05-29
 
 ### Added

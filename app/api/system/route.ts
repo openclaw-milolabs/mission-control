@@ -14,6 +14,9 @@ const fail = (msg: string, status = 400) => NextResponse.json({ ok: false, error
 
 export async function POST(request: Request) {
   try {
+    const { guardAdmin } = await import("@/lib/auth/roles");
+    const guard = await guardAdmin();
+    if ("error" in guard) return guard.error;
     const body = (await request.json()) as Json;
     const action = String(body.action || "");
 

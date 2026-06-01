@@ -8,12 +8,54 @@ import {
 } from "@/lib/auth/session";
 
 const PUBLIC_API_PREFIX = "/api/auth";
+const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * CSRF defense in depth: for state-changing requests, require Origin (or fall
+ * back to Referer) to be present and match the request's own host. The session
+ * cookie is sameSite=lax so most CSRF attempts are blocked at the browser; this
+ * blocks the rest.
+ */
+function isSameOrigin(req: NextRequest): boolean {
+  const method = req.method.toUpperCase();
+  if (!STATE_CHANGING_METHODS.has(method)) return true;
+  const origin = req.headers.get("origin");
+  const referer = req.headers.get("referer");
+  const host = req.headers.get("host") || req.nextUrl.host;
+  if (!host) return false;
+  const expectedHosts = [host];
+  // Honour the same X-Forwarded-Host the rest of Next.js does, if a reverse
+  // proxy is in front.
+  const fwd = req.headers.get("x-forwarded-host");
+  if (fwd) expectedHosts.push(fwd);
+  const check = (raw: string | null): boolean => {
+    if (!raw) return false;
+    try {
+      const u = new URL(raw);
+      return expectedHosts.includes(u.host);
+    } catch { return false; }
+  };
+  if (origin) return check(origin);
+  // Fall back to Referer for clients that strip Origin (older browsers, some
+  // server-side rendering paths).
+  if (referer) return check(referer);
+  // Neither header — be strict: refuse.
+  return false;
+}
 
 export default async function proxy(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
   if (pathname.startsWith(PUBLIC_API_PREFIX)) return NextResponse.next();
   if (pathname === "/health") return NextResponse.next();
+
+  // CSRF gate for state-changing requests on /api/* surfaces.
+  if (pathname.startsWith("/api/") && !isSameOrigin(req)) {
+    return NextResponse.json(
+      { ok: false, error: "Origin check failed (CSRF protection)." },
+      { status: 403 },
+    );
+  }
 
   const session = await verifySession(req);
 
