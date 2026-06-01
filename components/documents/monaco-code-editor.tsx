@@ -56,7 +56,7 @@ export function MonacoCodeEditor({ content, onChange, ext }: Props) {
   const language = useMemo(() => (ext && LANG_BY_EXT[ext]) || "plaintext", [ext]);
 
   return (
-    <div className="h-full w-full">
+    <div className="h-full w-full" onKeyDown={(e) => e.stopPropagation()}>
       <MonacoEditor
         height="100%"
         language={language}
