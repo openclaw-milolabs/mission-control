@@ -135,8 +135,9 @@ function SettingRow({
 // ── Main component ──────────────────────────────────────────────────────────
 
 export function SettingsPageClient(): React.ReactNode {
-  const { user: authUser } = useAuth();
+  const { user: authUser, role: authRole } = useAuth();
   const currentEmail = authUser?.email ?? null;
+  const isAdmin = authRole === "admin";
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionKey>("appearance");
@@ -780,7 +781,7 @@ export function SettingsPageClient(): React.ReactNode {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  const NAV_ITEMS = BASE_NAV_ITEMS;
+  const NAV_ITEMS = BASE_NAV_ITEMS.filter((item) => item.key !== "danger" || isAdmin);
 
   return (
     <div className="flex flex-1 flex-col px-4 py-6 sm:px-6 lg:px-8">
@@ -849,7 +850,7 @@ export function SettingsPageClient(): React.ReactNode {
 
         {/* Content area */}
         <div className="flex-1 min-w-0 max-w-2xl pb-12">
-          {sections[activeSection]()}
+          {activeSection === "danger" && !isAdmin ? null : sections[activeSection]()}
         </div>
       </div>
 

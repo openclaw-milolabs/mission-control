@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { createSession, getSession, sessionCookieAttrs, SESSION_DURATION_SECONDS } from "@/lib/auth/session";
-import { checkAndBootstrapAllowedUser } from "@/lib/auth/roles";
+import { checkAndBootstrapAllowedUser, getSessionRole } from "@/lib/auth/roles";
 
 // Lazily initialised — not evaluated at build time, only on first request.
 let _jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -78,7 +78,8 @@ export async function GET() {
   if (!session) {
     return NextResponse.json({ ok: false, error: "Not authenticated" }, { status: 401 });
   }
-  return NextResponse.json({ ok: true, user: session });
+  const role = await getSessionRole(session);
+  return NextResponse.json({ ok: true, user: session, role: role ?? "member" });
 }
 
 /**
