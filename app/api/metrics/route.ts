@@ -136,8 +136,13 @@ export async function POST(request: Request) {
       const guard = guardSelectOnly(sqlText);
       if (!guard.ok) return fail(guard.reason);
 
-      const posRow = await sql`select coalesce(max(position), -1) + 1 as pos from metrics where workspace_id=${wid}`;
-      const position = Number((posRow as Array<{ pos: number }>)[0]?.pos ?? 0);
+      const posRow = await sql`
+        select coalesce(max(position), -1) + 1 as pos
+        from metrics
+        where workspace_id=${wid}
+      `;
+
+      const position = Number((posRow as unknown as Array<{ pos: number }>)[0]?.pos ?? 0);
       const rows = await sql`
         insert into metrics (
           workspace_id, name, description, sql_text, chart_type, x_column, y_columns,
@@ -219,7 +224,12 @@ export async function POST(request: Request) {
       } else {
         metricId = String(body.metricId || "");
         if (!metricId) return fail("Metric id is required.");
-        const rows = await sql`select sql_text from metrics where id = ${metricId} limit 1` as Array<{ sql_text: string }>;
+        const rows = (await sql`
+          select sql_text
+          from metrics
+          where id = ${metricId}
+          limit 1
+        `) as unknown as Array<{ sql_text: string }>;
         if (!rows[0]) return fail("Metric not found.", 404);
         sqlText = rows[0].sql_text;
       }
