@@ -36,6 +36,25 @@ const SERIES_COLORS = [
   "var(--chart-5)",
 ];
 
+function formatXTick(value: unknown): string {
+  const s = String(value ?? "");
+  // YYYY-MM-DD HH:mm
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) return s.slice(11, 16);
+  // YYYY-MM-DD
+  const daily = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (daily) {
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    return `${months[+daily[2] - 1]} ${+daily[3]}`;
+  }
+  // YYYY-MM
+  const monthly = s.match(/^(\d{4})-(\d{2})$/);
+  if (monthly) {
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    return `${months[+monthly[2] - 1]} '${s.slice(2, 4)}`;
+  }
+  return s;
+}
+
 function coerceNumber(v: unknown): number {
   if (typeof v === "number") return v;
   if (typeof v === "bigint") return Number(v);
@@ -145,7 +164,7 @@ export function MetricChart({ type, xColumn, yColumns, rows }: Props) {
       <ChartContainer config={config} className="h-[260px] w-full">
         <LineChart data={data} margin={{ left: 4, right: 12, top: 8, bottom: 0 }}>
           <CartesianGrid vertical={false} strokeDasharray="3 3" />
-          <XAxis dataKey={xColumn} tickLine={false} axisLine={false} tickMargin={6} fontSize={10} />
+          <XAxis dataKey={xColumn} tickLine={false} axisLine={false} tickMargin={6} fontSize={10} tickFormatter={formatXTick} />
           <YAxis tickLine={false} axisLine={false} tickMargin={6} fontSize={10} />
           <ChartTooltip content={<ChartTooltipContent />} />
           {yColumns.map((col, i) => (
@@ -169,7 +188,7 @@ export function MetricChart({ type, xColumn, yColumns, rows }: Props) {
       <ChartContainer config={config} className="h-[260px] w-full">
         <AreaChart data={data} margin={{ left: 4, right: 12, top: 8, bottom: 0 }}>
           <CartesianGrid vertical={false} strokeDasharray="3 3" />
-          <XAxis dataKey={xColumn} tickLine={false} axisLine={false} tickMargin={6} fontSize={10} />
+          <XAxis dataKey={xColumn} tickLine={false} axisLine={false} tickMargin={6} fontSize={10} tickFormatter={formatXTick} />
           <YAxis tickLine={false} axisLine={false} tickMargin={6} fontSize={10} />
           <ChartTooltip content={<ChartTooltipContent indicator="line" />} />
           <defs>
@@ -202,7 +221,7 @@ export function MetricChart({ type, xColumn, yColumns, rows }: Props) {
     <ChartContainer config={config} className="h-[260px] w-full">
       <BarChart data={data} margin={{ left: 4, right: 12, top: 8, bottom: 0 }}>
         <CartesianGrid vertical={false} strokeDasharray="3 3" />
-        <XAxis dataKey={xColumn} tickLine={false} axisLine={false} tickMargin={6} fontSize={10} />
+        <XAxis dataKey={xColumn} tickLine={false} axisLine={false} tickMargin={6} fontSize={10} tickFormatter={formatXTick} />
         <YAxis tickLine={false} axisLine={false} tickMargin={6} fontSize={10} />
         <ChartTooltip content={<ChartTooltipContent />} />
         {yColumns.map((col, i) => (

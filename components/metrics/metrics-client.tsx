@@ -31,12 +31,11 @@ type Health = {
   secretsPath?: string;
 };
 
-const WINDOW_PILLS: Array<{ key: WindowName | "inherit"; label: string }> = [
-  { key: "inherit", label: "Per-metric default" },
-  { key: "daily", label: "Daily" },
-  { key: "weekly", label: "Weekly" },
-  { key: "monthly", label: "Monthly" },
-  { key: "yearly", label: "Yearly" },
+const WINDOW_PILLS: Array<{ key: WindowName; label: string }> = [
+  { key: "daily", label: "Day" },
+  { key: "weekly", label: "Week" },
+  { key: "monthly", label: "Month" },
+  { key: "yearly", label: "Year" },
 ];
 
 export function MetricsClient() {
@@ -48,7 +47,7 @@ export function MetricsClient() {
 
   const [metrics, setMetrics] = useState<MetricDef[] | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
-  const [globalWindow, setGlobalWindow] = useState<WindowName | "inherit">("inherit");
+  const [globalWindow, setGlobalWindow] = useState<WindowName>("monthly");
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<MetricFormData | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<MetricDef | null>(null);
@@ -115,35 +114,8 @@ export function MetricsClient() {
 
   return (
     <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 border-b px-5 py-3">
-        <div className="flex flex-1 items-center gap-2 min-w-0">
-          <ChartBarIcon className="size-4 text-muted-foreground shrink-0" />
-          <h1 className="text-sm font-semibold tracking-tight">Metrics</h1>
-          {metrics && (
-            <span className="text-[11px] text-muted-foreground tabular-nums">
-              {metrics.length} chart{metrics.length === 1 ? "" : "s"}
-            </span>
-          )}
-        </div>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => { setRefreshKey((k) => k + 1); void loadMetrics(); void loadHealth(); }}
-          aria-label="Refresh all"
-          title="Refresh all"
-        >
-          <RefreshCwIcon className="size-4" />
-        </Button>
-        <Button size="sm" onClick={openCreate} className="gap-1.5">
-          <PlusIcon className="size-4" />
-          New metric
-        </Button>
-      </div>
-
-      {/* Global window pills + health banner */}
+      {/* Toolbar: window pills + health + actions */}
       <div className="flex flex-wrap items-center gap-3 border-b px-5 py-2.5 bg-muted/[0.03]">
-        <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Window</span>
         <div className="flex flex-wrap gap-1">
           {WINDOW_PILLS.map((p) => {
             const active = globalWindow === p.key;
@@ -163,21 +135,36 @@ export function MetricsClient() {
             );
           })}
         </div>
-        <div className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground">
-          {health?.ok ? (
-            <>
-              <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
-              MySQL {health.version}{health.database ? ` · ${health.database}` : ""}
-              {health.isReadOnlyUser === false && (
-                <span className="ml-2 text-amber-600">⚠ user has write privileges</span>
-              )}
-            </>
-          ) : (
-            <>
-              <span className="inline-block size-1.5 rounded-full bg-rose-500" />
-              {health?.error || "MySQL unreachable"}
-            </>
-          )}
+        <div className="ml-auto flex items-center gap-3">
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+            {health?.ok ? (
+              <>
+                <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+                MySQL {health.version}{health.database ? ` · ${health.database}` : ""}
+                {health.isReadOnlyUser === false && (
+                  <span className="ml-2 text-amber-600">⚠ user has write privileges</span>
+                )}
+              </>
+            ) : (
+              <>
+                <span className="inline-block size-1.5 rounded-full bg-rose-500" />
+                {health?.error || "MySQL unreachable"}
+              </>
+            )}
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => { setRefreshKey((k) => k + 1); void loadMetrics(); void loadHealth(); }}
+            aria-label="Refresh all"
+            title="Refresh all"
+          >
+            <RefreshCwIcon className="size-4" />
+          </Button>
+          <Button size="sm" onClick={openCreate} className="gap-1.5">
+            <PlusIcon className="size-4" />
+            New metric
+          </Button>
         </div>
       </div>
 

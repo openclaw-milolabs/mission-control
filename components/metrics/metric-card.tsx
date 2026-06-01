@@ -30,13 +30,12 @@ type WindowName = "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
 type Props = {
   metric: MetricDef;
-  globalWindow: WindowName | "inherit";
+  globalWindow: WindowName;
   onEdit: () => void;
   onDelete: () => void;
 };
 
-const WINDOW_LABEL: Record<WindowName | "inherit", string> = {
-  inherit: "Default",
+const WINDOW_LABEL: Record<WindowName, string> = {
   daily: "Day",
   weekly: "Week",
   monthly: "Month",
@@ -44,8 +43,7 @@ const WINDOW_LABEL: Record<WindowName | "inherit", string> = {
   custom: "Custom",
 };
 
-const WINDOW_PILLS: Array<{ key: WindowName | "inherit"; label: string }> = [
-  { key: "inherit", label: "Default" },
+const WINDOW_PILLS: Array<{ key: WindowName; label: string }> = [
   { key: "daily", label: "Day" },
   { key: "weekly", label: "Week" },
   { key: "monthly", label: "Month" },
@@ -62,9 +60,7 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
   const effectiveWindow: WindowName =
     override !== "inherit"
       ? override
-      : globalWindow !== "inherit"
-        ? globalWindow as WindowName
-        : metric.default_window;
+      : globalWindow;
 
   // We cache per-window so re-pressing a pill doesn't re-hit MySQL.
   const cache = useRef<Map<string, { rows: Record<string, unknown>[]; meta: NonNullable<typeof meta> }>>(new Map());
@@ -153,7 +149,7 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
 
       <div className="flex items-center gap-1 border-b bg-muted/[0.04] px-3 py-2">
         {WINDOW_PILLS.map((p) => {
-          const active = override === p.key;
+          const active = effectiveWindow === p.key;
           return (
             <button
               key={p.key}
@@ -169,9 +165,6 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
             </button>
           );
         })}
-        <span className="ml-auto text-[10px] text-muted-foreground/70">
-          showing {WINDOW_LABEL[override] === "Default" ? `default (${effectiveWindow})` : WINDOW_LABEL[override]}
-        </span>
       </div>
 
       <div className="flex-1 min-h-[260px] p-3">

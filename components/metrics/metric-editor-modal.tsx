@@ -4,24 +4,12 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { PlayIcon, Loader2Icon, BookOpenIcon } from "lucide-react";
+import { PlayIcon, Loader2Icon, BookOpenIcon, ChartBarIcon, LineChartIcon, AreaChartIcon, PieChartIcon, HashIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MetricChart } from "@/components/metrics/metric-chart";
 
@@ -41,6 +29,8 @@ export type MetricFormData = {
   defaultWindow: "daily" | "weekly" | "monthly" | "yearly";
 };
 
+type Step = 1 | 2 | 3;
+
 type Props = {
   open: boolean;
   initial?: MetricFormData;
@@ -48,13 +38,29 @@ type Props = {
   onSaved: () => void;
 };
 
+const WINDOW_OPTIONS: Array<{ key: MetricFormData["defaultWindow"]; label: string; desc: string }> = [
+  { key: "daily",   label: "Day",   desc: "Last 24h" },
+  { key: "weekly",  label: "Week",  desc: "Last 7 days" },
+  { key: "monthly", label: "Month", desc: "Last 30 days" },
+  { key: "yearly",  label: "Year",  desc: "Last 12 months" },
+];
+
+const CHART_TYPES: Array<{ key: MetricFormData["chartType"]; label: string; icon: React.ReactNode; desc: string }> = [
+  { key: "line",  label: "Line",  icon: <LineChartIcon  className="size-5" />, desc: "Trends over time" },
+  { key: "bar",   label: "Bar",   icon: <ChartBarIcon   className="size-5" />, desc: "Compare values" },
+  { key: "area",  label: "Area",  icon: <AreaChartIcon  className="size-5" />, desc: "Volume over time" },
+  { key: "pie",   label: "Pie",   icon: <PieChartIcon   className="size-5" />, desc: "Part of whole" },
+  { key: "donut", label: "Donut", icon: <PieChartIcon   className="size-5" />, desc: "Ring chart" },
+  { key: "kpi",   label: "KPI",   icon: <HashIcon       className="size-5" />, desc: "Single number" },
+];
+
 const STARTER_SQL = `SELECT
-  DATE_FORMAT(created_at, :bucket) AS bucket,
+  DATE_FORMAT(created_at, :bucket) AS period,
   COUNT(*) AS count
 FROM your_table
 WHERE created_at BETWEEN :since AND :until
-GROUP BY bucket
-ORDER BY bucket`;
+GROUP BY period
+ORDER BY period`;
 
 const EMPTY: MetricFormData = {
   name: "",
@@ -69,8 +75,11 @@ const EMPTY: MetricFormData = {
 type Column = { name: string; type: string | null };
 type Row = Record<string, unknown>;
 
+const STEP_LABELS = ["Basics", "Query", "Chart"] as const;
+
 export function MetricEditorModal({ open, initial, onClose, onSaved }: Props) {
   const isEdit = Boolean(initial?.id);
+  const [step, setStep] = useState<Step>(1);
   const [form, setForm] = useState<MetricFormData>(initial || EMPTY);
   const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -82,6 +91,7 @@ export function MetricEditorModal({ open, initial, onClose, onSaved }: Props) {
   useEffect(() => {
     if (!open) return;
     setForm(initial || EMPTY);
+    setStep(1);
     setError("");
     setPreviewColumns([]);
     setPreviewRows([]);
@@ -111,11 +121,9 @@ export function MetricEditorModal({ open, initial, onClose, onSaved }: Props) {
       setPreviewColumns(j.columns || []);
       setPreviewRows(j.rows || []);
       setPreviewRowCount(j.rowCount ?? null);
-      // Auto-pick x / y if user hasn't yet.
       if (!form.xColumn && j.columns?.[0]) update("xColumn", j.columns[0].name);
-      if ((form.yColumns?.length ?? 0) === 0 && j.columns?.length > 1) {
+      if ((form.yColumns?.length ?? 0) === 0 && j.columns?.length > 1)
         update("yColumns", j.columns.slice(1).map((c: Column) => c.name));
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to run query.");
     } finally {
@@ -125,25 +133,24 @@ export function MetricEditorModal({ open, initial, onClose, onSaved }: Props) {
 
   const save = async () => {
     if (!form.name.trim()) { setError("Name is required."); return; }
-    if (!form.sql.trim()) { setError("SQL is required."); return; }
+    if (!form.sql.trim())  { setError("SQL is required.");  return; }
     setSaving(true);
     setError("");
     try {
-      const body = {
-        action: isEdit ? "updateMetric" : "createMetric",
-        id: form.id,
-        name: form.name,
-        description: form.description,
-        sql: form.sql,
-        chartType: form.chartType,
-        xColumn: form.xColumn,
-        yColumns: form.yColumns,
-        defaultWindow: form.defaultWindow,
-      };
       const res = await fetch("/api/metrics", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          action: isEdit ? "updateMetric" : "createMetric",
+          id: form.id,
+          name: form.name,
+          description: form.description,
+          sql: form.sql,
+          chartType: form.chartType,
+          xColumn: form.xColumn,
+          yColumns: form.yColumns,
+          defaultWindow: form.defaultWindow,
+        }),
       });
       const j = await res.json();
       if (!j.ok) { setError(j.error || "Failed to save."); return; }
@@ -162,181 +169,304 @@ export function MetricEditorModal({ open, initial, onClose, onSaved }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o && !saving) onClose(); }}>
-      <DialogContent className="sm:max-w-[1100px] p-0">
-        <DialogHeader className="px-6 pt-5 pb-3 border-b">
-          <DialogTitle className="text-base">{isEdit ? "Edit metric" : "New metric"}</DialogTitle>
-          <DialogDescription className="text-[11px]">
-            Paste a SELECT, reference <span className="font-mono">:since</span>, <span className="font-mono">:until</span>, <span className="font-mono">:bucket</span>, click Test, then save.
-          </DialogDescription>
-        </DialogHeader>
+      <DialogContent className="sm:max-w-[700px] p-0 gap-0">
 
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_360px] gap-0 max-h-[78vh] overflow-hidden">
-          {/* LEFT — SQL editor + preview */}
-          <div className="flex flex-col min-h-0 border-r">
-            <div className="px-4 pt-3 pb-2 border-b flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                SQL
-              </span>
-              <Button size="sm" onClick={runPreview} disabled={running} className="gap-1.5">
-                {running ? <Loader2Icon className="size-3 animate-spin" /> : <PlayIcon className="size-3" />}
-                Test query
-              </Button>
-            </div>
-            <div className="h-[320px] min-h-0">
-              <MonacoCodeEditor
-                content={form.sql}
-                onChange={(v) => update("sql", v)}
-                ext=".sql"
-              />
-            </div>
-
-            <div className="px-4 pt-3 pb-2 border-t border-b flex items-center gap-2">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                Preview
-              </span>
-              {previewRowCount !== null && (
-                <span className="text-[10px] text-muted-foreground tabular-nums">
-                  {previewRowCount} rows
-                </span>
-              )}
-            </div>
-            <div className="flex-1 min-h-[200px] p-3 overflow-auto">
-              {error ? (
-                <pre className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-[11px] text-destructive whitespace-pre-wrap">
-                  {error}
-                </pre>
-              ) : previewRows.length === 0 ? (
-                <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                  Run the query to preview the chart.
-                </div>
-              ) : (
-                <MetricChart
-                  type={form.chartType}
-                  xColumn={form.xColumn || previewColumns[0]?.name || ""}
-                  yColumns={form.yColumns.length > 0 ? form.yColumns : previewColumns.slice(1).map((c) => c.name)}
-                  rows={previewRows}
-                />
-              )}
-            </div>
-          </div>
-
-          {/* RIGHT — metadata form */}
-          <div className="flex flex-col gap-4 overflow-auto p-5 bg-muted/[0.04]">
-            <Field label="Name">
-              <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="Orders per day" />
-            </Field>
-            <Field label="Description (optional)">
-              <Textarea value={form.description} onChange={(e) => update("description", e.target.value)} rows={2} placeholder="Short one-line summary" />
-            </Field>
-
-            <Field label="Chart type">
-              <Select value={form.chartType} onValueChange={(v) => update("chartType", v as MetricFormData["chartType"])}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="bar">Bar</SelectItem>
-                  <SelectItem value="line">Line</SelectItem>
-                  <SelectItem value="area">Area</SelectItem>
-                  <SelectItem value="pie">Pie</SelectItem>
-                  <SelectItem value="donut">Donut</SelectItem>
-                  <SelectItem value="kpi">KPI (single number)</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-
-            <Field label="X column (category / time)">
-              {xCandidates.length === 0 ? (
-                <Input
-                  value={form.xColumn}
-                  onChange={(e) => update("xColumn", e.target.value)}
-                  placeholder="Run the query first"
-                />
-              ) : (
-                <Select value={form.xColumn} onValueChange={(v) => update("xColumn", v)}>
-                  <SelectTrigger><SelectValue placeholder="Pick a column" /></SelectTrigger>
-                  <SelectContent>
-                    {xCandidates.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              )}
-            </Field>
-
-            <Field label="Y columns (values)">
-              {yCandidates.length === 0 ? (
-                <Input
-                  value={form.yColumns.join(", ")}
-                  onChange={(e) => update("yColumns", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
-                  placeholder="count, revenue (comma-separated)"
-                />
-              ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {yCandidates.map((c) => {
-                    const selected = form.yColumns.includes(c);
-                    return (
-                      <button
-                        key={c}
-                        type="button"
-                        onClick={() => {
-                          update(
-                            "yColumns",
-                            selected ? form.yColumns.filter((x) => x !== c) : [...form.yColumns, c],
-                          );
-                        }}
-                        className={cn(
-                          "rounded-full border px-2.5 py-1 text-xs transition-colors",
-                          selected
-                            ? "border-foreground/40 bg-foreground/5 font-medium"
-                            : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
-                        )}
-                      >
-                        {c}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </Field>
-
-            <Field label="Default window">
-              <Select value={form.defaultWindow} onValueChange={(v) => update("defaultWindow", v as MetricFormData["defaultWindow"])}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="daily">Daily (last 24h)</SelectItem>
-                  <SelectItem value="weekly">Weekly (last 7 days)</SelectItem>
-                  <SelectItem value="monthly">Monthly (last 30 days)</SelectItem>
-                  <SelectItem value="yearly">Yearly (last 12 months)</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-
-            <div className="rounded-md border bg-background/60 p-3 text-[11px] text-muted-foreground">
-              <div className="mb-1 flex items-center gap-1.5 font-medium text-foreground">
-                <BookOpenIcon className="size-3.5" /> Placeholders
+        {/* Step indicator */}
+        <div className="flex items-center gap-0 border-b px-6 py-4">
+          {STEP_LABELS.map((label, i) => {
+            const n = (i + 1) as Step;
+            const done = step > n;
+            const current = step === n;
+            return (
+              <div key={label} className="flex items-center">
+                {i > 0 && <div className={cn("w-8 h-px mx-2", done ? "bg-primary/60" : "bg-border")} />}
+                <button
+                  type="button"
+                  onClick={() => { if (done) setStep(n); }}
+                  disabled={!done && !current}
+                  className={cn(
+                    "flex items-center gap-2 text-xs font-medium transition-colors",
+                    current ? "text-foreground" : done ? "text-primary cursor-pointer hover:text-primary/80" : "text-muted-foreground",
+                  )}
+                >
+                  <span className={cn(
+                    "flex size-6 items-center justify-center rounded-full text-[11px] font-bold transition-colors",
+                    current ? "bg-foreground text-background" : done ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground",
+                  )}>
+                    {done ? "✓" : n}
+                  </span>
+                  {label}
+                </button>
               </div>
-              <ul className="space-y-1">
-                <li><span className="font-mono text-foreground">:since</span> — start of the window</li>
-                <li><span className="font-mono text-foreground">:until</span> — now</li>
-                <li><span className="font-mono text-foreground">:bucket</span> — MySQL <span className="font-mono">DATE_FORMAT</span> mask sized to the window</li>
-              </ul>
-            </div>
-          </div>
+            );
+          })}
+          <p className="ml-auto text-xs text-muted-foreground">{isEdit ? "Edit metric" : "New metric"}</p>
         </div>
 
-        <DialogFooter className="px-6 py-3 border-t">
-          <Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button>
-          <Button onClick={() => void save()} disabled={saving || !form.name.trim() || !form.sql.trim()}>
-            {saving ? "Saving…" : isEdit ? "Save changes" : "Create metric"}
+        {/* Step content */}
+        <div className="min-h-[420px] overflow-auto">
+
+          {/* ── Step 1: Basics ── */}
+          {step === 1 && (
+            <div className="flex flex-col gap-6 p-6">
+              <div>
+                <h2 className="text-base font-semibold">What are you tracking?</h2>
+                <p className="text-sm text-muted-foreground mt-1">Give your metric a name and choose the default time range.</p>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium">Metric name *</label>
+                <Input
+                  value={form.name}
+                  onChange={(e) => update("name", e.target.value)}
+                  placeholder="e.g. Daily Active Players"
+                  className="h-11 text-base"
+                  autoFocus
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium text-muted-foreground">
+                  Description <span className="font-normal">(optional)</span>
+                </label>
+                <Textarea
+                  value={form.description}
+                  onChange={(e) => update("description", e.target.value)}
+                  rows={2}
+                  placeholder="Short description of what this measures"
+                  className="resize-none"
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium">Default time range</label>
+                <p className="text-xs text-muted-foreground">How far back should this chart look by default?</p>
+                <div className="grid grid-cols-4 gap-2 mt-1">
+                  {WINDOW_OPTIONS.map((w) => (
+                    <button
+                      key={w.key}
+                      type="button"
+                      onClick={() => update("defaultWindow", w.key)}
+                      className={cn(
+                        "flex flex-col items-center gap-1 rounded-xl border-2 p-3 transition-all",
+                        form.defaultWindow === w.key
+                          ? "border-primary bg-primary/5 text-primary"
+                          : "border-border bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground",
+                      )}
+                    >
+                      <span className="text-sm font-semibold">{w.label}</span>
+                      <span className="text-[10px] opacity-70">{w.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Step 2: Query ── */}
+          {step === 2 && (
+            <div className="flex flex-col gap-4 p-6">
+              <div>
+                <h2 className="text-base font-semibold">Write your query</h2>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Write a{" "}
+                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">SELECT</code> query against your database.
+                  Use{" "}
+                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">:since</code>{" "}
+                  /{" "}
+                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">:until</code>{" "}
+                  for the date range and{" "}
+                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">:bucket</code>{" "}
+                  for grouping.
+                </p>
+              </div>
+
+              <div className="rounded-xl border overflow-hidden">
+                <div className="h-[260px]">
+                  <MonacoCodeEditor
+                    content={form.sql}
+                    onChange={(v) => update("sql", v)}
+                    ext=".sql"
+                  />
+                </div>
+                <div className="border-t px-3 py-2 flex items-center justify-between bg-muted/[0.04]">
+                  <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <BookOpenIcon className="size-3 shrink-0" />
+                    <span>
+                      <code className="font-mono text-foreground">:since</code> / <code className="font-mono text-foreground">:until</code> = date range ·{" "}
+                      <code className="font-mono text-foreground">:bucket</code> = group format
+                    </span>
+                  </div>
+                  <Button size="sm" onClick={runPreview} disabled={running} className="gap-1.5 h-7 shrink-0">
+                    {running ? <Loader2Icon className="size-3 animate-spin" /> : <PlayIcon className="size-3" />}
+                    Test query
+                  </Button>
+                </div>
+              </div>
+
+              {error && (
+                <pre className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-[11px] text-destructive whitespace-pre-wrap">
+                  {error}
+                </pre>
+              )}
+
+              {previewRowCount !== null && !error && (
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 flex items-center gap-3">
+                  <span className="text-emerald-600 text-lg leading-none">✓</span>
+                  <div>
+                    <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">Query works!</p>
+                    <p className="text-xs text-muted-foreground">
+                      {previewRowCount} rows · columns: <span className="font-mono">{previewColumns.map((c) => c.name).join(", ")}</span>
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Step 3: Chart ── */}
+          {step === 3 && (
+            <div className="flex flex-col gap-5 p-6">
+              <div>
+                <h2 className="text-base font-semibold">Choose your visualization</h2>
+                <p className="text-sm text-muted-foreground mt-1">Pick a chart type and map your columns.</p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                {CHART_TYPES.map((ct) => (
+                  <button
+                    key={ct.key}
+                    type="button"
+                    onClick={() => update("chartType", ct.key)}
+                    className={cn(
+                      "flex items-center gap-3 rounded-xl border-2 p-3 text-left transition-all",
+                      form.chartType === ct.key
+                        ? "border-primary bg-primary/5"
+                        : "border-border bg-background hover:border-primary/40",
+                    )}
+                  >
+                    <span className={cn("shrink-0", form.chartType === ct.key ? "text-primary" : "text-muted-foreground")}>
+                      {ct.icon}
+                    </span>
+                    <div className="min-w-0">
+                      <p className={cn("text-sm font-medium", form.chartType === ct.key ? "text-primary" : "")}>{ct.label}</p>
+                      <p className="text-[10px] text-muted-foreground truncate">{ct.desc}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              {previewColumns.length > 0 ? (
+                <>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm font-medium">
+                      X axis <span className="text-muted-foreground font-normal text-xs">(category or time)</span>
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {xCandidates.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => update("xColumn", c)}
+                          className={cn(
+                            "rounded-full border px-3 py-1 text-xs font-mono transition-colors",
+                            form.xColumn === c
+                              ? "border-foreground bg-foreground text-background font-medium"
+                              : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
+                          )}
+                        >
+                          {c}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm font-medium">
+                      Y axis <span className="text-muted-foreground font-normal text-xs">(values — select one or more)</span>
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {yCandidates.map((c) => {
+                        const selected = form.yColumns.includes(c);
+                        return (
+                          <button
+                            key={c}
+                            type="button"
+                            onClick={() =>
+                              update("yColumns", selected ? form.yColumns.filter((x) => x !== c) : [...form.yColumns, c])
+                            }
+                            className={cn(
+                              "rounded-full border px-3 py-1 text-xs font-mono transition-colors",
+                              selected
+                                ? "border-foreground bg-foreground text-background font-medium"
+                                : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
+                            )}
+                          >
+                            {c}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-xl border border-dashed bg-muted/[0.03] px-4 py-5 text-center">
+                  <p className="text-sm text-muted-foreground">Go back to step 2 and run <strong>Test query</strong> to see column options here.</p>
+                </div>
+              )}
+
+              {previewRows.length > 0 && (
+                <div className="rounded-xl border overflow-hidden">
+                  <div className="px-3 py-2 border-b bg-muted/[0.04]">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Preview</span>
+                  </div>
+                  <div className="p-3">
+                    <MetricChart
+                      type={form.chartType}
+                      xColumn={form.xColumn || previewColumns[0]?.name || ""}
+                      yColumns={form.yColumns.length > 0 ? form.yColumns : previewColumns.slice(1).map((c) => c.name)}
+                      rows={previewRows}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between border-t px-6 py-4 bg-muted/[0.02]">
+          <Button
+            variant="ghost"
+            onClick={step === 1 ? onClose : () => { setError(""); setStep((s) => (s - 1) as Step); }}
+            disabled={saving}
+          >
+            {step === 1 ? "Cancel" : "← Back"}
           </Button>
-        </DialogFooter>
+          <div className="flex items-center gap-2">
+            {error && step !== 2 && (
+              <p className="text-xs text-destructive max-w-xs truncate">{error}</p>
+            )}
+            {step < 3 ? (
+              <Button
+                onClick={() => { setError(""); setStep((s) => (s + 1) as Step); }}
+                disabled={step === 1 ? !form.name.trim() : !form.sql.trim()}
+              >
+                Continue →
+              </Button>
+            ) : (
+              <Button
+                onClick={() => void save()}
+                disabled={saving || !form.name.trim() || !form.sql.trim()}
+              >
+                {saving
+                  ? <><Loader2Icon className="size-4 mr-2 animate-spin" /> Saving…</>
+                  : isEdit ? "Save changes" : "Create metric"}
+              </Button>
+            )}
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label className="text-[11px] font-medium text-foreground/70">{label}</Label>
-      {children}
-    </div>
   );
 }
