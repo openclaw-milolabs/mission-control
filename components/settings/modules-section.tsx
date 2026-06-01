@@ -150,10 +150,12 @@ function ModuleCard({
             type="button"
             disabled
             aria-disabled
-            className="relative inline-flex h-6 w-11 cursor-not-allowed items-center rounded-full bg-muted opacity-50"
+            className={cn(
+              "relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed rounded-full border-2 border-transparent transition-colors bg-muted opacity-40",
+            )}
             title="Core modules cannot be disabled"
           >
-            <span className="inline-block h-5 w-5 translate-x-5 rounded-full bg-background shadow-sm" />
+            <span className="pointer-events-none inline-block size-5 translate-x-5 rounded-full bg-white shadow-lg ring-0 transition-transform" />
           </button>
         ) : (
           <button
@@ -162,13 +164,13 @@ function ModuleCard({
             aria-checked={mod.enabled}
             onClick={mod.enabled ? onDisableClick : onEnableClick}
             className={cn(
-              "relative inline-flex h-6 w-11 cursor-pointer items-center rounded-full transition-colors",
-              mod.enabled ? "bg-primary" : "bg-input",
+              "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors",
+              mod.enabled ? "bg-primary" : "bg-muted",
             )}
           >
             <span className={cn(
-              "inline-block h-5 w-5 rounded-full bg-background shadow-sm transition-transform",
-              mod.enabled ? "translate-x-5" : "translate-x-0.5",
+              "pointer-events-none inline-block size-5 rounded-full bg-white shadow-lg ring-0 transition-transform",
+              mod.enabled ? "translate-x-5" : "translate-x-0",
             )} />
           </button>
         )}

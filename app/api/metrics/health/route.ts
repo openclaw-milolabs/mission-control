@@ -17,5 +17,5 @@ export async function GET() {
     );
   }
   const result = await pingMysql();
-  return NextResponse.json({ ok: result.ok, ...result });
+  return NextResponse.json(result);
 }
