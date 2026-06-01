@@ -34,6 +34,17 @@ fi
 # v2: agenda-worker removed — execution now via openclaw cron (no Redis/BullMQ needed)
 SERVICES="gateway-sync bridge-logger agenda-scheduler nextjs"
 
+# One-shot services run once and exit (e.g. a sync that imports state then quits).
+# They don't get a persistent PID; success is "the command exited with code 0".
+# Re-runs come from cron / the watchdog's own logic, not from this start loop.
+ONESHOT_SERVICES="gateway-sync"
+
+is_oneshot() {
+  local target=$1
+  case " $ONESHOT_SERVICES " in *" $target "*) return 0 ;; esac
+  return 1
+}
+
 declare -A SERVICE_CMDS
 declare -A SERVICE_LOG_FILES
 declare -A SERVICE_PIDS
@@ -88,6 +99,26 @@ start_service() {
     fi
   fi
 
+  cd "$PROJECT_ROOT"
+
+  # One-shot path: run synchronously, log to file, success = exit 0.
+  # Skip the PID liveness check entirely; record a last-run marker so
+  # `status` can show when it ran.
+  if is_oneshot "$svc"; then
+    rm -f "$pid_file" 2>/dev/null || true
+    echo -n "  Running $svc (one-shot)... "
+    local ran_marker="$PID_DIR/${svc}.last-ran"
+    if bash -c "$cmd" >> "$log_file" 2>&1; then
+      date -u +%Y-%m-%dT%H:%M:%SZ > "$ran_marker"
+      echo "OK"
+      return 0
+    else
+      local rc=$?
+      echo "FAILED (exit $rc) — check $log_file"
+      return 1
+    fi
+  fi
+
   if [ "$svc" = "nextjs" ]; then
     if command -v fuser >/dev/null 2>&1; then
       fuser -k 3000/tcp 2>/dev/null || true
@@ -104,8 +135,6 @@ start_service() {
   fi
 
   echo -n "  Starting $svc... "
-  cd "$PROJECT_ROOT"
-
   nohup bash -c "$cmd" >> "$log_file" 2>&1 < /dev/null &
   local new_pid=$!
   echo "$new_pid" > "$pid_file"
@@ -164,6 +193,16 @@ status_service() {
   local svc=$1
   local pid_file="${SERVICE_PIDS[$svc]}"
   local log_file="${SERVICE_LOG_FILES[$svc]}"
+
+  if is_oneshot "$svc"; then
+    local ran_marker="$PID_DIR/${svc}.last-ran"
+    if [ -f "$ran_marker" ]; then
+      echo "  $svc — one-shot (last ran $(cat "$ran_marker"))"
+    else
+      echo "  $svc — one-shot (never ran)"
+    fi
+    return 0
+  fi
 
   if pid_running "$(cat "$pid_file" 2>/dev/null)"; then
     echo "  $svc — RUNNING (pid $(cat "$pid_file"))"
@@ -306,17 +345,26 @@ case "$CMD" in
   start)
     if [ -n "$TARGET_SERVICE" ]; then
       echo "[mc-services] Starting $TARGET_SERVICE..."
-      start_service "$TARGET_SERVICE"
+      start_service "$TARGET_SERVICE" || true
     else
       if [ "$NEXTJS_MODE" = "dev" ]; then
         echo "[mc-services] Starting services (Next.js in dev mode)..."
       else
         echo "[mc-services] Starting services (Next.js in production mode)..."
       fi
+      # Don't let one failing service abort the cascade. We log per-service
+      # status above and surface a summary at the end.
+      any_failed=0
       for svc in $SERVICES; do
-        start_service "$svc"
+        if ! start_service "$svc"; then
+          any_failed=1
+        fi
       done
-      echo "[mc-services] All services started."
+      if [ "$any_failed" -eq 0 ]; then
+        echo "[mc-services] All services started."
+      else
+        echo "[mc-services] Some services failed to start — see per-service messages above."
+      fi
       start_watchdog
     fi
     ;;
