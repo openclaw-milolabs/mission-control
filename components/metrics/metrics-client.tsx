@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { useModules } from "@/components/modules/modules-provider";
 import { MetricCard, type MetricDef } from "@/components/metrics/metric-card";
 import { MetricEditorModal, type MetricFormData } from "@/components/metrics/metric-editor-modal";
+import { PageHeader } from "@/components/layout/page-header";
 
 type WindowName = "daily" | "weekly" | "monthly" | "yearly";
 
@@ -112,60 +113,60 @@ export function MetricsClient() {
     }
   };
 
+  const headerActions = (
+    <>
+      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        {health === null ? null : health.ok ? (
+          <>
+            <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+            <span>{health.database ?? "MySQL"}</span>
+          </>
+        ) : (
+          <>
+            <span className="inline-block size-1.5 rounded-full bg-rose-500" />
+            <span className="text-rose-500">MySQL unreachable</span>
+          </>
+        )}
+      </div>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        onClick={() => { setRefreshKey((k) => k + 1); void loadMetrics(); void loadHealth(); }}
+        aria-label="Refresh"
+        title="Refresh"
+      >
+        <RefreshCwIcon className="size-4" />
+      </Button>
+      <Button variant="outline" size="sm" onClick={openCreate} className="gap-1.5 cursor-pointer">
+        <PlusIcon className="size-4" />
+        New metric
+      </Button>
+    </>
+  );
+
   return (
     <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
-      {/* Toolbar: window pills + health + actions */}
-      <div className="flex flex-wrap items-center gap-3 border-b px-5 py-2.5 bg-muted/[0.03]">
-        <div className="flex flex-wrap gap-1">
-          {WINDOW_PILLS.map((p) => {
-            const active = globalWindow === p.key;
-            return (
-              <button
-                key={p.key}
-                onClick={() => setGlobalWindow(p.key)}
-                className={cn(
-                  "rounded-full px-3 py-1 text-[11px] font-medium transition-colors",
-                  active
-                    ? "bg-foreground text-background"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-              >
-                {p.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="ml-auto flex items-center gap-3">
-          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-            {health?.ok ? (
-              <>
-                <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
-                MySQL {health.version}{health.database ? ` · ${health.database}` : ""}
-                {health.isReadOnlyUser === false && (
-                  <span className="ml-2 text-amber-600">⚠ user has write privileges</span>
-                )}
-              </>
-            ) : (
-              <>
-                <span className="inline-block size-1.5 rounded-full bg-rose-500" />
-                {health?.error || "MySQL unreachable"}
-              </>
-            )}
-          </div>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => { setRefreshKey((k) => k + 1); void loadMetrics(); void loadHealth(); }}
-            aria-label="Refresh all"
-            title="Refresh all"
-          >
-            <RefreshCwIcon className="size-4" />
-          </Button>
-          <Button size="sm" onClick={openCreate} className="gap-1.5">
-            <PlusIcon className="size-4" />
-            New metric
-          </Button>
-        </div>
+      <PageHeader page="Metrics" actions={headerActions} />
+
+      {/* Window pills sub-toolbar */}
+      <div className="flex items-center gap-1 border-b px-5 py-2 bg-muted/[0.02]">
+        {WINDOW_PILLS.map((p) => {
+          const active = globalWindow === p.key;
+          return (
+            <button
+              key={p.key}
+              onClick={() => setGlobalWindow(p.key)}
+              className={cn(
+                "rounded-full px-3 py-1 text-[11px] font-medium transition-colors",
+                active
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              )}
+            >
+              {p.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Body */}
@@ -203,20 +204,6 @@ export function MetricsClient() {
               <Button onClick={openCreate} className="mt-4 gap-1.5">
                 <PlusIcon className="size-4" /> Create your first metric
               </Button>
-              <details className="mt-4 text-left text-[11px] text-muted-foreground">
-                <summary className="cursor-pointer">
-                  <BookOpenIcon className="mr-1 inline size-3" /> SQL starter
-                </summary>
-                <pre className="mt-2 rounded-md border bg-muted/40 p-3 font-mono text-[10px] text-foreground/80">
-{`SELECT
-  DATE_FORMAT(created_at, :bucket) AS bucket,
-  COUNT(*) AS count
-FROM orders
-WHERE created_at BETWEEN :since AND :until
-GROUP BY bucket
-ORDER BY bucket`}
-                </pre>
-              </details>
             </div>
           </div>
         ) : (

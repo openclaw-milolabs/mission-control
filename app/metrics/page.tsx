@@ -1,5 +1,4 @@
 import { AppSidebar } from "@/components/layout/app-sidebar";
-import { PageHeader } from "@/components/layout/page-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { MetricsClient } from "@/components/metrics/metrics-client";
 
@@ -17,8 +16,7 @@ export default function MetricsPage() {
     >
       <AppSidebar variant="inset" initialUser={null} />
       <SidebarInset className="h-svh md:h-[calc(100svh-1rem)] overflow-hidden min-h-0">
-        <PageHeader page="Metrics" />
-        <div className="flex flex-1 min-h-0 overflow-hidden">
+        <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
           <MetricsClient />
         </div>
       </SidebarInset>
