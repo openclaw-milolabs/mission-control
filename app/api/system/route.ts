@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { rm, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -49,7 +49,29 @@ export async function POST(request: Request) {
         const { stdout: pullOut } = await execFileAsync("git", ["pull", "--ff-only"], { cwd: PROJECT_ROOT, timeout: 30000 });
         await execFileAsync("npm", ["install", "--no-audit", "--no-fund"], { cwd: PROJECT_ROOT, timeout: 120000 });
         try {
-          await execFileAsync("docker", ["compose", "exec", "-T", "db", "psql", "-U", "openclaw", "-d", "mission_control", "-f", "/workspace/db/schema.sql"], { cwd: PROJECT_ROOT, timeout: 30000 });
+          // The `db` container has no /workspace mount (only db-init does).
+          // Pipe schema.sql through stdin instead of asking the container to read a file path.
+          const schemaPath = resolve(PROJECT_ROOT, "db/schema.sql");
+          if (!existsSync(schemaPath)) {
+            throw new Error(`schema not found at ${schemaPath}`);
+          }
+          await new Promise<void>((resolveP, rejectP) => {
+            const proc = spawn(
+              "docker",
+              ["compose", "exec", "-T", "db", "psql", "-U", "openclaw", "-d", "mission_control", "-v", "ON_ERROR_STOP=1"],
+              { cwd: PROJECT_ROOT },
+            );
+            let stderr = "";
+            proc.stderr.on("data", (d) => { stderr += d.toString(); });
+            proc.on("error", rejectP);
+            proc.on("close", (code) => {
+              if (code === 0) resolveP();
+              else rejectP(new Error(`psql exited ${code}: ${stderr.trim()}`));
+            });
+            const sql = readFileSync(schemaPath, "utf8");
+            proc.stdin.write(sql);
+            proc.stdin.end();
+          });
         } catch (dbErr) {
           console.warn("[system] DB migration warning (non-fatal):", dbErr instanceof Error ? dbErr.message : dbErr);
         }
