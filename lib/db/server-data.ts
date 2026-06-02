@@ -34,19 +34,6 @@ type TicketRow = {
   created_at: string;
   updated_at: string;
 };
-type ActivityRow = { id: string; occurred_at: string; source: string; event: string; details: string; level: string };
-
-type DashboardActivityLog = {
-  id: string;
-  occurredAt: string;
-  source: "Agent" | "Tasks" | "System" | "API";
-  event: string;
-  details: string;
-  level: "info" | "success" | "warning" | "error";
-};
-
-type ChartPoint = { date: string; created: number; completed: number; logs: number };
-
 function emptyBoardState(): BoardState {
   return { columns: {}, columnOrder: [], tickets: {}, ticketIdsByColumn: {} } as BoardState;
 }
@@ -226,86 +213,89 @@ export async function getDashboardStats(): Promise<{
   };
 }
 
-export async function getDashboardData() {
-  const boards = await getBoardsPageData();
-  const first = boards[0] ?? null;
-  const board = first?.data ?? emptyBoardState();
-  const tickets = Object.values(board.tickets) as Ticket[];
-  const activityLogs = (await getActivityLogs()).slice(0, 50);
-  const chartData: ChartPoint[] = await getChartData();
-  return { boardId: first?.id ?? null, board, tickets, activityLogs, chartData, logs24h: 0 };
-}
+export type KanbanSlice = { status: string; count: number; colorKey: string };
+export type DashboardTask = {
+  id: string;
+  title: string;
+  status: string;
+  colorKey: string;
+  priority: string;
+  dueDate: string | null;
+  done: boolean;
+  boardId: string;
+  boardName: string;
+};
+export type DashboardOverview = {
+  kanban: KanbanSlice[];
+  totals: { tickets: number; openTickets: number; agendaEvents: number };
+  tasks: DashboardTask[];
+};
 
-async function getActivityLogs(): Promise<DashboardActivityLog[]> {
+export async function getDashboardOverview(): Promise<DashboardOverview> {
   const sql = getSql();
   const workspace = await sql`select id from workspaces order by created_at asc limit 1`;
-  const workspaceId = workspace[0]?.id ?? null;
-  const rows = workspaceId
-    ? await sql<ActivityRow[]>`select id, occurred_at, source, event, details, level from activity_logs where workspace_id = ${workspaceId} order by occurred_at desc limit 50`
-    : [];
-  return rows.map((row) => ({
-    id: row.id,
-    occurredAt: row.occurred_at,
-    source: row.source as DashboardActivityLog["source"],
-    event: row.event,
-    details: row.details,
-    level: row.level as DashboardActivityLog["level"],
-  }));
-}
+  const wid = workspace[0]?.id ?? null;
+  if (!wid) {
+    return { kanban: [], totals: { tickets: 0, openTickets: 0, agendaEvents: 0 }, tasks: [] };
+  }
 
-async function getChartData(): Promise<ChartPoint[]> {
-  const sql = getSql();
-
-  // Get last 90 days of data in 3 parallel queries
-  const [createdRows, completedRows, logRows] = await Promise.all([
-    // Tickets created per day
-    sql`
-      select date_trunc('day', created_at)::date::text as day, count(*)::int as n
-      from tickets
-      where created_at >= now() - interval '90 days'
-      group by 1 order by 1
+  const [kanbanRows, agendaRow, openRow, taskRows] = await Promise.all([
+    // Tickets grouped by kanban column, aggregated across boards by column title.
+    sql<{ status: string; color_key: string; count: number; pos: number }[]>`
+      select c.title as status, c.color_key as color_key, count(t.id)::int as count, min(c.position) as pos
+      from columns c
+      join boards b on b.id = c.board_id and b.workspace_id = ${wid}
+      left join tickets t on t.column_id = c.id
+      group by c.title, c.color_key
+      order by pos asc, c.title asc
     `,
-    // Tickets moved to done/completed per day (using updated_at when execution_state = 'done')
-    sql`
-      select date_trunc('day', updated_at)::date::text as day, count(*)::int as n
-      from tickets
-      where execution_state = 'done'
-        and updated_at >= now() - interval '90 days'
-      group by 1 order by 1
-    `,
-    // Logs per day
-    sql`
-      select date_trunc('day', occurred_at)::date::text as day, count(*)::int as n
-      from agent_logs
-      where occurred_at >= now() - interval '90 days'
-      group by 1 order by 1
+    sql`select count(*)::int as count from agenda_events where workspace_id = ${wid}`,
+    sql`select count(*)::int as count from tickets where workspace_id = ${wid} and execution_state <> 'done'`,
+    // Active tickets surfaced to the user, soonest due first.
+    sql<{
+      id: string; title: string; priority: string; due_date: string | null;
+      execution_state: string; status: string; color_key: string;
+      board_id: string; board_name: string;
+    }[]>`
+      select t.id, t.title, t.priority, t.due_date::text as due_date, t.execution_state,
+             c.title as status, c.color_key as color_key,
+             b.id as board_id, b.name as board_name
+      from tickets t
+      join columns c on c.id = t.column_id
+      join boards b on b.id = t.board_id
+      where t.workspace_id = ${wid}
+        and t.execution_state <> 'done'
+      order by (t.due_date is null) asc, t.due_date asc, t.created_at desc
+      limit 8
     `,
   ]);
 
-  // Build lookup maps
-  const createdMap = new Map<string, number>();
-  for (const r of createdRows) createdMap.set(r.day, r.n);
-  const completedMap = new Map<string, number>();
-  for (const r of completedRows) completedMap.set(r.day, r.n);
-  const logMap = new Map<string, number>();
-  for (const r of logRows) logMap.set(r.day, r.n);
+  const kanban: KanbanSlice[] = kanbanRows.map((r) => ({
+    status: r.status,
+    count: r.count,
+    colorKey: r.color_key ?? "slate",
+  }));
+  const tickets = kanban.reduce((sum, slice) => sum + slice.count, 0);
+  const tasks: DashboardTask[] = taskRows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    status: r.status,
+    colorKey: r.color_key ?? "slate",
+    priority: r.priority ?? "low",
+    dueDate: r.due_date,
+    done: r.execution_state === "done",
+    boardId: r.board_id,
+    boardName: r.board_name,
+  }));
 
-  // Generate 90-day range
-  const points: ChartPoint[] = [];
-  const now = new Date();
-  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-
-  for (let offset = 89; offset >= 0; offset--) {
-    const d = new Date(base);
-    d.setUTCDate(base.getUTCDate() - offset);
-    const dateStr = d.toISOString().slice(0, 10);
-    points.push({
-      date: dateStr,
-      created: createdMap.get(dateStr) ?? 0,
-      completed: completedMap.get(dateStr) ?? 0,
-      logs: logMap.get(dateStr) ?? 0,
-    });
-  }
-
-  return points;
+  return {
+    kanban,
+    totals: {
+      tickets,
+      openTickets: (openRow[0]?.count as number) ?? 0,
+      agendaEvents: (agendaRow[0]?.count as number) ?? 0,
+    },
+    tasks,
+  };
 }
+

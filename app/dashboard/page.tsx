@@ -1,16 +1,18 @@
 import { AppSidebar } from "@/components/layout/app-sidebar";
-import { ChartAreaInteractive } from "@/components/dashboard/chart-area-interactive";
+import { DashboardGreeting } from "@/components/dashboard/dashboard-greeting";
+import { KanbanOverview } from "@/components/dashboard/kanban-overview";
+import { DashboardTasksTable } from "@/components/dashboard/dashboard-tasks-table";
 import { SectionCards } from "@/components/dashboard/section-cards";
 import { SiteHeader } from "@/components/dashboard/site-header";
-import { getDashboardData, getDashboardStats } from "@/lib/db/server-data";
+import { getDashboardOverview, getDashboardStats } from "@/lib/db/server-data";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { PageReveal } from "@/components/ui/page-reveal";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const [{ chartData }, stats] = await Promise.all([
-    getDashboardData(),
+  const [overview, stats] = await Promise.all([
+    getDashboardOverview(),
     getDashboardStats(),
   ]);
 
@@ -30,6 +32,14 @@ export default async function DashboardPage() {
           <div className="@container/main flex flex-1 flex-col gap-2">
             <PageReveal label="Loading dashboard…" className="py-4 md:py-6">
               <div className="flex flex-col gap-4 md:gap-6">
+                {/* Row 0: Greeting */}
+                <div className="px-4 lg:px-6">
+                  <DashboardGreeting
+                    openTickets={overview.totals.openTickets}
+                    agendaEvents={overview.totals.agendaEvents}
+                  />
+                </div>
+
                 {/* Row 1: Total counts */}
                 <SectionCards
                   boards={stats.boards}
@@ -39,8 +49,15 @@ export default async function DashboardPage() {
                   logs={stats.logs}
                 />
 
-                {/* Row 2: Chart */}
-                <ChartAreaInteractive data={chartData} />
+                {/* Row 2: Kanban overview chart */}
+                <KanbanOverview
+                  data={overview.kanban}
+                  totalTickets={overview.totals.tickets}
+                  agendaEvents={overview.totals.agendaEvents}
+                />
+
+                {/* Row 3: User's open tasks */}
+                <DashboardTasksTable tasks={overview.tasks} />
               </div>
             </PageReveal>
           </div>
