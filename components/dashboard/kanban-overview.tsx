@@ -151,24 +151,25 @@ export function KanbanOverview({
                 />
               }
             />
-            {isKanban ? (
-              <>
-                <Line
-                  dataKey="created"
-                  type="monotone"
-                  stroke="var(--color-created)"
-                  strokeWidth={2}
-                  dot={false}
-                />
-                <Line
-                  dataKey="completed"
-                  type="monotone"
-                  stroke="var(--color-completed)"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </>
-            ) : (
+            {isKanban && (
+              <Line
+                dataKey="created"
+                type="monotone"
+                stroke="var(--color-created)"
+                strokeWidth={2}
+                dot={false}
+              />
+            )}
+            {isKanban && (
+              <Line
+                dataKey="completed"
+                type="monotone"
+                stroke="var(--color-completed)"
+                strokeWidth={2}
+                dot={false}
+              />
+            )}
+            {!isKanban && (
               <Line
                 dataKey="events"
                 type="monotone"
