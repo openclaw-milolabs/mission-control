@@ -5,16 +5,19 @@ import { DashboardTasksTable } from "@/components/dashboard/dashboard-tasks-tabl
 import { SectionCards } from "@/components/dashboard/section-cards";
 import { SiteHeader } from "@/components/dashboard/site-header";
 import { getDashboardOverview, getDashboardStats } from "@/lib/db/server-data";
+import { getSession } from "@/lib/auth/session";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { PageReveal } from "@/components/ui/page-reveal";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
+  const session = await getSession();
   const [overview, stats] = await Promise.all([
-    getDashboardOverview(),
+    getDashboardOverview(session?.email ?? null),
     getDashboardStats(),
   ]);
+  const firstName = session?.name?.trim().split(/\s+/)[0] ?? null;
 
   return (
     <SidebarProvider
@@ -35,6 +38,7 @@ export default async function DashboardPage() {
                 {/* Row 0: Greeting */}
                 <div className="px-4 lg:px-6">
                   <DashboardGreeting
+                    name={firstName}
                     openTickets={overview.totals.openTickets}
                     agendaEvents={overview.totals.agendaEvents}
                   />
@@ -51,7 +55,7 @@ export default async function DashboardPage() {
 
                 {/* Row 2: Kanban overview chart */}
                 <KanbanOverview
-                  data={overview.kanban}
+                  data={overview.chart}
                   totalTickets={overview.totals.tickets}
                   agendaEvents={overview.totals.agendaEvents}
                 />

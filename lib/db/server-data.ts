@@ -213,7 +213,7 @@ export async function getDashboardStats(): Promise<{
   };
 }
 
-export type KanbanSlice = { status: string; count: number; colorKey: string };
+export type OverviewPoint = { date: string; created: number; completed: number };
 export type DashboardTask = {
   id: string;
   title: string;
@@ -226,56 +226,66 @@ export type DashboardTask = {
   boardName: string;
 };
 export type DashboardOverview = {
-  kanban: KanbanSlice[];
+  chart: OverviewPoint[];
   totals: { tickets: number; openTickets: number; agendaEvents: number };
   tasks: DashboardTask[];
 };
 
-export async function getDashboardOverview(): Promise<DashboardOverview> {
+export async function getDashboardOverview(userEmail: string | null): Promise<DashboardOverview> {
   const sql = getSql();
   const workspace = await sql`select id from workspaces order by created_at asc limit 1`;
   const wid = workspace[0]?.id ?? null;
   if (!wid) {
-    return { kanban: [], totals: { tickets: 0, openTickets: 0, agendaEvents: 0 }, tasks: [] };
+    return { chart: [], totals: { tickets: 0, openTickets: 0, agendaEvents: 0 }, tasks: [] };
   }
 
-  const [kanbanRows, agendaRow, openRow, taskRows] = await Promise.all([
-    // Tickets grouped by kanban column, aggregated across boards by column title.
-    sql<{ status: string; color_key: string; count: number; pos: number }[]>`
-      select c.title as status, c.color_key as color_key, count(t.id)::int as count, min(c.position) as pos
-      from columns c
-      join boards b on b.id = c.board_id and b.workspace_id = ${wid}
-      left join tickets t on t.column_id = c.id
-      group by c.title, c.color_key
-      order by pos asc, c.title asc
-    `,
+  // A ticket belongs to the signed-in user when one of its assignees
+  // (board_assignees row, referenced by id in assignee_ids) matches their email.
+  const email = userEmail?.trim() || null;
+
+  const [chart, ticketsRow, agendaRow, openRow, taskRows] = await Promise.all([
+    getOverviewChart(wid),
+    sql`select count(*)::int as count from tickets where workspace_id = ${wid}`,
     sql`select count(*)::int as count from agenda_events where workspace_id = ${wid}`,
-    sql`select count(*)::int as count from tickets where workspace_id = ${wid} and execution_state <> 'done'`,
-    // Active tickets surfaced to the user, soonest due first.
-    sql<{
-      id: string; title: string; priority: string; due_date: string | null;
-      execution_state: string; status: string; color_key: string;
-      board_id: string; board_name: string;
-    }[]>`
-      select t.id, t.title, t.priority, t.due_date::text as due_date, t.execution_state,
-             c.title as status, c.color_key as color_key,
-             b.id as board_id, b.name as board_name
-      from tickets t
-      join columns c on c.id = t.column_id
-      join boards b on b.id = t.board_id
-      where t.workspace_id = ${wid}
-        and t.execution_state <> 'done'
-      order by (t.due_date is null) asc, t.due_date asc, t.created_at desc
-      limit 8
-    `,
+    email
+      ? sql`
+          select count(*)::int as count
+          from tickets t
+          where t.workspace_id = ${wid}
+            and t.execution_state <> 'done'
+            and exists (
+              select 1 from board_assignees ba
+              where ba.id::text = any(t.assignee_ids)
+                and lower(ba.email) = lower(${email})
+            )
+        `
+      : Promise.resolve([{ count: 0 }]),
+    // Open tickets assigned to the signed-in user, soonest due first.
+    email
+      ? sql<{
+          id: string; title: string; priority: string; due_date: string | null;
+          execution_state: string; status: string; color_key: string;
+          board_id: string; board_name: string;
+        }[]>`
+          select t.id, t.title, t.priority, t.due_date::text as due_date, t.execution_state,
+                 c.title as status, c.color_key as color_key,
+                 b.id as board_id, b.name as board_name
+          from tickets t
+          join columns c on c.id = t.column_id
+          join boards b on b.id = t.board_id
+          where t.workspace_id = ${wid}
+            and t.execution_state <> 'done'
+            and exists (
+              select 1 from board_assignees ba
+              where ba.id::text = any(t.assignee_ids)
+                and lower(ba.email) = lower(${email})
+            )
+          order by (t.due_date is null) asc, t.due_date asc, t.created_at desc
+          limit 8
+        `
+      : Promise.resolve([]),
   ]);
 
-  const kanban: KanbanSlice[] = kanbanRows.map((r) => ({
-    status: r.status,
-    count: r.count,
-    colorKey: r.color_key ?? "slate",
-  }));
-  const tickets = kanban.reduce((sum, slice) => sum + slice.count, 0);
   const tasks: DashboardTask[] = taskRows.map((r) => ({
     id: r.id,
     title: r.title,
@@ -289,13 +299,53 @@ export async function getDashboardOverview(): Promise<DashboardOverview> {
   }));
 
   return {
-    kanban,
+    chart,
     totals: {
-      tickets,
+      tickets: (ticketsRow[0]?.count as number) ?? 0,
       openTickets: (openRow[0]?.count as number) ?? 0,
       agendaEvents: (agendaRow[0]?.count as number) ?? 0,
     },
     tasks,
   };
+}
+
+// Last 90 days of ticket activity (created vs completed) for the overview line chart.
+async function getOverviewChart(wid: string): Promise<OverviewPoint[]> {
+  const sql = getSql();
+  const [createdRows, completedRows] = await Promise.all([
+    sql<{ day: string; n: number }[]>`
+      select date_trunc('day', created_at)::date::text as day, count(*)::int as n
+      from tickets
+      where workspace_id = ${wid} and created_at >= now() - interval '90 days'
+      group by 1 order by 1
+    `,
+    sql<{ day: string; n: number }[]>`
+      select date_trunc('day', updated_at)::date::text as day, count(*)::int as n
+      from tickets
+      where workspace_id = ${wid} and execution_state = 'done'
+        and updated_at >= now() - interval '90 days'
+      group by 1 order by 1
+    `,
+  ]);
+
+  const createdMap = new Map<string, number>();
+  for (const r of createdRows) createdMap.set(r.day, r.n);
+  const completedMap = new Map<string, number>();
+  for (const r of completedRows) completedMap.set(r.day, r.n);
+
+  const points: OverviewPoint[] = [];
+  const now = new Date();
+  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  for (let offset = 89; offset >= 0; offset--) {
+    const d = new Date(base);
+    d.setUTCDate(base.getUTCDate() - offset);
+    const dateStr = d.toISOString().slice(0, 10);
+    points.push({
+      date: dateStr,
+      created: createdMap.get(dateStr) ?? 0,
+      completed: completedMap.get(dateStr) ?? 0,
+    });
+  }
+  return points;
 }
 
