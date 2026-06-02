@@ -89,7 +89,7 @@ export function DashboardTasksTable({ tasks }: { tasks: DashboardTask[] }) {
         </CardAction>
       </CardHeader>
       {tasks.length === 0 ? (
-        <div className="p-4 lg:p-6">
+        <div className="px-4 lg:px-6">
           <Empty className="min-h-36 rounded-md bg-muted/10">
             <EmptyHeader>
               <EmptyTitle>All clear 🎉</EmptyTitle>
@@ -100,7 +100,7 @@ export function DashboardTasksTable({ tasks }: { tasks: DashboardTask[] }) {
           </Empty>
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto px-4">
           <Table>
             <TableHeader>
               <TableRow>

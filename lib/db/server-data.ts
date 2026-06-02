@@ -213,7 +213,7 @@ export async function getDashboardStats(): Promise<{
   };
 }
 
-export type OverviewPoint = { date: string; created: number; completed: number };
+export type OverviewPoint = { date: string; created: number; completed: number; events: number };
 export type DashboardTask = {
   id: string;
   title: string;
@@ -309,10 +309,11 @@ export async function getDashboardOverview(userEmail: string | null): Promise<Da
   };
 }
 
-// Last 90 days of ticket activity (created vs completed) for the overview line chart.
+// Last 90 days of activity for the overview line chart: ticket created/completed
+// (Kanban view) plus agenda events created (Agenda view).
 async function getOverviewChart(wid: string): Promise<OverviewPoint[]> {
   const sql = getSql();
-  const [createdRows, completedRows] = await Promise.all([
+  const [createdRows, completedRows, eventRows] = await Promise.all([
     sql<{ day: string; n: number }[]>`
       select date_trunc('day', created_at)::date::text as day, count(*)::int as n
       from tickets
@@ -326,12 +327,20 @@ async function getOverviewChart(wid: string): Promise<OverviewPoint[]> {
         and updated_at >= now() - interval '90 days'
       group by 1 order by 1
     `,
+    sql<{ day: string; n: number }[]>`
+      select date_trunc('day', created_at)::date::text as day, count(*)::int as n
+      from agenda_events
+      where workspace_id = ${wid} and created_at >= now() - interval '90 days'
+      group by 1 order by 1
+    `,
   ]);
 
   const createdMap = new Map<string, number>();
   for (const r of createdRows) createdMap.set(r.day, r.n);
   const completedMap = new Map<string, number>();
   for (const r of completedRows) completedMap.set(r.day, r.n);
+  const eventMap = new Map<string, number>();
+  for (const r of eventRows) eventMap.set(r.day, r.n);
 
   const points: OverviewPoint[] = [];
   const now = new Date();
@@ -344,6 +353,7 @@ async function getOverviewChart(wid: string): Promise<OverviewPoint[]> {
       date: dateStr,
       created: createdMap.get(dateStr) ?? 0,
       completed: completedMap.get(dateStr) ?? 0,
+      events: eventMap.get(dateStr) ?? 0,
     });
   }
   return points;

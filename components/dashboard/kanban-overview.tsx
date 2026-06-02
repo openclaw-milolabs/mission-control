@@ -2,7 +2,6 @@
 
 import * as React from "react"
 import { CartesianGrid, Line, LineChart, XAxis } from "recharts"
-import { IconCalendarEvent, IconTicket } from "@tabler/icons-react"
 
 import { useIsMobile } from "@/hooks/use-mobile"
 import {
@@ -28,11 +27,19 @@ import {
 } from "@/components/ui/select"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 
-export type OverviewPoint = { date: string; created: number; completed: number }
+export type OverviewPoint = {
+  date: string
+  created: number
+  completed: number
+  events: number
+}
+
+type View = "kanban" | "agenda"
 
 const chartConfig = {
   created: { label: "Created", color: "var(--chart-1)" },
   completed: { label: "Completed", color: "var(--chart-2)" },
+  events: { label: "Events", color: "var(--chart-3)" },
 } satisfies ChartConfig
 
 function toDate(value: string) {
@@ -49,6 +56,7 @@ export function KanbanOverview({
   agendaEvents: number
 }) {
   const isMobile = useIsMobile()
+  const [view, setView] = React.useState<View>("kanban")
   const [timeRange, setTimeRange] = React.useState("30d")
 
   React.useEffect(() => {
@@ -67,28 +75,29 @@ export function KanbanOverview({
     return data.filter((point) => toDate(point.date) >= startDate)
   }, [data, timeRange])
 
+  const isKanban = view === "kanban"
+
   return (
     <Card className="@container/card" style={{ marginInline: "calc(var(--spacing) * 6)" }}>
       <CardHeader>
-        <CardTitle>Kanban Overview</CardTitle>
+        <CardTitle>{isKanban ? "Kanban Overview" : "Agenda Overview"}</CardTitle>
         <CardDescription>
-          <span className="hidden @[540px]/card:block">
-            Tickets created and completed over time
-          </span>
-          <span className="@[540px]/card:hidden">Ticket activity</span>
+          {isKanban
+            ? `${totalTickets} tickets total · created vs completed over time`
+            : `${agendaEvents} agenda events total · scheduled over time`}
         </CardDescription>
         <CardAction>
-          <div className="flex items-center gap-2">
-            <div className="hidden items-center gap-2 @[640px]/card:flex">
-              <div className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm">
-                <IconTicket className="size-4 text-muted-foreground" />
-                <span className="font-semibold tabular-nums">{totalTickets}</span>
-              </div>
-              <div className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm">
-                <IconCalendarEvent className="size-4 text-muted-foreground" />
-                <span className="font-semibold tabular-nums">{agendaEvents}</span>
-              </div>
-            </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <ToggleGroup
+              type="single"
+              value={view}
+              onValueChange={(v) => v && setView(v as View)}
+              variant="outline"
+              className="*:data-[slot=toggle-group-item]:px-3!"
+            >
+              <ToggleGroupItem value="kanban">Kanban</ToggleGroupItem>
+              <ToggleGroupItem value="agenda">Agenda</ToggleGroupItem>
+            </ToggleGroup>
             <ToggleGroup
               type="single"
               value={timeRange}
@@ -102,9 +111,9 @@ export function KanbanOverview({
             </ToggleGroup>
             <Select value={timeRange} onValueChange={setTimeRange}>
               <SelectTrigger
-                className="flex w-40 **:data-[slot=select-value]:block **:data-[slot=select-value]:truncate @[767px]/card:hidden"
+                className="flex w-36 **:data-[slot=select-value]:block **:data-[slot=select-value]:truncate @[767px]/card:hidden"
                 size="sm"
-                aria-label="Select a value"
+                aria-label="Select time range"
               >
                 <SelectValue placeholder="Last 30 days" />
               </SelectTrigger>
@@ -142,20 +151,32 @@ export function KanbanOverview({
                 />
               }
             />
-            <Line
-              dataKey="created"
-              type="monotone"
-              stroke="var(--color-created)"
-              strokeWidth={2}
-              dot={false}
-            />
-            <Line
-              dataKey="completed"
-              type="monotone"
-              stroke="var(--color-completed)"
-              strokeWidth={2}
-              dot={false}
-            />
+            {isKanban ? (
+              <>
+                <Line
+                  dataKey="created"
+                  type="monotone"
+                  stroke="var(--color-created)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+                <Line
+                  dataKey="completed"
+                  type="monotone"
+                  stroke="var(--color-completed)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </>
+            ) : (
+              <Line
+                dataKey="events"
+                type="monotone"
+                stroke="var(--color-events)"
+                strokeWidth={2}
+                dot={false}
+              />
+            )}
           </LineChart>
         </ChartContainer>
       </CardContent>

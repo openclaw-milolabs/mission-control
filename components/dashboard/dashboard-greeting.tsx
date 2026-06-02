@@ -44,40 +44,25 @@ export function DashboardGreeting({ name, openTickets, agendaEvents }: Props) {
   const greeting = greetingFor(now?.getHours() ?? 9)
   const dateLabel = now
     ? now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
-    : " "
+    : " "
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-      className="relative overflow-hidden rounded-2xl border border-white/10 px-6 py-6 text-white shadow-lg sm:px-8 sm:py-7"
-      style={{
-        backgroundColor: "#0b1020",
-        backgroundImage:
-          "radial-gradient(120% 140% at 0% 0%, var(--primary) 0%, transparent 45%), radial-gradient(120% 140% at 100% 0%, #8b5cf6 0%, transparent 42%)",
-      }}
+      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+      className="from-primary/15 via-primary/5 to-card relative overflow-hidden rounded-xl border bg-gradient-to-br px-5 py-5 shadow-xs sm:px-7 sm:py-6"
     >
-      {/* floating glow orbs */}
-      <motion.div
+      <div
         aria-hidden
-        className="pointer-events-none absolute -right-8 -top-10 h-40 w-40 rounded-full bg-fuchsia-500/30 blur-3xl"
-        animate={{ y: [0, 12, 0], opacity: [0.5, 0.8, 0.5] }}
-        transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+        className="pointer-events-none absolute -right-10 -top-16 h-48 w-48 rounded-full bg-primary/20 blur-3xl"
       />
-      <motion.div
-        aria-hidden
-        className="pointer-events-none absolute -bottom-12 left-1/3 h-44 w-44 rounded-full bg-sky-400/20 blur-3xl"
-        animate={{ y: [0, -10, 0] }}
-        transition={{ duration: 7, repeat: Infinity, ease: "easeInOut" }}
-      />
-
-      <div className="relative flex flex-col gap-5 @2xl/main:flex-row @2xl/main:items-center @2xl/main:justify-between">
-        <div className="flex flex-col gap-2">
-          <span className="w-fit rounded-full bg-white/10 px-3 py-1 text-xs font-medium uppercase tracking-wider text-white/80 backdrop-blur">
+      <div className="relative flex flex-col gap-4 @2xl/main:flex-row @2xl/main:items-center @2xl/main:justify-between">
+        <div className="flex flex-col gap-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             {dateLabel}
-          </span>
-          <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+          </p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
             {greeting.text}
             {name ? `, ${name}` : ""}{" "}
             <motion.span
@@ -89,20 +74,19 @@ export function DashboardGreeting({ name, openTickets, agendaEvents }: Props) {
               {greeting.emoji}
             </motion.span>
           </h1>
-          <p className="flex items-center gap-1.5 text-sm text-white/85">
-            <IconSparkles className="size-4 text-yellow-300" />
+          <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <IconSparkles className="size-4 text-primary" />
             {line}
           </p>
         </div>
-
         <div className="flex gap-3">
-          <div className="flex min-w-28 flex-col rounded-xl border border-white/15 bg-white/10 px-4 py-3 backdrop-blur-md">
-            <span className="text-3xl font-bold tabular-nums leading-none">{openTickets}</span>
-            <span className="mt-1 text-xs text-white/75">Your open tickets</span>
+          <div className="flex min-w-28 flex-col rounded-lg border bg-background/60 px-4 py-3 backdrop-blur">
+            <span className="text-2xl font-semibold tabular-nums">{openTickets}</span>
+            <span className="text-xs text-muted-foreground">Your open tickets</span>
           </div>
-          <div className="flex min-w-28 flex-col rounded-xl border border-white/15 bg-white/10 px-4 py-3 backdrop-blur-md">
-            <span className="text-3xl font-bold tabular-nums leading-none">{agendaEvents}</span>
-            <span className="mt-1 text-xs text-white/75">Agenda events</span>
+          <div className="flex min-w-28 flex-col rounded-lg border bg-background/60 px-4 py-3 backdrop-blur">
+            <span className="text-2xl font-semibold tabular-nums">{agendaEvents}</span>
+            <span className="text-xs text-muted-foreground">Agenda events</span>
           </div>
         </div>
       </div>
