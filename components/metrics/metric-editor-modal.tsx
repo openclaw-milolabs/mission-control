@@ -70,10 +70,10 @@ const STEPS = [
 ] as const;
 
 const WINDOW_OPTIONS: Array<{ key: MetricFormData["defaultWindow"]; label: string; desc: string }> = [
-  { key: "daily",   label: "Day",   desc: "Last 24h" },
-  { key: "weekly",  label: "Week",  desc: "Last 7 days" },
-  { key: "monthly", label: "Month", desc: "Last 30 days" },
-  { key: "yearly",  label: "Year",  desc: "Last 12 months" },
+  { key: "daily",   label: "Day",   desc: "Last 48h, hourly buckets" },
+  { key: "weekly",  label: "Week",  desc: "Last 12 weeks, weekly buckets" },
+  { key: "monthly", label: "Month", desc: "Last 12 months, monthly buckets" },
+  { key: "yearly",  label: "Year",  desc: "Last 5 years, yearly buckets" },
 ];
 
 const CHART_TYPES: Array<{ key: MetricFormData["chartType"]; label: string; icon: React.ReactNode; desc: string }> = [

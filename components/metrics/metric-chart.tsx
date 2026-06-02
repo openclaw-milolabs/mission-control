@@ -36,22 +36,23 @@ const SERIES_COLORS = [
   "var(--chart-5)",
 ];
 
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
 function formatXTick(value: unknown): string {
   const s = String(value ?? "");
-  // YYYY-MM-DD HH:mm
+  // YYYY-MM-DD HH:mm  → "14:00"
   if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) return s.slice(11, 16);
-  // YYYY-MM-DD
+  // YYYY-Www  (ISO week, e.g. 2026-W23) → "W23"
+  const isoWeek = s.match(/^(\d{4})-W(\d{2})$/);
+  if (isoWeek) return `W${+isoWeek[2]}`;
+  // YYYY-MM-DD → "Jun 1"
   const daily = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (daily) {
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    return `${months[+daily[2] - 1]} ${+daily[3]}`;
-  }
-  // YYYY-MM
+  if (daily) return `${MONTHS[+daily[2] - 1]} ${+daily[3]}`;
+  // YYYY-MM → "Jun '26"
   const monthly = s.match(/^(\d{4})-(\d{2})$/);
-  if (monthly) {
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    return `${months[+monthly[2] - 1]} '${s.slice(2, 4)}`;
-  }
+  if (monthly) return `${MONTHS[+monthly[2] - 1]} '${s.slice(2, 4)}`;
+  // YYYY → "2026"
+  if (/^\d{4}$/.test(s)) return s;
   return s;
 }
 

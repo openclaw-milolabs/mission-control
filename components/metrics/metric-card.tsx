@@ -12,6 +12,7 @@ import {
 import { Loader2Icon, MoreHorizontalIcon, PencilIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MetricChart } from "@/components/metrics/metric-chart";
+import { describeWindow } from "@/lib/metrics/window";
 
 export type MetricDef = {
   id: string;
@@ -115,7 +116,7 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
           )}
           {meta && (
             <p className="mt-1 text-[10px] text-muted-foreground/70 tabular-nums">
-              {meta.rowCount} rows · {meta.durationMs}ms{meta.truncated ? " · truncated" : ""}
+              {describeWindow(effectiveWindow).range} · {describeWindow(effectiveWindow).granularity} · {meta.rowCount} rows · {meta.durationMs}ms{meta.truncated ? " · truncated" : ""}
             </p>
           )}
         </div>

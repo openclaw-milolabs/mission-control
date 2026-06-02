@@ -6,6 +6,12 @@
  *   - `until`: Date marking the end (now, or user-provided)
  *   - `bucket`: MySQL DATE_FORMAT mask sized to the window
  *
+ * Each window's bucket granularity matches its name:
+ *   daily   → hourly buckets over the last 48h
+ *   weekly  → ISO-week buckets over the last 12 weeks
+ *   monthly → calendar-month buckets over the last 12 months
+ *   yearly  → year buckets over the last 5 years
+ *
  * These are bound as positional `?` params via bindNamedParams in sql-guard.ts.
  */
 
@@ -20,25 +26,25 @@ export type ResolvedWindow = {
 
 const DEFAULT_BUCKETS: Record<Exclude<WindowName, "custom">, string> = {
   daily: "%Y-%m-%d %H:00",
-  weekly: "%Y-%m-%d",
-  monthly: "%Y-%m-%d",
-  yearly: "%Y-%m",
+  weekly: "%x-W%v",
+  monthly: "%Y-%m",
+  yearly: "%Y",
 };
 
 function startOfWindow(window: WindowName, until: Date): Date {
   const d = new Date(until.getTime());
   switch (window) {
     case "daily":
-      d.setDate(d.getDate() - 1);
+      d.setHours(d.getHours() - 48);
       return d;
     case "weekly":
-      d.setDate(d.getDate() - 7);
+      d.setDate(d.getDate() - 7 * 12);
       return d;
     case "monthly":
-      d.setDate(d.getDate() - 30);
+      d.setMonth(d.getMonth() - 12);
       return d;
     case "yearly":
-      d.setFullYear(d.getFullYear() - 1);
+      d.setFullYear(d.getFullYear() - 5);
       return d;
     case "custom":
       // Caller provides since explicitly; not reached when window === 'custom'
@@ -70,7 +76,8 @@ export function resolveWindow(input: {
       const days = Math.max(1, Math.round((until.getTime() - since.getTime()) / 86_400_000));
       if (days <= 2) bucket = "%Y-%m-%d %H:00";
       else if (days <= 90) bucket = "%Y-%m-%d";
-      else bucket = "%Y-%m";
+      else if (days <= 730) bucket = "%Y-%m";
+      else bucket = "%Y";
     } else {
       bucket = DEFAULT_BUCKETS[input.window];
     }
@@ -81,4 +88,26 @@ export function resolveWindow(input: {
 
 export function isValidWindow(value: unknown): value is WindowName {
   return value === "daily" || value === "weekly" || value === "monthly" || value === "yearly" || value === "custom";
+}
+
+/**
+ * Human-readable summary of a resolved window for card UI:
+ *   "Last 48 hours · hourly"
+ *   "Last 12 weeks · weekly"
+ *   "Last 12 months · monthly"
+ *   "Last 5 years · yearly"
+ */
+export function describeWindow(window: WindowName): { range: string; granularity: string } {
+  switch (window) {
+    case "daily":
+      return { range: "Last 48 hours", granularity: "hourly" };
+    case "weekly":
+      return { range: "Last 12 weeks", granularity: "weekly" };
+    case "monthly":
+      return { range: "Last 12 months", granularity: "monthly" };
+    case "yearly":
+      return { range: "Last 5 years", granularity: "yearly" };
+    case "custom":
+      return { range: "Custom range", granularity: "custom" };
+  }
 }
