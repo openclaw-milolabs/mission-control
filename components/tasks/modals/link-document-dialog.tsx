@@ -362,8 +362,16 @@ export function LinkDocumentDialog({ open, ticketId, alreadyLinkedIds, onClose, 
               />
             </div>
             <p className="rounded-md bg-muted/40 px-2.5 py-2 text-[10px] leading-relaxed text-muted-foreground">
-              Opens in Windows File Explorer when clicked. Only works while Mission Control is
-              running on the PC that can reach this path.
+              Opens in Windows File Explorer when clicked, from any browser on a PC that can reach
+              this path. Needs a one-time setup per Windows machine —{" "}
+              <a
+                href="/install-mc-explorer.ps1"
+                download
+                className="font-medium text-foreground underline underline-offset-2"
+              >
+                download install-mc-explorer.ps1
+              </a>{" "}
+              then right-click it → <span className="font-medium">Run with PowerShell</span>.
             </p>
           </TabsContent>
         </Tabs>

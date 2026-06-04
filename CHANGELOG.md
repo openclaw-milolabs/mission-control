@@ -13,14 +13,14 @@ Kanban tickets could already link **internal documents**; they can now also link
 - **URL** — attach any `http`/`https` link with an optional friendly label (falls back to the site's hostname).
 - **File / Folder** — attach a local path such as `M:\Altinstar\2026\AI`. Clicking it **opens the location in Windows File Explorer**.
 
-**How path-open works (and its limits):** browsers refuse to navigate to `file://` from an `http(s)` origin, so clicking can't open Explorer directly. Instead the click hits a new server route that shells out to `explorer.exe` on the host. This works because Mission Control's typical deployment is single-user and local — server and browser are the same Windows machine. It is therefore Windows-only and only meaningful when the server runs on a PC that can reach the path; the endpoint returns a friendly message otherwise. Folders open directly; files open their containing folder with the file selected. A missing target (e.g. drive not mounted) surfaces a *"Path not found — is the drive connected?"* toast instead of a raw Explorer error.
+**How path-open works (and its setup):** browsers refuse to navigate to `file://` from an `http(s)` origin, and the open must happen on the **client** (your Windows PC), not the server — Mission Control commonly runs on a remote Linux host. So path links use a custom `mc-explorer:` URL scheme handled entirely on the Windows client. A one-time per-machine installer ([public/install-mc-explorer.ps1](public/install-mc-explorer.ps1), downloadable from the File/Folder tab) registers the scheme under `HKCU` (no admin needed) and drops a small helper that launches `explorer.exe`. After that, clicking a path link opens Explorer in one click **regardless of whether the server is on Linux or Windows**, as long as the clicking machine is Windows and can reach the path. Folders open directly; files open their containing folder with the file selected; a missing target pops a *"Path not found — is the drive connected?"* dialog.
 
-- **Safety:** the open route is session-gated, `win32`-only, and invokes `explorer.exe` via `execFile` (no shell), so a stored path can't inject commands.
+- **Safety:** the helper only ever launches `explorer.exe` pointed at the path (it never executes the target file) and refuses anything that isn't an absolute drive/UNC path. The worst a rogue page invoking `mc-explorer:` could do is pop a File Explorer window.
 
 ### Added — API
 
 - `app/api/tasks` actions `listTicketLinks`, `addTicketLink` (accepts `kind: "url" | "path"` with per-kind validation), `removeTicketLink`. All gated by the Documents module + authenticated session.
-- New `POST /api/open-path` — validates an absolute path, checks it exists, and opens it in File Explorer. Windows-only, session-required.
+- New `public/install-mc-explorer.ps1` — one-time Windows client installer for the `mc-explorer:` protocol (install + `-Uninstall`).
 
 ### Database
 

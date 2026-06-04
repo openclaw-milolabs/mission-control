@@ -254,8 +254,9 @@ create index if not exists ticket_documents_doc_idx on ticket_documents(document
 -- module disable) but points to arbitrary external URLs rather than internal
 -- documents. `label` is optional; the UI falls back to the URL's hostname.
 -- `kind` distinguishes an external 'url' from a local Windows 'path'
--- (M:\Altinstar\2026\AI). Path links open in the host's File Explorer via the
--- /api/open-path route — only meaningful when the server runs on the user's box.
+-- (M:\Altinstar\2026\AI). Path links open in the client's File Explorer via the
+-- custom `mc-explorer:` URL scheme (registered per Windows machine by
+-- public/install-mc-explorer.ps1), so they work even with a remote Linux server.
 create table if not exists ticket_links (
   id uuid primary key default gen_random_uuid(),
   ticket_id uuid not null references tickets(id) on delete cascade,

@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { toast } from "sonner";
 import {
   FileTextIcon,
   FileCodeIcon,
@@ -130,22 +129,6 @@ export function TicketDocumentsSection({ ticketId }: Props) {
     await load();
   }, [ticketId, load]);
 
-  const openPath = useCallback(async (p: string) => {
-    try {
-      const res = await fetch("/api/open-path", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: p }),
-      });
-      const j = await res.json().catch(() => ({ ok: false }));
-      if (!j.ok) {
-        toast.error(j.error || "Could not open this location.");
-      }
-    } catch {
-      toast.error("Could not reach the server to open this location.");
-    }
-  }, []);
-
   const alreadyLinkedIds = useMemo(() => new Set(docs.map((d) => d.id)), [docs]);
 
   if (!ticketId) return null;
@@ -211,13 +194,13 @@ export function TicketDocumentsSection({ ticketId }: Props) {
                   <p className="truncate font-mono text-[10px] text-muted-foreground">{l.url}</p>
                 </div>
                 {isPath ? (
-                  <button
-                    onClick={() => void openPath(l.url)}
+                  <a
+                    href={`mc-explorer:${encodeURIComponent(l.url)}`}
                     className="text-muted-foreground transition-colors hover:text-foreground"
-                    title="Open in File Explorer"
+                    title="Open in File Explorer (needs the one-time Windows setup)"
                   >
                     <ExternalLinkIcon className="size-3.5" />
-                  </button>
+                  </a>
                 ) : (
                   <a
                     href={l.url}

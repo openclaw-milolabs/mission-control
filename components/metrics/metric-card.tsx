@@ -60,7 +60,9 @@ const WINDOW_PILLS: Array<{ key: WindowName; label: string }> = [
 export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
   const [override, setOverride] = useState<WindowName | "inherit">("inherit");
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Start true: a load always fires on mount (often queued behind the shared
+  // gate), so the body should show "Loading…" rather than "No rows to render".
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ durationMs: number; rowCount: number; truncated: boolean } | null>(null);
 
@@ -79,6 +81,7 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
         setRows(cached.rows);
         setMeta(cached.meta);
         setError(null);
+        setLoading(false);
         return;
       }
     }
@@ -181,6 +184,10 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
           <pre className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-[11px] text-destructive whitespace-pre-wrap">
             {error}
           </pre>
+        ) : loading && rows.length === 0 ? (
+          <div className="flex h-full min-h-[180px] items-center justify-center gap-2 text-xs text-muted-foreground">
+            <Loader2Icon className="size-4 animate-spin" /> Loading…
+          </div>
         ) : (
           <MetricChart
             type={metric.chart_type}
