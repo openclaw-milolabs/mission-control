@@ -70,19 +70,32 @@ try {
 Set-Content -Path $helper -Value $helperBody -Encoding UTF8
 
 # --- 2. Register the protocol under HKCU -------------------------------------
-New-Item -Path $base -Force | Out-Null
-Set-ItemProperty -Path $base -Name '(default)'    -Value 'URL:Mission Control Explorer Opener'
-Set-ItemProperty -Path $base -Name 'URL Protocol' -Value ''
-
-$cmdKey = Join-Path $base 'shell\open\command'
-New-Item -Path $cmdKey -Force | Out-Null
-
+# The default ("(Default)") value of a registry key is set most reliably with
+# New-Item -Value at creation time, so we (re)create the keys with their values.
 $psExe   = Join-Path $PSHOME 'powershell.exe'
 $command = '"{0}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{1}" "%1"' -f $psExe, $helper
-Set-ItemProperty -Path $cmdKey -Name '(default)' -Value $command
+$cmdKey  = Join-Path $base 'shell\open\command'
 
-Write-Host ""
-Write-Host "  Mission Control 'Open in Explorer' is installed." -ForegroundColor Green
-Write-Host "  Path links in the dashboard will now open in File Explorer." -ForegroundColor Green
-Write-Host "  (The first click per browser may ask once for permission to open the link.)" -ForegroundColor DarkGray
-Write-Host ""
+# Start clean so a previous half-registration can't linger.
+if (Test-Path $base) { Remove-Item -Path $base -Recurse -Force }
+
+New-Item -Path $base   -Value 'URL:Mission Control Explorer Opener' -Force | Out-Null
+New-ItemProperty -Path $base -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null
+New-Item -Path $cmdKey -Value $command -Force | Out-Null
+
+# --- 3. Verify the registration actually took --------------------------------
+Add-Type -AssemblyName System.Windows.Forms
+$registered = $null
+try { $registered = (Get-ItemProperty -Path $cmdKey -ErrorAction Stop).'(default)' } catch {}
+
+if ($registered) {
+    $msg = "Mission Control 'Open in Explorer' is installed.`n`nPath links in the dashboard will now open in File Explorer. If a tab is already open, fully close and reopen your browser once."
+    Write-Host ""
+    Write-Host "  $($msg -replace '`n',' ')" -ForegroundColor Green
+    Write-Host ""
+    [System.Windows.Forms.MessageBox]::Show($msg, "Mission Control — installed") | Out-Null
+} else {
+    $msg = "Registration FAILED — the mc-explorer command was not written.`n`nTry running from a PowerShell window:`n  powershell -NoProfile -ExecutionPolicy Bypass -File `"<path to this file>`""
+    Write-Warning ($msg -replace '`n',' ')
+    [System.Windows.Forms.MessageBox]::Show($msg, "Mission Control — NOT installed") | Out-Null
+}
