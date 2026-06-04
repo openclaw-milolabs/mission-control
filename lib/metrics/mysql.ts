@@ -1,5 +1,6 @@
 import type { Pool, RowDataPacket } from "mysql2/promise";
 import { getMysqlCredentials, type MysqlCredentials } from "@/lib/metrics/secrets";
+import { makeLimiter } from "@/lib/metrics/limiter";
 
 /**
  * MySQL connectivity for the Metrics module.
@@ -12,8 +13,16 @@ import { getMysqlCredentials, type MysqlCredentials } from "@/lib/metrics/secret
  *     SELECT * from blowing up the Node process.
  */
 
-const QUERY_TIMEOUT_MS = 15_000;
+const QUERY_TIMEOUT_MS = 20_000;
 const MAX_ROWS = 50_000;
+
+// Cap how many external MySQL queries run at once, process-wide. The dashboard
+// fires one query per visible metric card simultaneously; without this gate
+// they all hit MySQL together, starve each other, and trip the per-query
+// inactivity timeout. Queued queries wait here (before a connection or the
+// statement timer is involved), so waiting does not itself cause a timeout.
+const MAX_CONCURRENT_QUERIES = 3;
+const queryGate = makeLimiter(MAX_CONCURRENT_QUERIES);
 
 let _pool: Pool | null = null;
 let _poolKey = "";
@@ -84,40 +93,45 @@ export async function executeMetricQuery(
     return { ok: false, error: `MySQL pool init failed: ${err instanceof Error ? err.message : String(err)}`, durationMs: Date.now() - t0 };
   }
 
-  let conn;
-  try {
-    conn = await pool.getConnection();
-  } catch (err) {
-    return { ok: false, error: `MySQL connect failed: ${err instanceof Error ? err.message : String(err)}`, durationMs: Date.now() - t0 };
-  }
+  // Serialize down to MAX_CONCURRENT_QUERIES so simultaneous card loads don't
+  // overwhelm MySQL. Acquiring a connection happens inside the gate so we never
+  // hold a pooled connection while waiting our turn.
+  return queryGate(async () => {
+    let conn;
+    try {
+      conn = await pool.getConnection();
+    } catch (err) {
+      return { ok: false, error: `MySQL connect failed: ${err instanceof Error ? err.message : String(err)}`, durationMs: Date.now() - t0 };
+    }
 
-  try {
-    // Cap statement runtime server-side. Honoured by MySQL 5.7+ and MariaDB.
-    await conn.query(`SET STATEMENT max_execution_time = ${QUERY_TIMEOUT_MS} FOR SELECT 1`).catch(() => null);
+    try {
+      // Cap statement runtime server-side. Honoured by MySQL 5.7+ and MariaDB.
+      await conn.query(`SET STATEMENT max_execution_time = ${QUERY_TIMEOUT_MS} FOR SELECT 1`).catch(() => null);
 
-    const [rowsRaw, fieldsRaw] = await conn.query<RowDataPacket[]>(
-      { sql, timeout: QUERY_TIMEOUT_MS, rowsAsArray: false },
-      values,
-    );
-    const rows = Array.isArray(rowsRaw) ? rowsRaw as MetricRow[] : [];
-    const truncated = rows.length > MAX_ROWS;
-    const capped = truncated ? rows.slice(0, MAX_ROWS) : rows;
-    const columns = Array.isArray(fieldsRaw)
-      ? fieldsRaw.map((f) => ({ name: (f as { name: string }).name, type: typeNameFromCode((f as { type?: number }).type ?? null) }))
-      : Object.keys(capped[0] || {}).map((name) => ({ name, type: null }));
-    return {
-      ok: true,
-      columns,
-      rows: capped,
-      rowCount: capped.length,
-      truncated,
-      durationMs: Date.now() - t0,
-    };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - t0 };
-  } finally {
-    try { conn.release(); } catch { /* ignore */ }
-  }
+      const [rowsRaw, fieldsRaw] = await conn.query<RowDataPacket[]>(
+        { sql, timeout: QUERY_TIMEOUT_MS, rowsAsArray: false },
+        values,
+      );
+      const rows = Array.isArray(rowsRaw) ? rowsRaw as MetricRow[] : [];
+      const truncated = rows.length > MAX_ROWS;
+      const capped = truncated ? rows.slice(0, MAX_ROWS) : rows;
+      const columns = Array.isArray(fieldsRaw)
+        ? fieldsRaw.map((f) => ({ name: (f as { name: string }).name, type: typeNameFromCode((f as { type?: number }).type ?? null) }))
+        : Object.keys(capped[0] || {}).map((name) => ({ name, type: null }));
+      return {
+        ok: true,
+        columns,
+        rows: capped,
+        rowCount: capped.length,
+        truncated,
+        durationMs: Date.now() - t0,
+      };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - t0 };
+    } finally {
+      try { conn.release(); } catch { /* ignore */ }
+    }
+  });
 }
 
 export async function pingMysql(): Promise<{

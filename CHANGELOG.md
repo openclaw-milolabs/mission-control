@@ -3,6 +3,34 @@
 All notable changes to Mission Control are documented here.
 
 
+## [4.0.0] - 2026-06-04
+
+### Added — Ticket links (URLs & local paths)
+
+Kanban tickets could already link **internal documents**; they can now also link **external URLs** and **local file/folder paths**. The "Link" picker in the ticket modal is now tabbed:
+
+- **Documents** — the existing internal documents tree picker, unchanged.
+- **URL** — attach any `http`/`https` link with an optional friendly label (falls back to the site's hostname).
+- **File / Folder** — attach a local path such as `M:\Altinstar\2026\AI`. Clicking it **opens the location in Windows File Explorer**.
+
+**How path-open works (and its limits):** browsers refuse to navigate to `file://` from an `http(s)` origin, so clicking can't open Explorer directly. Instead the click hits a new server route that shells out to `explorer.exe` on the host. This works because Mission Control's typical deployment is single-user and local — server and browser are the same Windows machine. It is therefore Windows-only and only meaningful when the server runs on a PC that can reach the path; the endpoint returns a friendly message otherwise. Folders open directly; files open their containing folder with the file selected. A missing target (e.g. drive not mounted) surfaces a *"Path not found — is the drive connected?"* toast instead of a raw Explorer error.
+
+- **Safety:** the open route is session-gated, `win32`-only, and invokes `explorer.exe` via `execFile` (no shell), so a stored path can't inject commands.
+
+### Added — API
+
+- `app/api/tasks` actions `listTicketLinks`, `addTicketLink` (accepts `kind: "url" | "path"` with per-kind validation), `removeTicketLink`. All gated by the Documents module + authenticated session.
+- New `POST /api/open-path` — validates an absolute path, checks it exists, and opens it in File Explorer. Windows-only, session-required.
+
+### Database
+
+- New `ticket_links` table (id, ticket_id, `kind` `'url'|'path'`, url, label, audit fields). Lives **under the Documents module** — created in its `setup`, dropped in its `cleanup` (so disabling Documents removes URL/path links too), and mirrored in [db/schema.sql](db/schema.sql) and the boot migration in [app/api/documents/route.ts](app/api/documents/route.ts). The Documents module's disable-preview now counts both document links and URL/path links.
+
+### Notes
+
+- No new runtime dependencies. The Documents module gates this feature; with it disabled the ticket "Documents & links" section hides entirely, as before.
+
+
 ## [3.9.0] - 2026-05-29
 
 ### Added — Metrics module

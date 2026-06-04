@@ -2,9 +2,11 @@
 
 **The OpenClaw native dashboard** — manage scheduled agenda tasks, multi-step processes, Kanban boards, agent logs, file browsing, and system settings from a single UI.
 
-**Version 3.9.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
+**Version 4.0.0** · Next.js 16 (App Router, TypeScript) · OpenClaw native cron engine · PostgreSQL
 
-> **Latest changes (2026-05-29):** New **Metrics** module. Toggleable from Settings → Modules. When enabled, exposes `/metrics`: a dashboard of custom SQL-backed charts against your external MySQL (credentials in `~/.config/openclaw/secrets.env` — `MYSQL_HOST`, `MYSQL_USERNAME`, `MYSQL_PASS`). Paste a `SELECT`, reference `:since` / `:until` / `:bucket`, pick a chart type (bar / line / area / pie / donut / KPI), and switch the time window daily / weekly / monthly / yearly on the page or per-card. Two-layer SQL safety (SELECT-only parser plus a recommendation to use a read-only MySQL user). Per-run audit log. Run `npm install` for the new `mysql2` dep. See [CHANGELOG.md](./CHANGELOG.md) for full list.
+> **Latest changes (2026-06-04):** Kanban tickets can now link **more than internal documents**. The link picker gained two tabs alongside the document tree: **URL** (attach any `http(s)` link with an optional label) and **File / Folder** (attach a local path like `M:\Altinstar\2026\AI`). Path links open in the host's Windows File Explorer on click — the server shells out to `explorer.exe` since browsers block `file://` navigation, so it only works while Mission Control runs on the PC that can reach the path. URL and path links live in a new `ticket_links` table gated under the Documents module. See [CHANGELOG.md](./CHANGELOG.md) for full list.
+
+> **Previous (3.9.0):** New **Metrics** module. Toggleable from Settings → Modules. When enabled, exposes `/metrics`: a dashboard of custom SQL-backed charts against your external MySQL (credentials in `~/.config/openclaw/secrets.env` — `MYSQL_HOST`, `MYSQL_USERNAME`, `MYSQL_PASS`). Paste a `SELECT`, reference `:since` / `:until` / `:bucket`, pick a chart type (bar / line / area / pie / donut / KPI), and switch the time window daily / weekly / monthly / yearly on the page or per-card. Two-layer SQL safety (SELECT-only parser plus a recommendation to use a read-only MySQL user). Per-run audit log. Run `npm install` for the new `mysql2` dep.
 
 > **Previous (3.8.0):** Security hardening — allowed-users allowlist, admin/member roles, CSRF Origin guard, narrower `/api/files` roots, attachment XSS blocked, admin gates on infra routes.
 

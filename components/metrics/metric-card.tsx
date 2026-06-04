@@ -13,6 +13,12 @@ import { Loader2Icon, MoreHorizontalIcon, PencilIcon, RefreshCwIcon, Trash2Icon 
 import { cn } from "@/lib/utils";
 import { MetricChart } from "@/components/metrics/metric-chart";
 import { describeWindow } from "@/lib/metrics/window";
+import { makeLimiter } from "@/lib/metrics/limiter";
+
+// Shared across every card instance: load a few at a time instead of firing
+// one request per card the moment the page mounts. Pairs with the server-side
+// gate in lib/metrics/mysql.ts.
+const cardGate = makeLimiter(3);
 
 export type MetricDef = {
   id: string;
@@ -79,12 +85,14 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/metrics", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "runMetric", metricId: metric.id, window }),
+      const j = await cardGate(async () => {
+        const res = await fetch("/api/metrics", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "runMetric", metricId: metric.id, window }),
+        });
+        return res.json();
       });
-      const j = await res.json();
       if (!j.ok) {
         setError(j.error || "Query failed.");
         setRows([]);

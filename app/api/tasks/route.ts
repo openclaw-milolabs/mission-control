@@ -589,6 +589,102 @@ export async function POST(request: Request) {
       return ok();
     }
 
+    if (action === "listTicketLinks") {
+      if (!(await isModuleEnabled("documents"))) {
+        // Graceful — return empty so ticket-modal UI hides itself without an error.
+        return ok({ links: [] });
+      }
+      const ticketId = String(body.ticketId || "");
+      if (!ticketId) return fail("Ticket id is required.");
+      // ticket_links may not exist yet on a stale dev DB; create it on demand.
+      await sql`
+        CREATE TABLE IF NOT EXISTS ticket_links (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          ticket_id uuid NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+          kind text NOT NULL DEFAULT 'url',
+          url text NOT NULL,
+          label text,
+          added_by_email text,
+          added_by_name text,
+          added_at timestamptz NOT NULL DEFAULT now()
+        )
+      `.catch(() => null);
+      await sql`ALTER TABLE ticket_links ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'url'`.catch(() => null);
+      const rows = await sql`
+        select id::text, kind, url, label, added_by_name, added_at
+        from ticket_links
+        where ticket_id = ${ticketId}
+        order by added_at desc
+      `.catch(() => []);
+      return ok({ links: rows });
+    }
+
+    if (action === "addTicketLink") {
+      if (!(await isModuleEnabled("documents"))) {
+        return fail("Documents module is disabled. Enable it in Settings to add links.", 503);
+      }
+      const ticketId = String(body.ticketId || "");
+      const kind = body.kind === "path" ? "path" : "url";
+      const value = String(body.url || "").trim();
+      const rawLabel = String(body.label || "").trim();
+      const label = rawLabel || null;
+      if (!ticketId) return fail("Ticket id is required.");
+      if (kind === "path") {
+        if (!value) return fail("File or folder path is required.");
+        // Accept a Windows path (M:\…, \\server\share) or a POSIX path. We don't
+        // touch the disk here — existence is checked at open time on the host.
+        const looksLikePath = /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/");
+        if (!looksLikePath) return fail("Enter a full path, e.g. M:\\Altinstar\\2026\\AI.");
+      } else {
+        if (!value) return fail("URL is required.");
+        let parsed: URL;
+        try {
+          parsed = new URL(value);
+        } catch {
+          return fail("Enter a valid URL (including http:// or https://).");
+        }
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          return fail("Only http and https URLs are allowed.");
+        }
+      }
+      const rows = await sql`
+        insert into ticket_links (ticket_id, kind, url, label, added_by_email, added_by_name)
+        values (${ticketId}, ${kind}, ${value}, ${label}, ${actor.email}, ${actor.name})
+        returning id::text
+      `;
+      await audit({
+        event: kind === "path" ? 'Path link added' : 'Link added',
+        details: label ? `${label} (${value})` : value,
+        level: 'success',
+        ticketId,
+      });
+      return ok({ id: rows[0]?.id });
+    }
+
+    if (action === "removeTicketLink") {
+      if (!(await isModuleEnabled("documents"))) {
+        // Module off — the table is gone via cascade. Be silent on success.
+        return ok();
+      }
+      const ticketId = String(body.ticketId || "");
+      const linkId = String(body.linkId || "");
+      if (!ticketId || !linkId) return fail("Ticket id and link id are required.");
+      const rows = await sql`
+        delete from ticket_links
+        where id = ${linkId} and ticket_id = ${ticketId}
+        returning url, label
+      `.catch(() => []);
+      const removed = rows[0] as { url?: string; label?: string } | undefined;
+      const detail = removed ? (removed.label ? `${removed.label} (${removed.url})` : removed.url) : linkId;
+      await audit({
+        event: 'Link removed',
+        details: detail,
+        level: 'info',
+        ticketId,
+      });
+      return ok();
+    }
+
     if (action === "reorderColumns") {
       const orderedColumnIds = Array.isArray(body.orderedColumnIds) ? body.orderedColumnIds : [];
       for (let i = 0; i < orderedColumnIds.length; i += 1) {

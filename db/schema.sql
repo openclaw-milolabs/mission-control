@@ -250,6 +250,24 @@ create table if not exists ticket_documents (
 );
 create index if not exists ticket_documents_doc_idx on ticket_documents(document_id);
 
+-- Custom URL links on tickets. Lives under the Documents module (dropped on
+-- module disable) but points to arbitrary external URLs rather than internal
+-- documents. `label` is optional; the UI falls back to the URL's hostname.
+-- `kind` distinguishes an external 'url' from a local Windows 'path'
+-- (M:\Altinstar\2026\AI). Path links open in the host's File Explorer via the
+-- /api/open-path route — only meaningful when the server runs on the user's box.
+create table if not exists ticket_links (
+  id uuid primary key default gen_random_uuid(),
+  ticket_id uuid not null references tickets(id) on delete cascade,
+  kind text not null default 'url',
+  url text not null,
+  label text,
+  added_by_email text,
+  added_by_name text,
+  added_at timestamptz not null default now()
+);
+create index if not exists ticket_links_ticket_idx on ticket_links(ticket_id);
+
 -- One-shot audit: scrub any ticket_attachments rows whose `path` points
 -- outside the new narrow allowlist (e.g. left over from when /api/files
 -- exposed the whole ~/.openclaw home). Idempotent: only runs once.

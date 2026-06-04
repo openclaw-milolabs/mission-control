@@ -40,11 +40,12 @@ async function dirSize(dir: string): Promise<number> {
 
 export const documentsHandler = {
   async preview(sql: Sql): Promise<ModulePreview> {
-    const [docs, folders, audit, links] = await Promise.all([
+    const [docs, folders, audit, links, urlLinks] = await Promise.all([
       sql`select count(*)::int as n from documents where kind = 'file'`.catch(() => [{ n: 0 }]),
       sql`select count(*)::int as n from documents where kind = 'folder'`.catch(() => [{ n: 0 }]),
       sql`select count(*)::int as n from document_audit`.catch(() => [{ n: 0 }]),
       sql`select count(*)::int as n from ticket_documents`.catch(() => [{ n: 0 }]),
+      sql`select count(*)::int as n from ticket_links`.catch(() => [{ n: 0 }]),
     ]);
 
     const sampleTickets = await sql`
@@ -63,7 +64,8 @@ export const documentsHandler = {
         { icon: "📄", label: "documents", n: Number((docs as Array<{ n: number }>)[0]?.n ?? 0) },
         { icon: "📁", label: "folders", n: Number((folders as Array<{ n: number }>)[0]?.n ?? 0) },
         { icon: "📝", label: "audit log entries", n: Number((audit as Array<{ n: number }>)[0]?.n ?? 0) },
-        { icon: "🔗", label: "links from kanban tickets", n: Number((links as Array<{ n: number }>)[0]?.n ?? 0) },
+        { icon: "🔗", label: "document links from kanban tickets", n: Number((links as Array<{ n: number }>)[0]?.n ?? 0) },
+        { icon: "🌐", label: "URL links on kanban tickets", n: Number((urlLinks as Array<{ n: number }>)[0]?.n ?? 0) },
       ],
       bytesOnDisk,
       sampleAffected: sampleTickets.map((t) => ({
@@ -81,6 +83,7 @@ export const documentsHandler = {
     // ticket_documents.document_id has ON DELETE CASCADE so dropping documents
     // also drops every link row.
     await fsp.rm(DOCUMENTS_ROOT, { recursive: true, force: true });
+    await sql`DROP TABLE IF EXISTS ticket_links CASCADE`;
     await sql`DROP TABLE IF EXISTS document_audit CASCADE`;
     await sql`DROP TABLE IF EXISTS documents CASCADE`;
   },
@@ -133,6 +136,20 @@ export const documentsHandler = {
       )
     `;
     await sql`CREATE INDEX IF NOT EXISTS ticket_documents_doc_idx ON ticket_documents(document_id)`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS ticket_links (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        ticket_id uuid NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        kind text NOT NULL DEFAULT 'url',
+        url text NOT NULL,
+        label text,
+        added_by_email text,
+        added_by_name text,
+        added_at timestamptz NOT NULL DEFAULT now()
+      )
+    `;
+    await sql`ALTER TABLE ticket_links ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'url'`;
+    await sql`CREATE INDEX IF NOT EXISTS ticket_links_ticket_idx ON ticket_links(ticket_id)`;
     await fsp.mkdir(DOCUMENTS_ROOT, { recursive: true });
   },
 };

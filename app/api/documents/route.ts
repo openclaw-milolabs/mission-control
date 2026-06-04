@@ -87,6 +87,20 @@ async function ensureSchema(sql: ReturnType<typeof getSql>) {
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS ticket_documents_doc_idx ON ticket_documents(document_id)`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS ticket_links (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      ticket_id uuid NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      kind text NOT NULL DEFAULT 'url',
+      url text NOT NULL,
+      label text,
+      added_by_email text,
+      added_by_name text,
+      added_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await sql`ALTER TABLE ticket_links ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'url'`;
+  await sql`CREATE INDEX IF NOT EXISTS ticket_links_ticket_idx ON ticket_links(ticket_id)`;
   _docsSchemaEnsured = true;
 }
 

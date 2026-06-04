@@ -1,6 +1,6 @@
 {
   "name": "dashboard",
-  "version": "3.9.0",
+  "version": "4.0.0",
   "private": true,
   "scripts": {
     "dev": "docker compose up -d db db-init && bash scripts/mc-services.sh restart --dev",
