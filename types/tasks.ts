@@ -69,6 +69,8 @@ export type Ticket = {
   checklistTotal: number;
   comments: number;
   attachments: number;
+  /** Count of linked documents + URL/path links (the ticket "Documents & links" section). */
+  documentsCount?: number;
   createdAt: number;
 };
 

@@ -184,16 +184,26 @@ export async function GET() {
     const wid = await workspaceId(sql);
     if (!wid) return ok({ boards: [], columns: [], tickets: [], workerSettings: { enabled: true, pollIntervalSeconds: 20, maxConcurrency: 3, lastTickAt: null } });
 
-    const [boards, columns, tickets, boardAssignees, boardLabels, workerSettings] = await Promise.all([
+    const [boards, columns, tickets, boardAssignees, boardLabels, workerSettings, docRows, linkRows] = await Promise.all([
       sql`select * from boards where workspace_id=${wid} order by created_at asc`,
       sql`select * from columns where board_id in (select id from boards where workspace_id=${wid}) order by position asc, created_at asc`,
       sql`select * from tickets where workspace_id=${wid} order by position asc, created_at asc`,
       sql`select * from board_assignees where board_id in (select id from boards where workspace_id=${wid}) order by name asc`.catch(() => []),
       sql`select * from board_labels where board_id in (select id from boards where workspace_id=${wid}) order by name asc`.catch(() => []),
       getWorkerSettings(sql),
+      // Per-ticket linked-document + URL/path-link counts. Independently guarded:
+      // when the Documents module is off its tables are dropped, so a missing
+      // relation just yields zero counts instead of failing the whole load.
+      sql`select td.ticket_id::text as id, count(*)::int as n from ticket_documents td join tickets t on t.id=td.ticket_id where t.workspace_id=${wid} group by td.ticket_id`.catch(() => []),
+      sql`select tl.ticket_id::text as id, count(*)::int as n from ticket_links tl join tickets t on t.id=tl.ticket_id where t.workspace_id=${wid} group by tl.ticket_id`.catch(() => []),
     ]);
 
-    return ok({ boards, columns, tickets, boardAssignees, boardLabels, workerSettings });
+    const docCountById: Record<string, number> = {};
+    for (const r of docRows as Array<{ id: string; n: number }>) docCountById[r.id] = (docCountById[r.id] ?? 0) + r.n;
+    for (const r of linkRows as Array<{ id: string; n: number }>) docCountById[r.id] = (docCountById[r.id] ?? 0) + r.n;
+    const ticketsWithCounts = (tickets as Array<{ id: string }>).map((t) => ({ ...t, documents_count: docCountById[t.id] ?? 0 }));
+
+    return ok({ boards, columns, tickets: ticketsWithCounts, boardAssignees, boardLabels, workerSettings });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to load tasks", 500);
   }

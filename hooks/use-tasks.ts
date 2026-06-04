@@ -75,6 +75,7 @@ type RawTicket = {
   checklist_total: number | null;
   comments_count: number | null;
   attachments_count: number | null;
+  documents_count: number | null;
   created_at: string;
 };
 
@@ -216,6 +217,7 @@ function hydrateBoards(
         checklistTotal: t.checklist_total ?? 0,
         comments: t.comments_count ?? 0,
         attachments: t.attachments_count ?? 0,
+        documentsCount: t.documents_count ?? 0,
         createdAt: Date.parse(t.created_at) || 0,
       };
       state.tickets[t.id] = ticket;

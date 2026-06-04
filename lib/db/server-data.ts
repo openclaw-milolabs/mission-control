@@ -134,6 +134,27 @@ export async function getBoardsPageData(): Promise<BoardHydration[]> {
     ? await sql<TicketRow[]>`select * from tickets where workspace_id = ${wid} order by position asc, created_at asc`
     : [];
 
+  // Per-ticket count of linked documents + URL/path links. Each query is guarded
+  // independently: when the Documents module is disabled its tables are dropped,
+  // so a missing relation just yields zero counts instead of breaking the board.
+  const docCountById: Record<string, number> = {};
+  if (wid) {
+    const [docRows, linkRows] = await Promise.all([
+      sql<Array<{ id: string; n: number }>>`
+        select td.ticket_id::text as id, count(*)::int as n
+        from ticket_documents td join tickets t on t.id = td.ticket_id
+        where t.workspace_id = ${wid} group by td.ticket_id
+      `.catch(() => [] as Array<{ id: string; n: number }>),
+      sql<Array<{ id: string; n: number }>>`
+        select tl.ticket_id::text as id, count(*)::int as n
+        from ticket_links tl join tickets t on t.id = tl.ticket_id
+        where t.workspace_id = ${wid} group by tl.ticket_id
+      `.catch(() => [] as Array<{ id: string; n: number }>),
+    ]);
+    for (const r of docRows) docCountById[r.id] = (docCountById[r.id] ?? 0) + r.n;
+    for (const r of linkRows) docCountById[r.id] = (docCountById[r.id] ?? 0) + r.n;
+  }
+
   return boards.map((board) => {
     const boardColumns = columns.filter((column) => column.board_id === board.id);
     const boardTickets = tickets.filter((ticket) => ticket.board_id === board.id);
@@ -172,6 +193,7 @@ export async function getBoardsPageData(): Promise<BoardHydration[]> {
         checklistTotal: ticket.checklist_total ?? 0,
         comments: ticket.comments_count ?? 0,
         attachments: ticket.attachments_count ?? 0,
+        documentsCount: docCountById[ticket.id] ?? 0,
         createdAt: Date.parse(ticket.created_at) || 0,
       } satisfies Ticket;
 
