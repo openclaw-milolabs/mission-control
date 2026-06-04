@@ -199,9 +199,9 @@ export async function GET() {
     ]);
 
     const docCountById: Record<string, number> = {};
-    for (const r of docRows as Array<{ id: string; n: number }>) docCountById[r.id] = (docCountById[r.id] ?? 0) + r.n;
-    for (const r of linkRows as Array<{ id: string; n: number }>) docCountById[r.id] = (docCountById[r.id] ?? 0) + r.n;
-    const ticketsWithCounts = (tickets as Array<{ id: string }>).map((t) => ({ ...t, documents_count: docCountById[t.id] ?? 0 }));
+    for (const r of docRows as unknown as Array<{ id: string; n: number }>) docCountById[r.id] = (docCountById[r.id] ?? 0) + r.n;
+    for (const r of linkRows as unknown as Array<{ id: string; n: number }>) docCountById[r.id] = (docCountById[r.id] ?? 0) + r.n;
+    const ticketsWithCounts = (tickets as unknown as Array<{ id: string }>).map((t) => ({ ...t, documents_count: docCountById[t.id] ?? 0 }));
 
     return ok({ boards, columns, tickets: ticketsWithCounts, boardAssignees, boardLabels, workerSettings });
   } catch (error) {
