@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   FileTextIcon,
   FileCodeIcon,
@@ -54,6 +55,34 @@ function hostnameOf(url: string): string {
 function basenameOf(p: string): string {
   const parts = p.split(/[\\/]+/).filter(Boolean);
   return parts[parts.length - 1] || p;
+}
+
+/**
+ * Copies text to the clipboard. Returns synchronously (so the execCommand
+ * fallback stays inside the user gesture) and works in non-secure contexts —
+ * the dashboard is often served over plain http where navigator.clipboard is
+ * unavailable.
+ */
+function copyText(text: string): boolean {
+  if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
+    void navigator.clipboard.writeText(text).catch(() => {});
+    return true;
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 function iconFor(ext: string | null): typeof FileTextIcon {
@@ -196,8 +225,21 @@ export function TicketDocumentsSection({ ticketId }: Props) {
                 {isPath ? (
                   <a
                     href={`mc-explorer:${encodeURIComponent(l.url)}`}
+                    onClick={() => {
+                      // The href still fires the mc-explorer: handler for anyone
+                      // who installed it. Regardless, copy the path so it always
+                      // does something useful even without the handler.
+                      const ok = copyText(l.url);
+                      if (ok) {
+                        toast.success("Path copied to clipboard", {
+                          description: "If Explorer didn't open, paste it into Explorer's address bar (Win+E, then Ctrl+L).",
+                        });
+                      } else {
+                        toast.error("Couldn't copy automatically — here's the path", { description: l.url });
+                      }
+                    }}
                     className="text-muted-foreground transition-colors hover:text-foreground"
-                    title="Open in File Explorer (needs the one-time Windows setup)"
+                    title="Copy path (and open in Explorer if the one-time setup is installed)"
                   >
                     <ExternalLinkIcon className="size-3.5" />
                   </a>

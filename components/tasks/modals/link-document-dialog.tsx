@@ -362,8 +362,9 @@ export function LinkDocumentDialog({ open, ticketId, alreadyLinkedIds, onClose, 
               />
             </div>
             <p className="rounded-md bg-muted/40 px-2.5 py-2 text-[10px] leading-relaxed text-muted-foreground">
-              Opens in Windows File Explorer when clicked, from any browser on a PC that can reach
-              this path. Needs a one-time setup per Windows machine —{" "}
+              Clicking the link <span className="font-medium">copies the path</span> so you can paste
+              it into Explorer. For true one-click open in Windows File Explorer, do the one-time
+              setup per machine —{" "}
               <a
                 href="/install-mc-explorer.ps1"
                 download
@@ -371,7 +372,7 @@ export function LinkDocumentDialog({ open, ticketId, alreadyLinkedIds, onClose, 
               >
                 download install-mc-explorer.ps1
               </a>{" "}
-              then right-click it → <span className="font-medium">Run with PowerShell</span>.
+              and run it (PowerShell).
             </p>
           </TabsContent>
         </Tabs>

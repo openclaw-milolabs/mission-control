@@ -17,6 +17,8 @@ Kanban ticket cards now show a **document icon with a count** in the meta row wh
 
 **How path-open works (and its setup):** browsers refuse to navigate to `file://` from an `http(s)` origin, and the open must happen on the **client** (your Windows PC), not the server — Mission Control commonly runs on a remote Linux host. So path links use a custom `mc-explorer:` URL scheme handled entirely on the Windows client. A one-time per-machine installer ([public/install-mc-explorer.ps1](public/install-mc-explorer.ps1), downloadable from the File/Folder tab) registers the scheme under `HKCU` (no admin needed) and drops a small helper that launches `explorer.exe`. After that, clicking a path link opens Explorer in one click **regardless of whether the server is on Linux or Windows**, as long as the clicking machine is Windows and can reach the path. Folders open directly; files open their containing folder with the file selected; a missing target pops a *"Path not found — is the drive connected?"* dialog.
 
+**Clipboard fallback:** clicking a path link always **copies the path to the clipboard** and shows a toast, so it does something useful even when the handler isn't installed (or on non-Windows clients) — paste into Explorer's address bar. The copy works in non-secure (`http`) contexts via an `execCommand` fallback when `navigator.clipboard` is unavailable.
+
 - **Safety:** the helper only ever launches `explorer.exe` pointed at the path (it never executes the target file) and refuses anything that isn't an absolute drive/UNC path. The worst a rogue page invoking `mc-explorer:` could do is pop a File Explorer window.
 
 ### Added — API
