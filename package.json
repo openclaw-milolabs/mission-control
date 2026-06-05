@@ -54,7 +54,6 @@
     "adm-zip": "^0.5.16",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "dashboard": "file:",
     "date-fns": "^4.1.0",
     "framer-motion": "^11.18.2",
     "google-play-scraper": "^10.1.3",

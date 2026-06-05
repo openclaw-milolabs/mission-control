@@ -23,6 +23,12 @@ function round2(n: number | null): number | null {
   return n == null || !Number.isFinite(n) ? null : Math.round(n * 100) / 100;
 }
 
+function toIso(d: string | Date | null | undefined): string | null {
+  if (!d) return null;
+  const dt = new Date(d);
+  return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+}
+
 /** Pure: map google-play-scraper review objects to RawReview[]. */
 export function mapGoogleReviews(raw: GpReview[], country: string): RawReview[] {
   if (!Array.isArray(raw)) return [];
@@ -36,7 +42,7 @@ export function mapGoogleReviews(raw: GpReview[], country: string): RawReview[] 
       body: r.text ?? null,
       appVersion: r.version ?? null,
       country,
-      submittedAt: r.date ? new Date(r.date).toISOString() : null,
+      submittedAt: toIso(r.date),
       storeResponse: r.replyText ?? null,
     }));
 }
