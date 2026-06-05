@@ -87,10 +87,25 @@ async function ensureSchema(sql: ReturnType<typeof getSql>) {
       summary_md text NOT NULL,
       sentiment_score numeric(4,3),
       top_themes jsonb,
+      generated_by_agent_id text,
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS app_review_digests_app_idx ON app_review_digests(mobile_app_id, created_at desc)`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS app_alert_rules (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      mobile_app_id uuid REFERENCES mobile_apps(id) ON DELETE CASCADE,
+      metric text NOT NULL,
+      operator text NOT NULL DEFAULT 'lt',
+      threshold numeric NOT NULL,
+      window text NOT NULL DEFAULT 'daily',
+      channel_ids text[] NOT NULL DEFAULT '{}'::text[],
+      enabled boolean NOT NULL DEFAULT true,
+      last_fired_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
   _schemaEnsured = true;
 }
 
