@@ -9,6 +9,11 @@ const ok = (data: Record<string, unknown> = {}) => NextResponse.json({ ok: true,
 const fail = (message: string, status = 400) =>
   NextResponse.json({ ok: false, error: message }, { status });
 
+async function workspaceId(sql: ReturnType<typeof getSql>) {
+  const rows = (await sql`select id from workspaces order by created_at asc limit 1`) as unknown as Array<{ id: string }>;
+  return rows[0]?.id ?? null;
+}
+
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const session = await getSession();
@@ -18,13 +23,17 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     const { id } = await params;
     const sql = getSql();
+    const wid = await workspaceId(sql);
+    if (!wid) return fail("App not found", 404);
     const url = new URL(request.url);
     const store = url.searchParams.get("store"); // 'apple' | 'google' | null
-    const minRating = Number(url.searchParams.get("minRating") || "0");
-    const limit = Math.min(Number(url.searchParams.get("limit") || "100"), 500);
+    const minRatingRaw = Number(url.searchParams.get("minRating") || "0");
+    const minRating = Number.isFinite(minRatingRaw) ? minRatingRaw : 0;
+    const limitRaw = Number(url.searchParams.get("limit") || "100");
+    const limit = Math.min(Number.isFinite(limitRaw) ? limitRaw : 100, 500);
 
     const appRows = (await sql`
-      select id::text, name, icon_url, notes from mobile_apps where id = ${id} limit 1
+      select id::text, name, icon_url, notes from mobile_apps where id = ${id} and workspace_id = ${wid} limit 1
     `) as unknown as Array<Record<string, unknown>>;
     if (!appRows[0]) return fail("App not found", 404);
 
