@@ -54,7 +54,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
               r.app_version, r.country, r.submitted_at, r.store_response, r.sentiment, r.themes
             from app_reviews r
             join mobile_app_listings l on l.id = r.listing_id
-            where r.listing_id = any(${sql.array(listingIds, 'uuid')})
+            where r.listing_id = any(${sql.array(listingIds)}::uuid[])
               and (${store}::text is null or l.store = ${store})
               and (r.rating is null or r.rating >= ${minRating})
             order by r.submitted_at desc nulls last
@@ -68,7 +68,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
             select s.listing_id::text, l.store, s.captured_at, s.avg_rating::float8 as avg_rating, s.ratings_count, s.histogram
             from app_rating_snapshots s
             join mobile_app_listings l on l.id = s.listing_id
-            where s.listing_id = any(${sql.array(listingIds, 'uuid')})
+            where s.listing_id = any(${sql.array(listingIds)}::uuid[])
             order by s.captured_at asc
           `;
 
