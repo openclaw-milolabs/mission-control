@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { useAuth } from "@/hooks/use-auth"
 import {
   IconDashboard,
+  IconDeviceMobile,
   IconInnerShadowTop,
   IconListDetails,
   IconLogs,
@@ -43,6 +44,7 @@ const NAV_ENTRIES = [
   { title: "Boards", url: "/boards", icon: IconListDetails, moduleId: "kanban" },
   { title: "Documents", url: "/documents", icon: IconFileText, moduleId: "documents" },
   { title: "Metrics", url: "/metrics", icon: IconChartBar, moduleId: "metrics" },
+  { title: "Mobile Applications", url: "/mobile-apps", icon: IconDeviceMobile, moduleId: "mobile-apps" },
   { title: "Agenda", url: "/agenda", icon: IconCalendar, moduleId: "agenda" },
   { title: "Processes", url: "/processes", icon: IconStack2, moduleId: "processes" },
   { title: "Agents", url: "/agents", icon: IconRobot },

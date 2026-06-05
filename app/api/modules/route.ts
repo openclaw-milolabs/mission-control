@@ -5,6 +5,7 @@ import { MODULES, type ModuleId } from "@/lib/modules/registry";
 import { invalidateModuleCache, readModuleSnapshot } from "@/lib/modules/state";
 import { documentsHandler } from "@/lib/modules/handlers/documents";
 import { metricsHandler } from "@/lib/modules/handlers/metrics";
+import { mobileAppsHandler } from "@/lib/modules/handlers/mobile-apps";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,7 @@ const fail = (message: string, status = 400) =>
 const HANDLERS: Partial<Record<ModuleId, typeof documentsHandler>> = {
   documents: documentsHandler,
   metrics: metricsHandler,
+  "mobile-apps": mobileAppsHandler,
 };
 
 async function workspaceId(sql: ReturnType<typeof getSql>) {
