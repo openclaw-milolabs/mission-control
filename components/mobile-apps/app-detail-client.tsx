@@ -45,6 +45,8 @@ export function AppDetailClient({ appId }: { appId: string }) {
   const [store, setStore] = useState<"" | "apple" | "google">("");
   const [minRating, setMinRating] = useState(0);
   const [syncing, setSyncing] = useState(false);
+  const [digest, setDigest] = useState<{ summary_md: string; created_at: string } | null>(null);
+  const [genBusy, setGenBusy] = useState(false);
 
   useEffect(() => {
     if (ready && !isEnabled("mobile-apps")) router.replace("/settings#modules");
@@ -121,6 +123,20 @@ export function AppDetailClient({ appId }: { appId: string }) {
     return () => es.close();
   }, [appId]);
 
+  const loadDigest = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/mobile-apps/${appId}/digest`, { cache: "no-store" });
+      const json = await res.json();
+      if (json.ok && json.digests?.[0]) setDigest(json.digests[0]);
+    } catch {
+      /* ignore */
+    }
+  }, [appId]);
+
+  useEffect(() => {
+    void loadDigest();
+  }, [loadDigest]);
+
   async function refresh() {
     setSyncing(true);
     try {
@@ -135,6 +151,21 @@ export function AppDetailClient({ appId }: { appId: string }) {
       toast.error("Sync failed");
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function generate() {
+    setGenBusy(true);
+    try {
+      const res = await fetch(`/api/mobile-apps/${appId}/digest`, { method: "POST" });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "Failed");
+      await loadDigest();
+      toast.success("Digest generated");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to generate digest");
+    } finally {
+      setGenBusy(false);
     }
   }
 
@@ -251,6 +282,22 @@ export function AppDetailClient({ appId }: { appId: string }) {
           </div>
         </div>
       ) : null}
+
+      <div className="rounded-xl border bg-card p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-medium">Sentiment digest</h2>
+          <Button size="sm" variant="outline" onClick={() => void generate()} disabled={genBusy}>
+            {genBusy ? "Generating…" : "Generate digest now"}
+          </Button>
+        </div>
+        {digest ? (
+          <div className="prose prose-sm max-w-none whitespace-pre-wrap text-sm text-muted-foreground">
+            {digest.summary_md}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No digest yet. Generate one from the latest reviews.</p>
+        )}
+      </div>
 
       <div className="space-y-2">
         <h2 className="text-sm font-medium">Reviews ({reviews.length})</h2>
