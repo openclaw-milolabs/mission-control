@@ -76,6 +76,8 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS app_review_digests_app_idx ON app_review_digests(mobile_app_id, created_at desc)`;
+  // Migration: add generated_by_agent_id if table was created before this column existed
+  await sql`ALTER TABLE app_review_digests ADD COLUMN IF NOT EXISTS generated_by_agent_id text`;
   await sql`
     CREATE TABLE IF NOT EXISTS app_alert_rules (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
