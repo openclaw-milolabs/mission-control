@@ -62,10 +62,10 @@ export async function PATCH(request: Request) {
   if (!id) return fail("id required");
   const sql = getSql();
   if (typeof body.enabled === "boolean") {
-    await sql`update app_alert_rules set enabled = ${body.enabled} where id = ${id}`;
+    await sql`update app_alert_rules set enabled = ${body.enabled} where id = ${id}::uuid`;
   }
   if (typeof body.threshold === "number" && Number.isFinite(body.threshold)) {
-    await sql`update app_alert_rules set threshold = ${body.threshold} where id = ${id}`;
+    await sql`update app_alert_rules set threshold = ${body.threshold} where id = ${id}::uuid`;
   }
   return ok();
 }
@@ -78,6 +78,6 @@ export async function DELETE(request: Request) {
   const id = String(body.id || "");
   if (!id) return fail("id required");
   const sql = getSql();
-  await sql`delete from app_alert_rules where id = ${id}`;
+  await sql`delete from app_alert_rules where id = ${id}::uuid`;
   return ok();
 }

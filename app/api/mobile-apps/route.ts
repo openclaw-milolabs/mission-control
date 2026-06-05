@@ -128,7 +128,7 @@ export async function GET() {
         ) as listings
       from mobile_apps a
       left join mobile_app_listings l on l.mobile_app_id = a.id
-      where a.workspace_id = ${wid}
+      where a.workspace_id = ${wid}::uuid
       group by a.id
       order by a.created_at asc
     `;
@@ -176,7 +176,7 @@ export async function POST(request: Request) {
 
     const appRows = (await sql`
       insert into mobile_apps (workspace_id, name, icon_url)
-      values (${wid}, ${name}, ${iconUrl})
+      values (${wid}::uuid, ${name}, ${iconUrl})
       returning id::text
     `) as unknown as Array<{ id: string }>;
     const appId = appRows[0].id;
@@ -184,7 +184,7 @@ export async function POST(request: Request) {
     for (const r of resolved) {
       await sql`
         insert into mobile_app_listings (mobile_app_id, store, store_app_id, country)
-        values (${appId}, ${r.store}, ${r.storeAppId}, ${r.country})
+        values (${appId}::uuid, ${r.store}, ${r.storeAppId}, ${r.country})
         on conflict (mobile_app_id, store) do nothing
       `;
     }
@@ -212,7 +212,7 @@ export async function DELETE(request: Request) {
     const body = (await request.json()) as { id?: string };
     const id = String(body.id || "");
     if (!id) return fail("App id is required.");
-    await sql`delete from mobile_apps where id = ${id} and workspace_id = ${wid}`;
+    await sql`delete from mobile_apps where id = ${id}::uuid and workspace_id = ${wid}::uuid`;
     return ok();
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to delete app", 500);

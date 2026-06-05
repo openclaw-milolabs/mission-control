@@ -33,13 +33,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const limit = Math.min(Number.isFinite(limitRaw) ? limitRaw : 100, 500);
 
     const appRows = (await sql`
-      select id::text, name, icon_url, notes from mobile_apps where id = ${id} and workspace_id = ${wid} limit 1
+      select id::text, name, icon_url, notes from mobile_apps where id = ${id}::uuid and workspace_id = ${wid}::uuid limit 1
     `) as unknown as Array<Record<string, unknown>>;
     if (!appRows[0]) return fail("App not found", 404);
 
     const listings = (await sql`
       select id::text, store, store_app_id, country, current_rating::float8 as current_rating, ratings_count, last_synced_at
-      from mobile_app_listings where mobile_app_id = ${id}
+      from mobile_app_listings where mobile_app_id = ${id}::uuid
     `) as unknown as Array<{ id: string; store: string }>;
     const listingIds = listings.map((l) => l.id);
 

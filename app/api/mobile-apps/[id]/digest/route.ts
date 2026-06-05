@@ -29,7 +29,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       select d.id::text, d.period_start, d.period_end, d.summary_md, d.sentiment_score, d.top_themes, d.generated_by_agent_id, d.created_at
       from app_review_digests d
       join mobile_apps a on a.id = d.mobile_app_id
-      where d.mobile_app_id = ${id} and a.workspace_id = ${wid}
+      where d.mobile_app_id = ${id}::uuid and a.workspace_id = ${wid}::uuid
       order by d.created_at desc
       limit 20
     `;
@@ -49,7 +49,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const sql = getSql();
     const wid = await workspaceId(sql);
     if (!wid) return fail("App not found", 404);
-    const owned = (await sql`select 1 from mobile_apps where id = ${id} and workspace_id = ${wid} limit 1`) as unknown as Array<unknown>;
+    const owned = (await sql`select 1 from mobile_apps where id = ${id}::uuid and workspace_id = ${wid}::uuid limit 1`) as unknown as Array<unknown>;
     if (owned.length === 0) return fail("App not found", 404);
     const digestId = await generateDigest(id);
     return ok({ id: digestId });
