@@ -106,7 +106,14 @@ export async function evaluateAndFire(appId: string): Promise<void> {
  * (level is plain text, not an enum — 'warning' is a valid value per schema.sql)
  */
 async function notifyChannels(sql: Sql, channelIds: string[], message: string): Promise<boolean> {
-  void channelIds; // provider-specific delivery (Telegram/Slack) wired in Task C3
+  // Provider-specific delivery (Telegram/Slack) is deferred: there is no reusable
+  // server-side TypeScript helper in lib/ for channel dispatch. The only Telegram
+  // sender in this repo is sendTelegramNotification() inside scripts/bridge-logger.mjs —
+  // a .mjs script that calls the `openclaw` CLI via child_process and reads a
+  // sessions.json file for the chatId; it is not importable as a lib module.
+  // activity_logs is the guaranteed v1 sink (visible in the Dashboard activity feed).
+  // Wire real channel delivery here once a reusable lib/notifications helper exists.
+  void channelIds;
   const wid = (await sql`select id from workspaces order by created_at asc limit 1`) as unknown as Array<{ id: string }>;
   const workspaceId = wid[0]?.id;
   if (!workspaceId) return false;

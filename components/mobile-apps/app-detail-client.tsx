@@ -47,6 +47,8 @@ export function AppDetailClient({ appId }: { appId: string }) {
   const [syncing, setSyncing] = useState(false);
   const [digest, setDigest] = useState<{ summary_md: string; created_at: string } | null>(null);
   const [genBusy, setGenBusy] = useState(false);
+  const [rules, setRules] = useState<Array<{ id: string; metric: string; operator: string; threshold: number; enabled: boolean; mobile_app_id: string | null }>>([]);
+  const [newThreshold, setNewThreshold] = useState(4.0);
 
   useEffect(() => {
     if (ready && !isEnabled("mobile-apps")) router.replace("/settings#modules");
@@ -136,6 +138,45 @@ export function AppDetailClient({ appId }: { appId: string }) {
   useEffect(() => {
     void loadDigest();
   }, [loadDigest]);
+
+  const loadRules = useCallback(async () => {
+    try {
+      const res = await fetch("/api/mobile-apps/alerts", { cache: "no-store" });
+      const json = await res.json();
+      if (json.ok) setRules(json.rules);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  useEffect(() => {
+    void loadRules();
+  }, [loadRules]);
+
+  async function addRule() {
+    try {
+      const res = await fetch("/api/mobile-apps/alerts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mobileAppId: appId, metric: "avg_rating", operator: "lt", threshold: newThreshold }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "Failed");
+      await loadRules();
+      toast.success("Alert added");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to add alert");
+    }
+  }
+  async function deleteRule(id: string) {
+    try {
+      await fetch("/api/mobile-apps/alerts", {
+        method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }),
+      });
+      await loadRules();
+    } catch {
+      toast.error("Failed to delete alert");
+    }
+  }
 
   async function refresh() {
     setSyncing(true);
@@ -297,6 +338,29 @@ export function AppDetailClient({ appId }: { appId: string }) {
         ) : (
           <p className="text-sm text-muted-foreground">No digest yet. Generate one from the latest reviews.</p>
         )}
+      </div>
+
+      <div className="rounded-xl border bg-card p-4">
+        <h2 className="mb-2 text-sm font-medium">Alerts</h2>
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+          <span>Notify when average rating drops below</span>
+          <input
+            type="number" step="0.1" min={0} max={5}
+            aria-label="Average rating threshold"
+            className="w-20 rounded-md border bg-background px-2 py-1"
+            value={newThreshold}
+            onChange={(e) => setNewThreshold(Number(e.target.value))}
+          />
+          <Button size="sm" variant="outline" onClick={() => void addRule()}>Add alert</Button>
+        </div>
+        <ul className="space-y-1 text-sm">
+          {rules.filter((r) => r.mobile_app_id === appId || r.mobile_app_id == null).map((r) => (
+            <li key={r.id} className="flex items-center justify-between rounded border px-2 py-1">
+              <span>{r.metric} {r.operator} {r.threshold}{r.enabled ? "" : " (disabled)"}</span>
+              <Button size="sm" variant="ghost" onClick={() => void deleteRule(r.id)}>Remove</Button>
+            </li>
+          ))}
+        </ul>
       </div>
 
       <div className="space-y-2">
