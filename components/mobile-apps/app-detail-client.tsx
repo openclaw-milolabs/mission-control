@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   LineChart,
@@ -79,6 +79,11 @@ export function AppDetailClient({ appId }: { appId: string }) {
     }
   }, [appId, store, minRating]);
 
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  });
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -108,13 +113,13 @@ export function AppDetailClient({ appId }: { appId: string }) {
     es.addEventListener("change", (ev) => {
       try {
         const data = JSON.parse((ev as MessageEvent).data || "{}");
-        if (!data.appId || data.appId === appId) void load();
+        if (!data.appId || data.appId === appId) void loadRef.current();
       } catch {
         /* ignore */
       }
     });
     return () => es.close();
-  }, [appId, load]);
+  }, [appId]);
 
   async function refresh() {
     setSyncing(true);
