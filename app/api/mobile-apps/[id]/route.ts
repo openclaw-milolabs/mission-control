@@ -38,7 +38,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (!appRows[0]) return fail("App not found", 404);
 
     const listings = (await sql`
-      select id::text, store, store_app_id, country, current_rating, ratings_count, last_synced_at
+      select id::text, store, store_app_id, country, current_rating::float8 as current_rating, ratings_count, last_synced_at
       from mobile_app_listings where mobile_app_id = ${id}
     `) as unknown as Array<{ id: string; store: string }>;
     const listingIds = listings.map((l) => l.id);
@@ -63,7 +63,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       listingIds.length === 0
         ? []
         : await sql`
-            select s.listing_id::text, l.store, s.captured_at, s.avg_rating, s.ratings_count, s.histogram
+            select s.listing_id::text, l.store, s.captured_at, s.avg_rating::float8 as avg_rating, s.ratings_count, s.histogram
             from app_rating_snapshots s
             join mobile_app_listings l on l.id = s.listing_id
             where s.listing_id = any(${sql.array(listingIds)})
