@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSql } from "@/lib/local-db";
 import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
+import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     const { id } = await params;
     const sql = getSql();
+    await ensureMobileAppsSchema(sql);
     const wid = await workspaceId(sql);
     if (!wid) return fail("App not found", 404);
     const url = new URL(request.url);

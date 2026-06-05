@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSql } from "@/lib/local-db";
 import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
+import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 
 export const dynamic = "force-dynamic";
 
@@ -12,29 +13,12 @@ const fail = (message: string, status = 400) =>
 const VALID_METRICS = new Set(["avg_rating", "one_star_spike", "review_volume"]);
 const VALID_OPS = new Set(["lt", "lte", "gt", "gte", "eq"]);
 
-async function ensureAlertRulesTable(sql: ReturnType<typeof getSql>) {
-  await sql`
-    CREATE TABLE IF NOT EXISTS app_alert_rules (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      mobile_app_id uuid REFERENCES mobile_apps(id) ON DELETE CASCADE,
-      metric text NOT NULL,
-      operator text NOT NULL DEFAULT 'lt',
-      threshold numeric NOT NULL,
-      window text NOT NULL DEFAULT 'daily',
-      channel_ids text[] NOT NULL DEFAULT '{}'::text[],
-      enabled boolean NOT NULL DEFAULT true,
-      last_fired_at timestamptz,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )
-  `;
-}
-
 export async function GET() {
   const session = await getSession();
   if (!session?.email) return fail("Not authenticated", 401);
   if (!(await isModuleEnabled("mobile-apps"))) return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
   const sql = getSql();
-  await ensureAlertRulesTable(sql);
+  await ensureMobileAppsSchema(sql);
   const rules = await sql`
     select id::text, mobile_app_id::text, metric, operator, threshold::float8 as threshold,
            window, channel_ids, enabled, last_fired_at
