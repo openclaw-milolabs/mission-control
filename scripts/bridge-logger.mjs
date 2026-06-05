@@ -1174,7 +1174,18 @@ async function handleCronRunLine(getSql, jobId, line) {
 
   // If the occurrence is already in a terminal state (succeeded/failed/cancelled),
   // still emit the agenda log but skip DB state transitions (they already happened).
-  const alreadyTerminal = ['succeeded', 'failed', 'cancelled', 'needs_retry'].includes(occurrences[0].status);
+  //
+  // EXCEPTION — repair mis-condemned runs: 'needs_retry' is not truly terminal, it
+  // is awaiting a retry. If this finished line reports the run actually succeeded
+  // (status 'ok'), the scheduler's orphan sweep almost certainly mis-condemned a
+  // completed run (the deleteAfterRun race). Fall through to the success path to
+  // REPAIR it to 'succeeded' instead of letting a needless, duplicate retry fire.
+  const repairFromNeedsRetry = occurrences[0].status === 'needs_retry' && run.status === 'ok';
+  const alreadyTerminal = !repairFromNeedsRetry &&
+    ['succeeded', 'failed', 'cancelled', 'needs_retry'].includes(occurrences[0].status);
+  if (repairFromNeedsRetry) {
+    console.warn(`[bridge-logger] cron ${jobId} → occurrence ${occurrences[0].occurrence_id} was needs_retry but run finished ok — repairing to succeeded`);
+  }
   if (alreadyTerminal) {
     // Log was missed (e.g. bridge-logger was down) — emit a catch-up log entry only.
     const occ2 = occurrences[0];
@@ -1337,7 +1348,7 @@ async function handleCronRunLine(getSql, jobId, line) {
           locked_at = NULL,
           cron_synced_at = now()
       WHERE id = ${occ.occurrence_id}
-        AND status IN ('running', 'queued', 'scheduled')
+        AND status IN ('running', 'queued', 'scheduled', 'needs_retry')
       RETURNING id
     `;
     // Always notify SSE of final status — calendar reloads and finds status='succeeded'.

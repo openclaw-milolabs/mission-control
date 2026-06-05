@@ -350,7 +350,7 @@ The **Live Activity** section in the sidebar shows recent agenda and ticket acti
 - **Session isolation**: agenda tasks run in `isolated` sessions by default (no Telegram noise); `session_target` can be set to `main`
 - **Result sync**: scheduler does NOT read cron run results — bridge-logger handles that via `~/.openclaw/cron/runs/*.jsonl` watching
 - **Fallback trigger**: listens for `pg_notify('agenda_change')` signals emitted by bridge-logger after failed runs
-- **Orphan detection**: calls `cron.list` RPC every 5 minutes (configurable via `AGENDA_ORPHAN_SWEEP_MS` env var, default 300000ms) and compares live cron job IDs against DB, recovering queued occurrences that lost their cron job and marking running orphans as `needs_retry`. Previously ran every 15s tick causing ~10s CPU spikes per invocation.
+- **Orphan detection**: calls `cron.list` RPC every 5 minutes (configurable via `AGENDA_ORPHAN_SWEEP_MS` env var, default 300000ms) and compares live cron job IDs against DB, recovering queued occurrences that lost their cron job. For *running* orphans it does NOT condemn on absence alone — since occurrence jobs use `deleteAfterRun:true`, a successfully finished job is also gone from `cron.list`. It first consults persisted run history via `cron.runs` (`getJobLastRunState`): state `ok` is left for bridge-logger to finalize, only `error`/`skipped`/no-record become `needs_retry`. bridge-logger additionally repairs a mis-condemned `needs_retry` back to `succeeded` if the run's `finished` line reports `ok`. Previously ran every 15s tick causing ~10s CPU spikes per invocation.
 
 ### Gateway RPC (`gateway-rpc.mjs`)
 

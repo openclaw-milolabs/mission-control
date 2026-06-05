@@ -195,6 +195,43 @@ async function getLiveCronJobIds() {
   }
 }
 
+/**
+ * Fetch the most recent run state for a cron job from the gateway's persisted
+ * run history (the `cron.runs` RPC). Run history survives `deleteAfterRun`
+ * cleanup, so this lets the orphan sweep tell "finished & auto-deleted" (state
+ * 'ok') apart from "died mid-run" (no run record / still 'running') — a
+ * distinction `cron.list` alone cannot make, and the root cause of successful
+ * occurrences being mislabeled needs_retry.
+ *
+ * Returns one of the documented run states ('ok' | 'error' | 'skipped' |
+ * 'running') lowercased, or null when unknown/unavailable. Callers MUST treat
+ * null as "no positive evidence of success" and fall back to safe behaviour.
+ *
+ * Defensive on purpose: the run-history shape is validated against the cron run
+ * JSONL the gateway writes (~/.openclaw/cron/runs/<jobId>.jsonl: { status,
+ * runAtMs, ... }). The id is sent as both `id` and `jobId` since extra params
+ * are ignored; any RPC drift or error returns null, degrading the sweep to its
+ * previous cron.list-only behaviour rather than misfiring.
+ */
+async function getJobLastRunState(jobId) {
+  try {
+    const result = await callCron("cron.runs", { id: jobId, jobId, limit: 5 }, { timeoutMs: 10000 });
+    const runs = Array.isArray(result) ? result : (result?.runs ?? result?.data ?? []);
+    if (!Array.isArray(runs) || runs.length === 0) return null;
+    // Pick the most recent run — tolerant about ordering and timestamp field name.
+    const latest = runs.reduce((newest, r) => {
+      const t = new Date(r?.startedAt ?? r?.runAt ?? r?.runAtMs ?? 0).getTime();
+      const nt = new Date(newest?.startedAt ?? newest?.runAt ?? newest?.runAtMs ?? 0).getTime();
+      return t >= nt ? r : newest;
+    }, runs[0]);
+    const state = latest?.status ?? latest?.state ?? latest?.result ?? null;
+    return state ? String(state).toLowerCase() : null;
+  } catch (err) {
+    console.warn(`[agenda-scheduler] cron.runs lookup failed for ${jobId}: ${err.message}`);
+    return null;
+  }
+}
+
 // ── RRULE expansion (unchanged from v1 — works well) ─────────────────────────
 function localTimeToUTC(localDateStr, localTimeStr, timezone) {
   const targetLocal = `${localDateStr}T${localTimeStr}`;
@@ -465,19 +502,38 @@ async function runCycle() {
         AND ao.locked_at < NOW() - INTERVAL '2 minutes'
     `;
     for (const row of runningOrphans) {
-      if (!liveCronIds.has(row.cron_job_id)) {
-        const updated = await sql`
-          UPDATE agenda_occurrences
-          SET status = 'needs_retry',
-              last_retry_reason = 'ORPHANED: cron job disappeared mid-run (gateway restart or crash) — safe to retry',
-              cron_job_id = NULL
-          WHERE id = ${row.id} AND status = 'running'
-          RETURNING id
-        `;
-        if (updated.length > 0) {
-          console.warn(`[agenda-scheduler] Running occurrence ${row.id} ("${row.title}") orphaned (cron job ${row.cron_job_id} gone) → needs_retry`);
-          await sql`SELECT pg_notify('agenda_change', ${JSON.stringify({ action: 'needs_retry', occurrenceId: row.id })})`;
-        }
+      if (liveCronIds.has(row.cron_job_id)) continue;
+
+      // The cron job is absent from the live list. Because occurrence jobs are
+      // created with deleteAfterRun:true, the gateway ALSO auto-deletes a job the
+      // instant it finishes successfully — so "not live" does NOT imply "died".
+      // Consult the persisted run history (survives deleteAfterRun) before
+      // condemning; otherwise we mis-flag completed runs as needs_retry and kick
+      // off a wasteful, often duplicate, re-run while bridge-logger is still
+      // finalizing the same occurrence to 'succeeded' from the cron run result file.
+      const lastRunState = await getJobLastRunState(row.cron_job_id);
+      if (lastRunState === 'ok') {
+        console.log(`[agenda-scheduler] Occurrence ${row.id} ("${row.title}") cron job ${row.cron_job_id} gone but run history=ok — not orphaned, leaving for bridge-logger to finalize`);
+        continue;
+      }
+      if (lastRunState === 'running') {
+        // Run still reports in-flight; give it another cycle rather than condemning.
+        continue;
+      }
+
+      // lastRunState is 'error'/'skipped' (genuine failure) or null (no run record
+      // → the session died before producing any run). Both are safe to retry.
+      const updated = await sql`
+        UPDATE agenda_occurrences
+        SET status = 'needs_retry',
+            last_retry_reason = ${`ORPHANED: cron job disappeared mid-run (run history state: ${lastRunState ?? 'none'}) — safe to retry`},
+            cron_job_id = NULL
+        WHERE id = ${row.id} AND status = 'running'
+        RETURNING id
+      `;
+      if (updated.length > 0) {
+        console.warn(`[agenda-scheduler] Running occurrence ${row.id} ("${row.title}") orphaned (cron job ${row.cron_job_id} gone, run state=${lastRunState ?? 'none'}) → needs_retry`);
+        await sql`SELECT pg_notify('agenda_change', ${JSON.stringify({ action: 'needs_retry', occurrenceId: row.id })})`;
       }
     }
   }
