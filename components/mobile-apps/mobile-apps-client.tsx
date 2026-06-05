@@ -1,36 +1,51 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useModules } from "@/components/modules/modules-provider";
 import { AddAppDialog } from "@/components/mobile-apps/add-app-dialog";
 import { AppCard, type AppSummary } from "@/components/mobile-apps/app-card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 export function MobileAppsClient() {
+  const router = useRouter();
+  const { ready, isEnabled } = useModules();
+  useEffect(() => {
+    if (ready && !isEnabled("mobile-apps")) router.replace("/settings#modules");
+  }, [ready, isEnabled, router]);
+
   const [apps, setApps] = useState<AppSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/mobile-apps", { cache: "no-store" });
-    const json = await res.json();
-    if (json.ok) setApps(json.apps as AppSummary[]);
-    setLoading(false);
+    try {
+      const res = await fetch("/api/mobile-apps", { cache: "no-store" });
+      const json = await res.json();
+      if (json.ok) setApps(json.apps as AppSummary[]);
+      else toast.error(json.error ?? "Failed to load apps");
+    } catch {
+      toast.error("Failed to load apps");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
+    let cancelled = false;
     (async () => {
+      await load(); // show cached immediately
       await fetch("/api/mobile-apps/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({}),
       }).catch(() => null);
-      await load();
-    })();
+      if (!cancelled) await load(); // revalidate
+    })().catch(() => null);
+    return () => {
+      cancelled = true;
+    };
   }, [load]);
 
   async function refreshAll() {
@@ -43,6 +58,8 @@ export function MobileAppsClient() {
       });
       await load();
       toast.success("Synced");
+    } catch {
+      toast.error("Sync failed");
     } finally {
       setSyncing(false);
     }
