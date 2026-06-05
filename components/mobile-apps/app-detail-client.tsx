@@ -102,6 +102,20 @@ export function AppDetailClient({ appId }: { appId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId]);
 
+  // SSE live updates: reload when this app is synced in another tab/process.
+  useEffect(() => {
+    const es = new EventSource("/api/mobile-apps/stream");
+    es.addEventListener("change", (ev) => {
+      try {
+        const data = JSON.parse((ev as MessageEvent).data || "{}");
+        if (!data.appId || data.appId === appId) void load();
+      } catch {
+        /* ignore */
+      }
+    });
+    return () => es.close();
+  }, [appId, load]);
+
   async function refresh() {
     setSyncing(true);
     try {
