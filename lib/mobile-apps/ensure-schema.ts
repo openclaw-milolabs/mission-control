@@ -83,7 +83,7 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
       metric text NOT NULL,
       operator text NOT NULL DEFAULT 'lt',
       threshold numeric NOT NULL,
-      window text NOT NULL DEFAULT 'daily',
+      "window" text NOT NULL DEFAULT 'daily',
       channel_ids text[] NOT NULL DEFAULT '{}'::text[],
       enabled boolean NOT NULL DEFAULT true,
       last_fired_at timestamptz,

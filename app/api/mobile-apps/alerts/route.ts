@@ -21,7 +21,7 @@ export async function GET() {
   await ensureMobileAppsSchema(sql);
   const rules = await sql`
     select id::text, mobile_app_id::text, metric, operator, threshold::float8 as threshold,
-           window, channel_ids, enabled, last_fired_at
+           "window", channel_ids, enabled, last_fired_at
     from app_alert_rules order by created_at asc
   `;
   return ok({ rules });
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
   const window = body.window ?? "daily";
   const channelIds = body.channelIds ?? [];
   const rows = (await sql`
-    insert into app_alert_rules (mobile_app_id, metric, operator, threshold, window, channel_ids)
+    insert into app_alert_rules (mobile_app_id, metric, operator, threshold, "window", channel_ids)
     values (
       ${body.mobileAppId ?? null}, ${metric}, ${operator}, ${threshold},
       ${window}, ${sql.array(channelIds)}
