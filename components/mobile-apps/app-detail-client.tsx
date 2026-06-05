@@ -33,6 +33,18 @@ type Snapshot = {
   histogram: Record<string, number> | null;
 };
 
+const METRIC_LABEL: Record<string, string> = {
+  avg_rating: "Avg rating",
+  one_star_spike: "1★ reviews today",
+  review_volume: "Reviews today",
+};
+const OP_SYMBOL: Record<string, string> = {
+  lt: "<", lte: "≤", gt: ">", gte: "≥", eq: "=",
+};
+function formatRule(metric: string, operator: string, threshold: number): string {
+  return `${METRIC_LABEL[metric] ?? metric} ${OP_SYMBOL[operator] ?? operator} ${threshold}`;
+}
+
 export function AppDetailClient({ appId }: { appId: string }) {
   const router = useRouter();
   const { ready, isEnabled } = useModules();
@@ -169,12 +181,14 @@ export function AppDetailClient({ appId }: { appId: string }) {
   }
   async function deleteRule(id: string) {
     try {
-      await fetch("/api/mobile-apps/alerts", {
+      const res = await fetch("/api/mobile-apps/alerts", {
         method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }),
       });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "Failed to delete alert");
       await loadRules();
-    } catch {
-      toast.error("Failed to delete alert");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete alert");
     }
   }
 
@@ -356,7 +370,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
         <ul className="space-y-1 text-sm">
           {rules.filter((r) => r.mobile_app_id === appId || r.mobile_app_id == null).map((r) => (
             <li key={r.id} className="flex items-center justify-between rounded border px-2 py-1">
-              <span>{r.metric} {r.operator} {r.threshold}{r.enabled ? "" : " (disabled)"}</span>
+              <span>{formatRule(r.metric, r.operator, r.threshold)}{r.enabled ? "" : " (disabled)"}</span>
               <Button size="sm" variant="ghost" onClick={() => void deleteRule(r.id)}>Remove</Button>
             </li>
           ))}
