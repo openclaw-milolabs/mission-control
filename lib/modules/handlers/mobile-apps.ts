@@ -129,5 +129,6 @@ export const mobileAppsHandler = {
         created_at timestamptz NOT NULL DEFAULT now()
       )
     `;
+    await sql`CREATE INDEX IF NOT EXISTS app_alert_rules_app_idx ON app_alert_rules(mobile_app_id)`;
   },
 };
