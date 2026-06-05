@@ -97,6 +97,8 @@ export function AppDetailClient({ appId }: { appId: string }) {
     return () => {
       cancelled = true;
     };
+    // Intentionally omit `load` from deps: this sync must run once per appId,
+    // not on every filter change. load() is invoked explicitly after the sync.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId]);
 
@@ -133,6 +135,11 @@ export function AppDetailClient({ appId }: { appId: string }) {
     return latest?.histogram ?? null;
   }, [snapshots, store]);
 
+  const histogramTotal = useMemo(
+    () => (histogram ? Object.values(histogram).reduce((a, b) => a + Number(b), 0) || 1 : 1),
+    [histogram],
+  );
+
   return (
     <div className="flex flex-col gap-4 overflow-auto p-4 md:p-6">
       <div className="flex items-center justify-between">
@@ -150,6 +157,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <select
+          aria-label="Filter by store"
           className="rounded-md border bg-background px-2 py-1"
           value={store}
           onChange={(e) => setStore(e.target.value as "" | "apple" | "google")}
@@ -159,6 +167,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
           <option value="google">Google Play</option>
         </select>
         <select
+          aria-label="Minimum rating"
           className="rounded-md border bg-background px-2 py-1"
           value={minRating}
           onChange={(e) => setMinRating(Number(e.target.value))}
@@ -183,7 +192,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
         <div className="h-56">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
               <XAxis dataKey="t" fontSize={11} />
               <YAxis domain={[0, 5]} fontSize={11} />
               <Tooltip />
@@ -204,8 +213,6 @@ export function AppDetailClient({ appId }: { appId: string }) {
           <h2 className="mb-2 text-sm font-medium">Star distribution</h2>
           <div className="space-y-1">
             {[5, 4, 3, 2, 1].map((star) => {
-              const total =
-                Object.values(histogram).reduce((a, b) => a + Number(b), 0) || 1;
               const v = Number(histogram[String(star)] ?? 0);
               return (
                 <div key={star} className="flex items-center gap-2 text-xs">
@@ -213,7 +220,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
                   <div className="h-2 flex-1 rounded bg-muted">
                     <div
                       className="h-2 rounded bg-amber-500"
-                      style={{ width: `${(v / total) * 100}%` }}
+                      style={{ width: `${(v / histogramTotal) * 100}%` }}
                     />
                   </div>
                   <span className="w-12 text-right text-muted-foreground">
