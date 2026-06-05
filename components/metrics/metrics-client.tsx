@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,14 +13,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Loader2Icon, PlusIcon, RefreshCwIcon, TriangleAlertIcon, ChartBarIcon, BookOpenIcon } from "lucide-react";
+import { Loader2Icon, PlusIcon, RefreshCwIcon, TriangleAlertIcon, ChartBarIcon, DownloadIcon, UploadIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useModules } from "@/components/modules/modules-provider";
 import { MetricCard, type MetricDef } from "@/components/metrics/metric-card";
 import { MetricEditorModal, type MetricFormData } from "@/components/metrics/metric-editor-modal";
 import { PageHeader } from "@/components/layout/page-header";
 
-type WindowName = "daily" | "weekly" | "monthly" | "yearly";
+type WindowName = "hourly" | "daily" | "weekly" | "monthly" | "yearly";
 
 type Health = {
   ok: boolean;
@@ -33,6 +33,7 @@ type Health = {
 };
 
 const WINDOW_PILLS: Array<{ key: WindowName; label: string }> = [
+  { key: "hourly", label: "Hour" },
   { key: "daily", label: "Day" },
   { key: "weekly", label: "Week" },
   { key: "monthly", label: "Month" },
@@ -54,6 +55,8 @@ export function MetricsClient() {
   const [deleteTarget, setDeleteTarget] = useState<MetricDef | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const loadMetrics = useCallback(async () => {
     setLoading(true);
@@ -82,6 +85,67 @@ export function MetricsClient() {
     void loadHealth();
   }, [loadMetrics, loadHealth]);
 
+  const exportMetrics = () => {
+    if (!metrics || metrics.length === 0) return;
+    const data = metrics.map((m) => ({
+      title: m.name,
+      description: m.description || "",
+      timerange: m.default_window,
+      query: m.sql_text,
+      chart: m.chart_type,
+      xColumn: m.x_column,
+      yColumns: m.y_columns,
+    }));
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `metrics-export-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importMetrics = async (file: File) => {
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text) as Array<{
+        title: string;
+        description?: string;
+        timerange?: string;
+        query: string;
+        chart?: string;
+        xColumn?: string;
+        yColumns?: string[];
+      }>;
+      if (!Array.isArray(data)) throw new Error("Expected a JSON array.");
+      for (const entry of data) {
+        if (!entry.title || !entry.query) continue;
+        await fetch("/api/metrics", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "createMetric",
+            name: entry.title,
+            description: entry.description || "",
+            sql: entry.query,
+            chartType: entry.chart || "bar",
+            xColumn: entry.xColumn || "",
+            yColumns: entry.yColumns || [],
+            defaultWindow: entry.timerange || "monthly",
+          }),
+        });
+      }
+      await loadMetrics();
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Import failed.");
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  };
+
   const openCreate = () => {
     setEditing(null);
     setEditorOpen(true);
@@ -96,7 +160,7 @@ export function MetricsClient() {
       chartType: m.chart_type,
       xColumn: m.x_column,
       yColumns: m.y_columns,
-      defaultWindow: m.default_window === "custom" ? "monthly" : m.default_window,
+      defaultWindow: (["hourly","daily","weekly","monthly","yearly"] as const).includes(m.default_window as never) ? m.default_window as "hourly"|"daily"|"weekly"|"monthly"|"yearly" : "monthly",
     });
     setEditorOpen(true);
   };
@@ -136,6 +200,21 @@ export function MetricsClient() {
         title="Refresh"
       >
         <RefreshCwIcon className="size-4" />
+      </Button>
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json"
+        className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void importMetrics(f); }}
+      />
+      <Button variant="ghost" size="sm" onClick={() => importInputRef.current?.click()} disabled={importing} className="gap-1.5 cursor-pointer" title="Import metrics from JSON">
+        {importing ? <Loader2Icon className="size-4 animate-spin" /> : <UploadIcon className="size-4" />}
+        Import
+      </Button>
+      <Button variant="ghost" size="sm" onClick={exportMetrics} disabled={!metrics || metrics.length === 0} className="gap-1.5 cursor-pointer" title="Export metrics as JSON">
+        <DownloadIcon className="size-4" />
+        Export
       </Button>
       <Button variant="outline" size="sm" onClick={openCreate} className="gap-1.5 cursor-pointer">
         <PlusIcon className="size-4" />

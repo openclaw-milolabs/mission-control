@@ -48,7 +48,7 @@ export type MetricFormData = {
   chartType: "bar" | "line" | "area" | "pie" | "donut" | "kpi";
   xColumn: string;
   yColumns: string[];
-  defaultWindow: "daily" | "weekly" | "monthly" | "yearly";
+  defaultWindow: "hourly" | "daily" | "weekly" | "monthly" | "yearly";
 };
 
 type Props = {
@@ -70,10 +70,11 @@ const STEPS = [
 ] as const;
 
 const WINDOW_OPTIONS: Array<{ key: MetricFormData["defaultWindow"]; label: string; desc: string }> = [
-  { key: "daily",   label: "Day",   desc: "Last 48h, hourly buckets" },
-  { key: "weekly",  label: "Week",  desc: "Last 12 weeks, weekly buckets" },
-  { key: "monthly", label: "Month", desc: "Last 12 months, monthly buckets" },
-  { key: "yearly",  label: "Year",  desc: "Last 5 years, yearly buckets" },
+  { key: "hourly",  label: "Hour",  desc: "Last 48h" },
+  { key: "daily",   label: "Day",   desc: "Last 30 days" },
+  { key: "weekly",  label: "Week",  desc: "Last 12 weeks" },
+  { key: "monthly", label: "Month", desc: "Last 12 months" },
+  { key: "yearly",  label: "Year",  desc: "Last 5 years" },
 ];
 
 const CHART_TYPES: Array<{ key: MetricFormData["chartType"]; label: string; icon: React.ReactNode; desc: string }> = [
@@ -332,7 +333,7 @@ export function MetricEditorModal({ open, initial, onClose, onSaved }: Props) {
 
       <div className="flex flex-col gap-1.5">
         <Label className="text-xs font-semibold text-foreground/80">Default time range</Label>
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-5 gap-2">
           {WINDOW_OPTIONS.map((w) => (
             <button
               key={w.key}

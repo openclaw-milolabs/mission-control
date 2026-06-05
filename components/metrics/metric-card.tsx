@@ -33,7 +33,7 @@ export type MetricDef = {
   updated_at: string;
 };
 
-type WindowName = "daily" | "weekly" | "monthly" | "yearly" | "custom";
+type WindowName = "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
 type Props = {
   metric: MetricDef;
@@ -43,6 +43,7 @@ type Props = {
 };
 
 const WINDOW_LABEL: Record<WindowName, string> = {
+  hourly: "Hour",
   daily: "Day",
   weekly: "Week",
   monthly: "Month",
@@ -51,6 +52,7 @@ const WINDOW_LABEL: Record<WindowName, string> = {
 };
 
 const WINDOW_PILLS: Array<{ key: WindowName; label: string }> = [
+  { key: "hourly", label: "Hour" },
   { key: "daily", label: "Day" },
   { key: "weekly", label: "Week" },
   { key: "monthly", label: "Month" },

@@ -45,9 +45,9 @@ function formatXTick(value: unknown): string {
   // YYYY-Www  (ISO week, e.g. 2026-W23) → "W23"
   const isoWeek = s.match(/^(\d{4})-W(\d{2})$/);
   if (isoWeek) return `W${+isoWeek[2]}`;
-  // YYYY-MM-DD → "Jun 1"
+  // YYYY-MM-DD → "04/06" (day/month)
   const daily = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (daily) return `${MONTHS[+daily[2] - 1]} ${+daily[3]}`;
+  if (daily) return `${daily[3]}/${daily[2]}`;
   // YYYY-MM → "Jun '26"
   const monthly = s.match(/^(\d{4})-(\d{2})$/);
   if (monthly) return `${MONTHS[+monthly[2] - 1]} '${s.slice(2, 4)}`;

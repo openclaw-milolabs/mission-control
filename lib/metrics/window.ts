@@ -7,7 +7,8 @@
  *   - `bucket`: MySQL DATE_FORMAT mask sized to the window
  *
  * Each window's bucket granularity matches its name:
- *   daily   → hourly buckets over the last 48h
+ *   hourly  → hourly buckets over the last 48h
+ *   daily   → daily buckets over the last 30 days
  *   weekly  → ISO-week buckets over the last 12 weeks
  *   monthly → calendar-month buckets over the last 12 months
  *   yearly  → year buckets over the last 5 years
@@ -15,7 +16,7 @@
  * These are bound as positional `?` params via bindNamedParams in sql-guard.ts.
  */
 
-export type WindowName = "daily" | "weekly" | "monthly" | "yearly" | "custom";
+export type WindowName = "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
 export type ResolvedWindow = {
   window: WindowName;
@@ -25,7 +26,8 @@ export type ResolvedWindow = {
 };
 
 const DEFAULT_BUCKETS: Record<Exclude<WindowName, "custom">, string> = {
-  daily: "%Y-%m-%d %H:00",
+  hourly: "%Y-%m-%d %H:00",
+  daily: "%Y-%m-%d",
   weekly: "%x-W%v",
   monthly: "%Y-%m",
   yearly: "%Y",
@@ -34,8 +36,11 @@ const DEFAULT_BUCKETS: Record<Exclude<WindowName, "custom">, string> = {
 function startOfWindow(window: WindowName, until: Date): Date {
   const d = new Date(until.getTime());
   switch (window) {
-    case "daily":
+    case "hourly":
       d.setHours(d.getHours() - 48);
+      return d;
+    case "daily":
+      d.setDate(d.getDate() - 30);
       return d;
     case "weekly":
       d.setDate(d.getDate() - 7 * 12);
@@ -87,7 +92,7 @@ export function resolveWindow(input: {
 }
 
 export function isValidWindow(value: unknown): value is WindowName {
-  return value === "daily" || value === "weekly" || value === "monthly" || value === "yearly" || value === "custom";
+  return value === "hourly" || value === "daily" || value === "weekly" || value === "monthly" || value === "yearly" || value === "custom";
 }
 
 /**
@@ -99,8 +104,10 @@ export function isValidWindow(value: unknown): value is WindowName {
  */
 export function describeWindow(window: WindowName): { range: string; granularity: string } {
   switch (window) {
-    case "daily":
+    case "hourly":
       return { range: "Last 48 hours", granularity: "hourly" };
+    case "daily":
+      return { range: "Last 30 days", granularity: "daily" };
     case "weekly":
       return { range: "Last 12 weeks", granularity: "weekly" };
     case "monthly":
