@@ -76,7 +76,12 @@ export async function POST(request: Request) {
     if (refs.length === 0) return fail("Provide at least one App Store or Play Store URL/ID.");
 
     // Resolve all refs first so a bad one fails before we create anything.
-    const resolved = refs.map(resolveListing);
+    let resolved: ReturnType<typeof resolveListing>[];
+    try {
+      resolved = refs.map(resolveListing);
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : "Invalid app reference", 400);
+    }
 
     // Discover a display name/icon from the first listing's provider.
     let name = String(body.name || "").trim();
@@ -122,10 +127,12 @@ export async function DELETE(request: Request) {
       return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
 
     const sql = getSql();
+    const wid = await workspaceId(sql);
+    if (!wid) return fail("Workspace not found", 500);
     const body = (await request.json()) as { id?: string };
     const id = String(body.id || "");
     if (!id) return fail("App id is required.");
-    await sql`delete from mobile_apps where id = ${id}`;
+    await sql`delete from mobile_apps where id = ${id} and workspace_id = ${wid}`;
     return ok();
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to delete app", 500);
