@@ -34,9 +34,5 @@ export interface ReviewProvider {
   fetchRatingSummary(ref: ListingRef): Promise<RatingSummary>;
 }
 
-/** Result of parsing a pasted store URL or raw id. */
-export type ResolvedListing = {
-  store: Store;
-  storeAppId: string;
-  country: string;
-};
+/** Result of parsing a pasted store URL or raw id. Same shape as ListingRef. */
+export type ResolvedListing = ListingRef;

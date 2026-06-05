@@ -18,7 +18,7 @@ export function resolveListing(input: string): ResolvedListing {
   }
 
   // Google Play URL: https://play.google.com/store/apps/details?id=<pkg>&gl=<cc>
-  const googleUrl = raw.match(/play\.google\.com\/store\/apps\/details\?([^\s]+)/i);
+  const googleUrl = raw.match(/play\.google\.com\/store\/apps\/details\?([^\s#]+)/i);
   if (googleUrl) {
     const params = new URLSearchParams(googleUrl[1]);
     const id = params.get("id");

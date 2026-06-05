@@ -32,4 +32,13 @@ assert.equal(r.storeAppId, "com.whatsapp");
 // Garbage throws
 assert.throws(() => resolveListing("not a url or id"));
 
+// Google Play URL with a #fragment must NOT pollute the id
+r = resolveListing("https://play.google.com/store/apps/details?id=com.whatsapp#reviews");
+assert.equal(r.store, "google");
+assert.equal(r.storeAppId, "com.whatsapp");
+
+// Empty / whitespace-only input throws
+assert.throws(() => resolveListing(""));
+assert.throws(() => resolveListing("   "));
+
 console.log("ok - resolveListing");
