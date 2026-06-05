@@ -30,6 +30,7 @@ export function evaluateRule(rule: AlertRule, signals: AppAlertSignals): boolean
     case "gt": return value > rule.threshold;
     case "gte": return value >= rule.threshold;
     case "eq": return value === rule.threshold;
+    default: return false;
   }
 }
 
@@ -65,6 +66,9 @@ export async function computeSignals(sql: Sql, appId: string): Promise<AppAlertS
  */
 export async function evaluateAndFire(appId: string): Promise<void> {
   const sql = getSql();
+  // NOTE: a global rule (mobile_app_id IS NULL) shares one last_fired_at across all apps,
+  // so its 6h debounce is global, not per-app. The C3 UI only creates per-app rules, so this
+  // does not manifest in v1; revisit with per-(rule,app) tracking if global rules are exposed.
   const rules = (await sql`
     select id::text, metric, operator, threshold::float8 as threshold, channel_ids, last_fired_at
     from app_alert_rules
@@ -86,8 +90,10 @@ export async function evaluateAndFire(appId: string): Promise<void> {
     if (recentlyFired) continue;
 
     const message = `📱 ${appName}: alert "${rule.metric} ${rule.operator} ${rule.threshold}" tripped (avg ${signals.avgRating ?? "?"}, 1★ today ${signals.oneStarToday}, reviews today ${signals.reviewsToday}).`;
-    await notifyChannels(sql, rule.channel_ids, message).catch(() => null);
-    await sql`update app_alert_rules set last_fired_at = now() where id = ${rule.id}`.catch(() => null);
+    const delivered = await notifyChannels(sql, rule.channel_ids, message).catch(() => false);
+    if (delivered) {
+      await sql`update app_alert_rules set last_fired_at = now() where id = ${rule.id}`.catch(() => null);
+    }
   }
 }
 
@@ -99,15 +105,18 @@ export async function evaluateAndFire(appId: string): Promise<void> {
  * activity_logs columns used: workspace_id, source, event, details, level
  * (level is plain text, not an enum — 'warning' is a valid value per schema.sql)
  */
-async function notifyChannels(sql: Sql, channelIds: string[], message: string): Promise<void> {
+async function notifyChannels(sql: Sql, channelIds: string[], message: string): Promise<boolean> {
+  void channelIds; // provider-specific delivery (Telegram/Slack) wired in Task C3
   const wid = (await sql`select id from workspaces order by created_at asc limit 1`) as unknown as Array<{ id: string }>;
   const workspaceId = wid[0]?.id;
-  if (workspaceId) {
+  if (!workspaceId) return false;
+  try {
     await sql`
       insert into activity_logs (workspace_id, source, event, details, level)
       values (${workspaceId}, 'Mobile Applications', 'alert', ${message}, 'warning')
-    `.catch(() => null);
+    `;
+    return true;
+  } catch {
+    return false;
   }
-  // Provider-specific channel delivery (Telegram/Slack) is wired in Task C3.
-  void channelIds;
 }

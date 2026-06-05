@@ -42,4 +42,12 @@ assert.equal(
   false,
 );
 
+// lte boundary: equal value trips
+assert.equal(evaluateRule({ metric: "avg_rating", operator: "lte", threshold: 4.0 }, { avgRating: 4.0, oneStarToday: 0, reviewsToday: 0 }), true);
+// gte boundary: equal value trips
+assert.equal(evaluateRule({ metric: "review_volume", operator: "gte", threshold: 50 }, { avgRating: 4.5, oneStarToday: 0, reviewsToday: 50 }), true);
+// eq: exact match trips, near-miss does not
+assert.equal(evaluateRule({ metric: "one_star_spike", operator: "eq", threshold: 3 }, { avgRating: 4.5, oneStarToday: 3, reviewsToday: 9 }), true);
+assert.equal(evaluateRule({ metric: "one_star_spike", operator: "eq", threshold: 3 }, { avgRating: 4.5, oneStarToday: 2, reviewsToday: 9 }), false);
+
 console.log("ok - evaluateRule");
