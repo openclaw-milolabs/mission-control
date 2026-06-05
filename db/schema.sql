@@ -740,3 +740,70 @@ ALTER TABLE agenda_occurrences ADD COLUMN IF NOT EXISTS session_line_offset BIGI
 CREATE INDEX IF NOT EXISTS idx_agenda_occurrences_session_line_offset
   ON agenda_occurrences(session_line_offset)
   WHERE session_line_offset IS NOT NULL;
+
+-- mobile-applications module
+CREATE TABLE IF NOT EXISTS mobile_apps (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  icon_url text,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mobile_apps_workspace_idx ON mobile_apps(workspace_id);
+
+CREATE TABLE IF NOT EXISTS mobile_app_listings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  mobile_app_id uuid NOT NULL REFERENCES mobile_apps(id) ON DELETE CASCADE,
+  store text NOT NULL,
+  store_app_id text NOT NULL,
+  country text NOT NULL DEFAULT 'us',
+  current_rating numeric(3,2),
+  ratings_count integer,
+  last_synced_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (mobile_app_id, store)
+);
+CREATE INDEX IF NOT EXISTS mobile_app_listings_app_idx ON mobile_app_listings(mobile_app_id);
+
+CREATE TABLE IF NOT EXISTS app_reviews (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+  store_review_id text NOT NULL,
+  author text,
+  rating integer,
+  title text,
+  body text,
+  app_version text,
+  country text,
+  submitted_at timestamptz,
+  store_response text,
+  sentiment text,
+  themes text[],
+  fetched_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (listing_id, store_review_id)
+);
+CREATE INDEX IF NOT EXISTS app_reviews_listing_idx ON app_reviews(listing_id, submitted_at desc);
+
+CREATE TABLE IF NOT EXISTS app_rating_snapshots (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+  captured_at timestamptz NOT NULL DEFAULT now(),
+  avg_rating numeric(3,2),
+  ratings_count integer,
+  histogram jsonb
+);
+CREATE INDEX IF NOT EXISTS app_rating_snapshots_listing_idx ON app_rating_snapshots(listing_id, captured_at desc);
+
+CREATE TABLE IF NOT EXISTS app_review_digests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  mobile_app_id uuid NOT NULL REFERENCES mobile_apps(id) ON DELETE CASCADE,
+  period_start timestamptz,
+  period_end timestamptz,
+  summary_md text NOT NULL,
+  sentiment_score numeric(4,3),
+  top_themes jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS app_review_digests_app_idx ON app_review_digests(mobile_app_id, created_at desc);
