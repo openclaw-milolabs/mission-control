@@ -12,6 +12,9 @@ type ReviewForPrompt = {
   submitted_at: string | null;
 };
 
+// NOTE: review title/body are interpolated into the agent prompt. For v1 these are
+// our own apps' public store reviews, dispatched to a LOCAL agent that only writes
+// Markdown — accepted risk. Re-evaluate if user-submitted app sources are ever added.
 /** Pure: compose the digest prompt from recent reviews. Exported for testing. */
 export function buildDigestPrompt(appName: string, reviews: ReviewForPrompt[]): string {
   const lines = reviews
@@ -44,8 +47,14 @@ async function dispatchAgent(agentId: string, message: string, timeoutMs = 120_0
     { timeout: timeoutMs, env: cleanEnv, maxBuffer: 50 * 1024 * 1024 },
   );
   const raw = (stdout || "").trim() ? stdout : stderr || "";
-  const parsed = JSON.parse(raw);
-  const payloads = parsed?.result?.payloads ?? parsed?.payloads ?? [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`openclaw returned non-JSON output (first 200 chars): ${raw.slice(0, 200)}`);
+  }
+  const result = parsed as { result?: { payloads?: Array<{ text?: string }> }; payloads?: Array<{ text?: string }> };
+  const payloads = result?.result?.payloads ?? result?.payloads ?? [];
   return (
     payloads.map((p: { text?: string }) => p.text ?? "").join("\n").trim() || JSON.stringify(parsed)
   );
@@ -65,6 +74,8 @@ export async function generateDigest(appId: string, agentId = "main"): Promise<s
     order by r.submitted_at desc nulls last
     limit 100
   `) as unknown as ReviewForPrompt[];
+
+  if (reviews.length === 0) throw new Error("No reviews available to digest yet.");
 
   const prompt = buildDigestPrompt(appRows[0].name, reviews);
   const summaryMd = await dispatchAgent(agentId, prompt);
