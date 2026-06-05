@@ -18,6 +18,7 @@ import {
   IconCalendar,
   IconChartBar,
   IconDashboard,
+  IconDeviceMobile,
   IconFileText,
   IconListDetails,
   IconRobot,
@@ -31,6 +32,7 @@ export type ModuleId =
   | "processes"
   | "documents"
   | "metrics"
+  | "mobile-apps"
   | "system";
 
 export type ModuleDefinition = {
@@ -115,6 +117,23 @@ export const MODULES: readonly ModuleDefinition[] = [
     core: false,
     nav: { title: "Metrics", url: "/metrics" },
     tables: ["metrics", "metric_runs"],
+  },
+  {
+    id: "mobile-apps",
+    name: "Mobile Applications",
+    description:
+      "Track your apps' App Store + Google Play reviews and ratings in real time, with ratings-over-time charts, agent sentiment digests, and threshold alerts. Disabling permanently deletes all tracked apps, fetched reviews, rating history, digests, and alert rules.",
+    icon: IconDeviceMobile,
+    core: false,
+    nav: { title: "Mobile Applications", url: "/mobile-apps" },
+    tables: [
+      "mobile_apps",
+      "mobile_app_listings",
+      "app_reviews",
+      "app_rating_snapshots",
+      "app_review_digests",
+      "app_alert_rules",
+    ],
   },
   {
     id: "system",
