@@ -1,4 +1,5 @@
 import { getSql } from "@/lib/local-db";
+import { evaluateAndFire } from "@/lib/mobile-apps/alerts";
 import { getProvider } from "@/lib/mobile-apps/providers";
 import type { Store } from "@/lib/mobile-apps/types";
 
@@ -104,6 +105,9 @@ export async function syncApp(
       });
     }
   }
+
+  // Evaluate alert rules against fresh signals (best-effort; must not break sync or notify).
+  await evaluateAndFire(appId).catch(() => null);
 
   // Notify SSE listeners that this app changed.
   await sql`select pg_notify('mobile_apps_change', ${JSON.stringify({ appId })})`.catch(() => null);
