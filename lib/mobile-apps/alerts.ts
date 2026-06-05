@@ -40,7 +40,7 @@ export async function computeSignals(sql: Sql, appId: string): Promise<AppAlertS
   const ratingRows = (await sql`
     select avg(current_rating)::numeric(3,2) as avg
     from mobile_app_listings where mobile_app_id = ${appId} and current_rating is not null
-  `) as unknown as Array<{ avg: number | null }>;
+  `) as unknown as Array<{ avg: string | number | null }>;
   const todayRows = (await sql`
     select
       count(*) filter (where r.rating = 1)::int as one_star,
@@ -50,10 +50,12 @@ export async function computeSignals(sql: Sql, appId: string): Promise<AppAlertS
     where l.mobile_app_id = ${appId}
       and r.submitted_at >= date_trunc('day', now())
   `) as unknown as Array<{ one_star: number; total: number }>;
+  const rawAvg = ratingRows[0]?.avg;
+  const avgRating = rawAvg == null ? null : Number(rawAvg);
   return {
-    avgRating: ratingRows[0]?.avg ?? null,
-    oneStarToday: todayRows[0]?.one_star ?? 0,
-    reviewsToday: todayRows[0]?.total ?? 0,
+    avgRating: avgRating != null && Number.isFinite(avgRating) ? avgRating : null,
+    oneStarToday: Number(todayRows[0]?.one_star ?? 0),
+    reviewsToday: Number(todayRows[0]?.total ?? 0),
   };
 }
 
