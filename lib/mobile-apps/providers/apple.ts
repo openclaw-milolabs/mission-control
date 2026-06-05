@@ -14,6 +14,12 @@ function round2(n: number | null): number | null {
   return n == null || !Number.isFinite(n) ? null : Math.round(n * 100) / 100;
 }
 
+function toIso(label: string | undefined | null): string | null {
+  if (!label) return null;
+  const d = new Date(label);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 /** Pure: turn an Apple customer-reviews RSS JSON object into RawReview[]. */
 export function parseAppleReviews(feedJson: unknown, country: string): RawReview[] {
   const feed = (feedJson as { feed?: { entry?: AppleEntry | AppleEntry[] } })?.feed;
@@ -35,7 +41,7 @@ export function parseAppleReviews(feedJson: unknown, country: string): RawReview
       body: e.content?.label ?? null,
       appVersion: e["im:version"]?.label ?? null,
       country,
-      submittedAt: e.updated?.label ? new Date(e.updated.label).toISOString() : null,
+      submittedAt: toIso(e.updated?.label),
       storeResponse: null,
     });
   }
@@ -52,9 +58,8 @@ export function parseiTunesLookup(lookupJson: unknown): RatingSummary {
     histogram: null, // iTunes Lookup does not expose a per-star histogram
     name: typeof r.trackName === "string" ? r.trackName : null,
     iconUrl:
-      (typeof r.artworkUrl512 === "string" && r.artworkUrl512) ||
-      (typeof r.artworkUrl100 === "string" && r.artworkUrl100) ||
-      null,
+      (typeof r.artworkUrl512 === "string" && r.artworkUrl512 ? r.artworkUrl512 : null) ??
+      (typeof r.artworkUrl100 === "string" && r.artworkUrl100 ? r.artworkUrl100 : null),
   };
 }
 
@@ -66,7 +71,12 @@ export class AppleProvider implements ReviewProvider {
       const url = `https://itunes.apple.com/${encodeURIComponent(ref.country)}/rss/customerreviews/page=${page}/id=${encodeURIComponent(ref.storeAppId)}/sortby=mostrecent/json`;
       const res = await fetch(url, { headers: { "User-Agent": "MissionControl/1.0" } });
       if (!res.ok) break;
-      const json = await res.json();
+      let json: unknown;
+      try {
+        json = await res.json();
+      } catch {
+        break;
+      }
       const batch = parseAppleReviews(json, ref.country);
       if (batch.length === 0) break;
       all.push(...batch);

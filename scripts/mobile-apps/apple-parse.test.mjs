@@ -28,6 +28,8 @@ assert.equal(reviews[0].title, "Love it");
 assert.equal(reviews[0].body, "Works great");
 assert.equal(reviews[0].appVersion, "2.1.0");
 assert.equal(reviews[0].country, "us");
+assert.ok(reviews[0].submittedAt?.startsWith("2026-06-01"));
+assert.equal(reviews[0].storeResponse, null);
 
 // Empty / single-entry feed → no reviews, no throw
 assert.deepEqual(parseAppleReviews({ feed: {} }, "us"), []);
