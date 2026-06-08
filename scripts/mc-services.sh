@@ -67,7 +67,18 @@ NEXTJS_MODE="prod"
 # ── Helpers ────────────────────────────────────────────────
 pid_running() {
   local pid=$1
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # A crashed-but-unreaped process becomes a zombie: `kill -0` still succeeds,
+  # which would fool the watchdog into thinking Next.js is alive after an OOM
+  # abort. Treat zombies (state Z) as dead so they get restarted.
+  if [ -r "/proc/$pid/stat" ]; then
+    local state
+    state="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)"
+    [ "$state" != "Z" ] && return 0
+    return 1
+  fi
+  return 0
 }
 
 # Keep each log readable + disk bounded. copytruncate-style: copy to ".1" then
@@ -254,6 +265,12 @@ WATCHDOG_SKIP="gateway-sync"
 WATCHDOG_HTTP_URL="${WATCHDOG_HTTP_URL:-http://127.0.0.1:3000/}"
 WATCHDOG_HTTP_TIMEOUT="${WATCHDOG_HTTP_TIMEOUT:-10}"
 WATCHDOG_HTTP_FAILS="${WATCHDOG_HTTP_FAILS:-3}"
+# If Next.js stays unhealthy for this many consecutive watchdog cycles, run
+# `npm run build` once before the next restart. Covers the case where `next start`
+# fails fast on a missing/corrupt production build (a plain restart can never
+# recover that). Build is heavy — gated behind repeated failures, capped by timeout.
+WATCHDOG_REBUILD_AFTER="${WATCHDOG_REBUILD_AFTER:-3}"
+WATCHDOG_BUILD_TIMEOUT="${WATCHDOG_BUILD_TIMEOUT:-600}"
 
 # True if Next.js answers HTTP at all (any status code = accepting + routing).
 # Returns success when curl is unavailable, so we degrade to PID-only checks
@@ -312,7 +329,7 @@ run_watchdog() {
     set +a
   fi
   echo "[watchdog] Started (pid $$, interval ${WATCHDOG_INTERVAL}s, http ${WATCHDOG_HTTP_URL} t=${WATCHDOG_HTTP_TIMEOUT}s x${WATCHDOG_HTTP_FAILS})" >> "$WATCHDOG_LOG"
-  local nextjs_misses=0
+  local nextjs_misses=0 nextjs_fail_streak=0 nextjs_rebuilt=0
   while true; do
     sleep "$WATCHDOG_INTERVAL"
 
@@ -327,27 +344,58 @@ run_watchdog() {
       local pid
       pid="$(cat "$pid_file" 2>/dev/null)" || true
 
-      # 1) Process death → restart immediately.
-      if [ -z "$pid" ] || ! pid_running "$pid"; then
-        [ "$svc" = "nextjs" ] && nextjs_misses=0
-        watchdog_restart_svc "$svc" "is DOWN"
+      # Non-Next.js services: a live (non-zombie) PID is enough.
+      if [ "$svc" != "nextjs" ]; then
+        if [ -z "$pid" ] || ! pid_running "$pid"; then
+          watchdog_restart_svc "$svc" "is DOWN"
+        fi
         continue
       fi
 
-      # 2) Next.js alive but hung (no HTTP) → restart after N consecutive misses,
-      #    so a brief slowdown during a heavy sync doesn't bounce a healthy server.
-      if [ "$svc" = "nextjs" ]; then
-        if nextjs_responsive; then
-          nextjs_misses=0
-        else
-          nextjs_misses=$((nextjs_misses + 1))
-          echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) nextjs unresponsive over HTTP (#${nextjs_misses}/${WATCHDOG_HTTP_FAILS})" >> "$WATCHDOG_LOG"
-          if [ "$nextjs_misses" -ge "$WATCHDOG_HTTP_FAILS" ]; then
-            watchdog_restart_svc "nextjs" "hung (no HTTP response)"
-            nextjs_misses=0
-          fi
+      # Next.js health = live PID AND answers HTTP. A dead/zombie PID or a sustained
+      # no-HTTP both count as unhealthy.
+      local healthy=1 reason=""
+      if [ -z "$pid" ] || ! pid_running "$pid"; then
+        healthy=0; reason="is DOWN"
+      elif ! nextjs_responsive; then
+        nextjs_misses=$((nextjs_misses + 1))
+        echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) nextjs unresponsive over HTTP (#${nextjs_misses}/${WATCHDOG_HTTP_FAILS})" >> "$WATCHDOG_LOG"
+        if [ "$nextjs_misses" -ge "$WATCHDOG_HTTP_FAILS" ]; then
+          healthy=0; reason="hung (no HTTP response)"
         fi
+      else
+        nextjs_misses=0
       fi
+
+      if [ "$healthy" -eq 1 ]; then
+        nextjs_fail_streak=0
+        nextjs_rebuilt=0
+        continue
+      fi
+
+      # Unhealthy. Count the streak; after WATCHDOG_REBUILD_AFTER cycles, rebuild
+      # ONCE (a stale/broken .next can't be fixed by restarting), then restart.
+      nextjs_misses=0
+      nextjs_fail_streak=$((nextjs_fail_streak + 1))
+      if [ "$nextjs_fail_streak" -ge "$WATCHDOG_REBUILD_AFTER" ] && [ "$nextjs_rebuilt" -eq 0 ]; then
+        local build_log="$LOG_DIR/build.log"
+        rotate_log "$build_log"
+        echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) nextjs unhealthy x${nextjs_fail_streak} — running 'npm run build' before restart (log: $build_log)..." >> "$WATCHDOG_LOG"
+        cd "$PROJECT_ROOT"
+        local build_rc=0
+        if command -v timeout >/dev/null 2>&1; then
+          ( cd "$PROJECT_ROOT" && timeout "$WATCHDOG_BUILD_TIMEOUT" npm run build ) >> "$build_log" 2>&1 || build_rc=$?
+        else
+          ( cd "$PROJECT_ROOT" && npm run build ) >> "$build_log" 2>&1 || build_rc=$?
+        fi
+        if [ "$build_rc" -eq 0 ]; then
+          echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) rebuild OK" >> "$WATCHDOG_LOG"
+        else
+          echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) rebuild FAILED (exit $build_rc) — see $build_log" >> "$WATCHDOG_LOG"
+        fi
+        nextjs_rebuilt=1
+      fi
+      watchdog_restart_svc "nextjs" "$reason"
     done
   done
 }
@@ -358,7 +406,7 @@ start_watchdog() {
     return 0
   fi
   nohup bash -c "
-$(declare -p SERVICES SERVICE_CMDS SERVICE_LOG_FILES SERVICE_PIDS WATCHDOG_INTERVAL WATCHDOG_LOG WATCHDOG_SKIP WATCHDOG_HTTP_URL WATCHDOG_HTTP_TIMEOUT WATCHDOG_HTTP_FAILS MAX_LOG_BYTES PROJECT_ROOT PID_DIR LOG_DIR NEXTJS_MODE NEXTJS_DEV_CMD NEXTJS_PROD_CMD 2>/dev/null)
+$(declare -p SERVICES SERVICE_CMDS SERVICE_LOG_FILES SERVICE_PIDS WATCHDOG_INTERVAL WATCHDOG_LOG WATCHDOG_SKIP WATCHDOG_HTTP_URL WATCHDOG_HTTP_TIMEOUT WATCHDOG_HTTP_FAILS WATCHDOG_REBUILD_AFTER WATCHDOG_BUILD_TIMEOUT MAX_LOG_BYTES PROJECT_ROOT PID_DIR LOG_DIR NEXTJS_MODE NEXTJS_DEV_CMD NEXTJS_PROD_CMD 2>/dev/null)
 $(declare -f run_watchdog watchdog_restart_svc nextjs_responsive rotate_log pid_running kill_port)
 run_watchdog" >> "$WATCHDOG_LOG" 2>&1 < /dev/null &
   local wpid=$!
