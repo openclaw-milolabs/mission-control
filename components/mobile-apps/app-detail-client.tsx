@@ -139,16 +139,24 @@ function StoreScoreCard({
   const [picked, setPicked] = useState<string | null>(null);
   const selected = picked ?? defaultTerr;
   const selEntry = territories.find((t) => t.territory === selected) ?? null;
+  const fromReport = listing?.rating_source === "google_play_console_ratings_report";
 
-  // Use the selected storefront when we have per-country data (Apple always;
-  // Google when the Play Console report is configured); else the listing total.
+  // Do not invent a fake global Google Play rating.
+  // Apple exposes a storefront rating/count. Google Play reports expose per-country
+  // Total Average Rating rows; the headline is the selected country row, not a
+  // computed global average.
   const headlineAvg = selEntry ? selEntry.avg : listing?.current_rating ?? null;
   const headlineCount = selEntry ? selEntry.count : listing?.ratings_count ?? null;
-  const fromReport = listing?.rating_source === "google_play_console_ratings_report";
-  const storeRatingLabel = isApple ? "App Store rating" : "Google Play rating";
-
+  const storeRatingLabel = isApple
+    ? "App Store storefront rating"
+    : fromReport
+      ? "Google Play country rating report"
+      : "Google Play written-review average";
+  const headlineLabel = selEntry
+    ? `${countryName(selected)} ${storeRatingLabel}`
+    : storeRatingLabel;
   return (
-    <div className="rounded-2xl border bg-card p-6">
+    <div className="w-full rounded-2xl border bg-card p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium">
@@ -174,15 +182,8 @@ function StoreScoreCard({
       {/* Headline rating, labeled with the storefront it represents */}
       <div className="mt-5">
         <p className="mb-2 flex items-center gap-1.5 text-sm font-medium">
-          {selEntry ? (
-            <>
-              <span className="text-base leading-none">{flagEmoji(selected)}</span>
-              <span>{countryName(selected)}</span>
-              <span className="text-muted-foreground">{storeRatingLabel}</span>
-            </>
-          ) : (
-            <span className="text-muted-foreground">{storeRatingLabel}</span>
-          )}
+          {selEntry ? <span className="text-base leading-none">{flagEmoji(selected)}</span> : null}
+          <span className="text-muted-foreground">{headlineLabel}</span>
         </p>
         <div className="flex items-end gap-4">
           <span className="text-5xl font-semibold leading-none tracking-tight tabular-nums">
@@ -196,20 +197,26 @@ function StoreScoreCard({
                   ? `official · ${headlineCount?.toLocaleString() ?? "—"} ratings`
                   : "no rating from the App Store API yet"
                 : fromReport
-                  ? `Play Console ratings report · delayed 3–7 days${listing?.rating_as_of ? ` · as of ${formatDate(listing.rating_as_of)}` : ""}`
+                  ? `selected country row from downloaded Play Console rating CSVs · not Google’s official public global rating${listing?.rating_as_of ? ` · latest report date ${formatDate(listing.rating_as_of)}` : ""}`
                   : headlineAvg != null
-                    ? `from ${headlineCount?.toLocaleString() ?? "—"} reviews · no store-wide aggregate via API`
-                    : "no reviews fetched yet"}
+                    ? `from ${headlineCount?.toLocaleString() ?? "—"} written reviews only · not a store-wide rating`
+                    : "no written reviews fetched yet"}
             </p>
           </div>
         </div>
+        {!isApple && fromReport ? (
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground/70">
+            Google does not expose an Apple-style live global public rating/count through the Reviews API. These rows come from downloaded Play Console country rating CSVs.
+            {selEntry ? ` Selected country: ${flagEmoji(selected)} ${countryName(selected)} ${selEntry.avg != null ? selEntry.avg.toFixed(1) : "—"}.` : ""}
+          </p>
+        ) : null}
       </div>
 
-      {/* Per-storefront switcher (Apple): tap a country to make it the headline */}
+      {/* Per-country switcher: Apple and Google both switch the headline to that exact country/storefront row. */}
       {territories.length > 0 ? (
         <div className="mt-5 border-t pt-4">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            By country <span className="font-normal normal-case text-muted-foreground/60">· tap to switch</span>
+            By country <span className="font-normal normal-case text-muted-foreground/60">{isApple ? "· all storefronts found by lookup · tap to switch" : "· all latest countries from downloaded reports · tap to switch"}</span>
           </p>
           <ul className="space-y-0.5">
             {territories.map((t) => {
@@ -241,7 +248,7 @@ function StoreScoreCard({
       {/* Distribution of the reviews we fetched (not the official rating) */}
       <div className="mt-5 border-t pt-4">
         <div className="mb-2.5 flex items-center justify-between">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Review breakdown</p>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Written review breakdown</p>
           <p className="text-[11px] text-muted-foreground/70">
             {total.toLocaleString()} fetched
             {summary && summary.negative > 0 ? ` · ${summary.negative} ≤${negativeThreshold}★` : ""}
@@ -314,14 +321,15 @@ export function AppDetailClient({ appId }: { appId: string }) {
     void load();
   }, [load]);
 
-  // Live sync on mount, then revalidate.
+  // Live sync for the selected store, then revalidate.
+  // Google reports are re-listed and re-downloaded; the DB file table is only a download index.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       await fetch("/api/mobile-apps/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId }),
+        body: JSON.stringify({ appId, store, force: true, refreshReports: store === "google" }),
       }).catch(() => null);
       if (!cancelled) {
         await loadRef.current();
@@ -331,7 +339,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [appId]);
+  }, [appId, store]);
 
   // SSE live updates.
   useEffect(() => {
@@ -497,7 +505,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
 
           {/* Store score cards */}
           {shownStores.length > 0 ? (
-            <div className={`grid gap-5 ${shownStores.length > 1 ? "sm:grid-cols-2" : "max-w-lg"}`}>
+            <div className="grid w-full gap-5">
               {shownStores.map((s) => (
                 <StoreScoreCard
                   key={s}

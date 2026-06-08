@@ -157,8 +157,8 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
   // Structured text dimensions for multi-dimension reports (traffic source / search term / utm…).
   await sql`ALTER TABLE mobile_app_report_metrics ADD COLUMN IF NOT EXISTS dimensions jsonb`;
 
-  // Cache/index of Google Play Console CSV files we have already downloaded and parsed.
-  // The raw CSV is not stored; this only prevents re-downloading unchanged reports.
+  // Download index of Google Play Console CSV files that were listed/downloaded/parsed.
+  // The raw CSV is not stored here, and this table is not used as a stale-data cache.
   await sql`
     CREATE TABLE IF NOT EXISTS mobile_app_report_files (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

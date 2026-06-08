@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import {
   IconBrandGooglePlay,
@@ -11,6 +11,7 @@ import {
   IconDatabase,
   IconDeviceMobile,
   IconWorld,
+  IconChevronDown,
 } from "@tabler/icons-react";
 
 export type ReportPoint = { date: string; metrics: unknown; source?: string | null };
@@ -77,9 +78,15 @@ function pick(m: Metrics, ...keys: string[]): number | null {
   return null;
 }
 
-function fmtDay(day: string): string {
-  const d = new Date(day);
-  return Number.isNaN(d.getTime()) ? day : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+function fmtChartDate(day: string): string {
+  const normalized = String(day ?? "").trim();
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+
+  const d = new Date(normalized);
+  return Number.isNaN(d.getTime())
+    ? normalized
+    : d.toLocaleDateString(undefined, { year: "numeric", month: "2-digit", day: "2-digit" });
 }
 
 function formatBytes(raw: number | string | null): string {
@@ -108,10 +115,10 @@ function MiniArea({
     <div className="h-24">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 4, right: 2, bottom: 0, left: 2 }}>
-          <XAxis dataKey="date" tickFormatter={fmtDay} tickLine={false} axisLine={false} minTickGap={32} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
+          <XAxis dataKey="date" tickFormatter={fmtChartDate} tickLine={false} axisLine={false} minTickGap={56} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
           <Tooltip
             contentStyle={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--popover)", fontSize: 11 }}
-            labelFormatter={(l) => fmtDay(String(l))}
+            labelFormatter={(l) => fmtChartDate(String(l))}
           />
           {series.map((s) => (
             <Area key={s.key} type="monotone" dataKey={s.key} stroke={s.color} strokeWidth={1.75} fill={s.color} fillOpacity={0.12} dot={false} isAnimationActive={false} />
@@ -227,12 +234,13 @@ export function PlayReportsCard({
   }, [breakdowns]);
 
   const groupedFiles = useMemo(() => groupFiles(files), [files]);
+  const [open, setOpen] = useState(false);
 
   if (installs.length === 0 && crashes.length === 0 && storePerformance.length === 0 && trafficSources.length === 0 && files.length === 0)
     return null;
 
   return (
-    <section className="rounded-2xl border bg-card p-5">
+    <section className="w-full rounded-2xl border bg-card p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-base font-semibold">
@@ -240,20 +248,37 @@ export function PlayReportsCard({
             Google Play Console reports
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Cached from official Play Console CSV exports. Refresh re-lists the bucket and re-downloads changed/missing files.
+            Official Play Console CSV exports. Sync/refresh re-lists the bucket and re-downloads the reports so the dashboard uses the latest available CSV data.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={!onRefresh || refreshing}
-          className="inline-flex items-center gap-1.5 rounded-lg border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <IconRefresh className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
-          {refreshing ? "Refreshing…" : "Refresh reports"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-lg border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+            aria-expanded={open}
+          >
+            <IconChevronDown className={`size-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+            {open ? "Hide reports" : "Show reports"}
+          </button>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={!onRefresh || refreshing}
+            className="inline-flex items-center gap-1.5 rounded-lg border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <IconRefresh className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
+            {refreshing ? "Refreshing…" : "Refresh reports"}
+          </button>
+        </div>
       </div>
 
+      {!open ? (
+        <div className="mt-4 rounded-xl border bg-background/40 px-4 py-3 text-xs text-muted-foreground">
+          Reports are collapsed. Click <span className="font-medium text-foreground">Show reports</span> to view installs, crashes, store performance, every breakdown row, and downloaded CSV metadata.
+        </div>
+      ) : (
+        <>
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
         <div className="rounded-xl border bg-background/40 p-4">
           <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -264,7 +289,7 @@ export function PlayReportsCard({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">active</span>
           </div>
           <MiniArea data={installData} series={[{ key: "installs", color: "var(--chart-3)" }, { key: "uninstalls", color: "var(--destructive)" }]} />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily installs vs uninstalls · all cached months</p>
+          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily installs vs uninstalls · all downloaded report months</p>
         </div>
 
         <div className="rounded-xl border bg-background/40 p-4">
@@ -277,7 +302,7 @@ export function PlayReportsCard({
             {dailyAnrs != null ? <span className="ml-2 text-sm text-muted-foreground">· {dailyAnrs.toLocaleString()} ANRs</span> : null}
           </div>
           <MiniArea data={crashData} series={[{ key: "crashes", color: "var(--destructive)" }, { key: "anrs", color: "var(--chart-4)" }]} />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily crashes &amp; ANRs · all cached months</p>
+          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily crashes &amp; ANRs · all downloaded report months</p>
         </div>
 
         <div className="rounded-xl border bg-background/40 p-4">
@@ -289,13 +314,13 @@ export function PlayReportsCard({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">conversion</span>
           </div>
           <MiniArea data={spData} series={[{ key: "visitors", color: "var(--chart-2)" }]} />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Store listing visitors · acquisitions ÷ visitors</p>
+          <p className="mt-1 text-[10px] text-muted-foreground/60">Store listing visitors · acquisitions ÷ visitors · latest downloaded reports</p>
         </div>
       </div>
 
       {trafficSources.length > 0 ? (
         <div className="mt-5 rounded-xl border bg-background/40 p-4">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Top acquisition sources</p>
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">All acquisition sources from latest traffic-source report</p>
           <ul className="grid gap-1 sm:grid-cols-2">
             {trafficSources.map((t, i) => {
               const d = asDims(t.dimensions);
@@ -317,19 +342,20 @@ export function PlayReportsCard({
         <div className="mt-5 rounded-xl border bg-background/40 p-4">
           <div className="mb-3 flex items-center gap-2">
             <IconDeviceMobile className="size-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Breakdowns from downloaded CSVs</h3>
+            <h3 className="text-sm font-semibold">All breakdown rows from downloaded CSVs</h3>
           </div>
+          <p className="mb-3 text-xs text-muted-foreground/70">No rows are hidden or capped here; each card lists every date/value row returned from the downloaded CSVs.</p>
           <div className="grid gap-4 lg:grid-cols-2">
             {groupedBreakdowns.map(([key, rows]) => {
               const [report, dimension] = key.split(":");
-              const sample = rows.slice(0, 8);
+              const sample = rows;
               return (
                 <div key={key} className="rounded-lg border bg-card p-3">
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <p className="text-xs font-semibold">{nice(report)} · {nice(dimension)}</p>
                     <span className="text-[10px] text-muted-foreground">{rows.length.toLocaleString()} rows</span>
                   </div>
-                  <ul className="space-y-1">
+                  <ul className="max-h-96 space-y-1 overflow-y-auto pr-1">
                     {sample.map((r, i) => (
                       <li key={`${r.report}-${r.dimension}-${r.dimension_value}-${i}`} className="flex items-center gap-2 text-xs">
                         <span className="min-w-0 flex-1 truncate text-foreground/80">{labelForBreakdown(r)}</span>
@@ -349,7 +375,7 @@ export function PlayReportsCard({
         <div className="mt-5 rounded-xl border bg-background/40 p-4">
           <div className="mb-3 flex items-center gap-2">
             <IconDatabase className="size-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Downloaded CSV cache by year/month</h3>
+            <h3 className="text-sm font-semibold">Downloaded CSV files by year/month</h3>
           </div>
           <div className="space-y-3">
             {groupedFiles.map(([year, months]) => (
@@ -382,6 +408,8 @@ export function PlayReportsCard({
           </div>
         </div>
       ) : null}
+        </>
+      )}
     </section>
   );
 }

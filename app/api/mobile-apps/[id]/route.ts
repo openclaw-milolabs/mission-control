@@ -155,7 +155,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         }));
       }
 
-      // Top acquisition traffic sources (latest available date).
+      // All acquisition traffic sources for the latest available traffic-source date.
       const traffic = (await sql`
         select dimensions, metrics
         from mobile_app_report_metrics
@@ -167,22 +167,16 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
               and report = 'store_performance' and dimension = 'traffic_source'
           )
         order by (metrics->>'store_listing_acquisitions')::numeric desc nulls last
-        limit 12
       `) as unknown as Array<{ dimensions: unknown; metrics: unknown }>;
       if (traffic.length > 0) reports.traffic_sources = traffic.map((r) => ({ dimensions: r.dimensions, metrics: r.metrics }));
 
-      // Latest row for every downloaded report/dimension/value so the Google Play
-      // layout can show device/country/app-version/language/OS breakdowns.
+      // Every downloaded report row, uncapped, so the Google Play layout can show
+      // all device/country/app-version/language/OS/date breakdowns without hiding data.
       const breakdowns = (await sql`
-        select * from (
-          select distinct on (report, dimension, dimension_value)
-            report, dimension, dimension_value, to_char(metric_date, 'YYYY-MM-DD') as date, metrics, dimensions
-          from mobile_app_report_metrics
-          where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-          order by report, dimension, dimension_value, metric_date desc
-        ) latest
-        order by report, dimension, dimension_value
-        limit 1000
+        select report, dimension, dimension_value, to_char(metric_date, 'YYYY-MM-DD') as date, metrics, dimensions
+        from mobile_app_report_metrics
+        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
+        order by report, dimension, dimension_value, metric_date desc
       `) as unknown as Array<Record<string, unknown>>;
       if (breakdowns.length > 0) reports.breakdowns = breakdowns;
 
@@ -195,7 +189,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         from mobile_app_report_files
         where listing_id = any(${sql.array(googleListingIds)}::uuid[])
         order by yyyy_mm desc nulls last, report asc, dimension asc, object_path asc
-        limit 2000
       `) as unknown as Array<Record<string, unknown>>;
       if (files.length > 0) reports.files = files;
     }

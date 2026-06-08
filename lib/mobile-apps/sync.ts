@@ -125,11 +125,10 @@ async function cachedReportFile(sql: Sql, listingId: string, objectPath: string)
   return rows[0] ?? null;
 }
 
-function cacheMatches(file: ReportFile, cached: CachedReportFile | null): boolean {
-  if (!cached || cached.status !== "parsed") return false;
-  // Generation is the best GCS cache key. Some test/mocked clients may not expose
-  // it; in that case object_path + parsed status is still enough to avoid repeated downloads.
-  return !file.generation || cached.generation === file.generation;
+function cacheMatches(_file: ReportFile, _cached: CachedReportFile | null): boolean {
+  // Intentionally always false: every report sync re-downloads the current Play Console CSVs.
+  // mobile_app_report_files is a download index/audit trail, not a stale-data cache.
+  return false;
 }
 
 async function markReportFile(
@@ -420,7 +419,7 @@ async function syncListing(
       where id = ${listing.id}
     `;
 
-    // Google Play Console bulk reports: cache/list/download ALL available year/month CSVs.
+    // Google Play Console bulk reports: list + download ALL available year/month CSVs on every report sync.
     // Best-effort — never fail the review sync — but warnings are stored for the UI.
     if (store === "google" && cfg.google.reportsBucket) {
       const stats = await Promise.all([
@@ -542,7 +541,9 @@ export async function syncApp(
   const cfg = loadMobileReviewsConfig();
   const dedupeMs = opts.dedupeMs ?? DEFAULT_DEDUPE_MS;
   const force = Boolean(opts.force);
-  const refreshReports = Boolean(opts.refreshReports || opts.force);
+  // Default to refreshing report CSVs whenever a Google sync runs.
+  // We keep a metadata table of downloaded files, but never use it as a stale-data cache.
+  const refreshReports = opts.refreshReports !== false || opts.force;
 
   const listings = (await sql`
     select id::text, store, store_app_id, country, last_synced_at
