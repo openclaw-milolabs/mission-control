@@ -1,15 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { IconBrandApple, IconBrandGooglePlay, IconStarFilled } from "@tabler/icons-react";
+import { IconBrandApple, IconBrandGooglePlay, IconStarFilled, IconRefresh } from "@tabler/icons-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { StoreConfigBanner } from "@/components/mobile-apps/store-config-banner";
 import { ReviewsStream } from "@/components/mobile-apps/reviews-stream";
 import { RatingDistribution } from "@/components/mobile-apps/rating-distribution";
-import { RatingTrend, type TrendPoint } from "@/components/mobile-apps/rating-trend";
+import { RatingTrend, type TrendPoint, type TrendMarker } from "@/components/mobile-apps/rating-trend";
 import { SentimentDigest } from "@/components/mobile-apps/sentiment-digest";
 import { PlayReportsCard, type ReportPoint, type TrafficSource, type ReportFileRow, type ReportBreakdown } from "@/components/mobile-apps/play-reports-card";
+import { SourceBadge } from "@/components/mobile-apps/source-badge";
 import { countryName, flagEmoji, toAlpha2 } from "@/lib/mobile-apps/country-codes";
 import { formatDate } from "@/lib/format-date";
 import { useModules } from "@/components/modules/modules-provider";
@@ -221,11 +222,25 @@ function StoreScoreCard({
         </div>
       ) : null}
 
+      {/* How fresh this store's data is — and the store-side lag we can't control. */}
+      <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground/60">
+        {isApple
+          ? "Checked live via the App Store Connect API on each load and Refresh. A brand-new review can still take a few hours to appear in Apple’s API after you post it."
+          : "Checked live via the Play Reviews API, which returns roughly the last 7 days. A new review usually appears within a day; older reviews come from the monthly Play Console CSV exports."}
+      </p>
+
       {/* Headline rating — one country's official, store-provided rating */}
       <div className="mt-5">
         <p className="mb-2 flex items-center gap-1.5 text-sm font-medium">
           {selEntry && !writtenOnly ? <span className="text-base leading-none">{flagEmoji(selected)}</span> : null}
           <span className="text-muted-foreground">{headlineLabel}</span>
+          {isApple ? (
+            <SourceBadge kind="official-api" title="Apple iTunes Lookup — official public Apple endpoint." />
+          ) : fromReport ? (
+            <SourceBadge kind="csv" title="Google Play Console ratings CSV export — delayed (daily/monthly), not a live API." />
+          ) : (
+            <SourceBadge kind="derived" title="Average of stored written reviews — Google exposes no live global store rating via API." />
+          )}
         </p>
         <div className="flex items-end gap-4">
           <span className="text-5xl font-semibold leading-none tracking-tight tabular-nums">
@@ -258,9 +273,18 @@ function StoreScoreCard({
       {/* Per-storefront switcher: Apple switches the headline; Google shows country rows used for the report average. */}
       {territories.length > 0 ? (
         <div className="mt-5 border-t pt-4">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            By country <span className="font-normal normal-case text-muted-foreground/60">{writtenOnly ? "· written reviews by country" : "· tap to switch · official rating + written reviews"}</span>
-          </p>
+          <div className="mb-2 flex items-center gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              By country <span className="font-normal normal-case text-muted-foreground/60">{writtenOnly ? "· written reviews by country" : "· tap to switch · official rating + written reviews"}</span>
+            </p>
+            {isApple ? (
+              <SourceBadge kind="official-api" title="Ratings: Apple iTunes Lookup. Written counts: App Store Connect API. Both official." />
+            ) : fromReport ? (
+              <SourceBadge kind="csv" label="API + CSV" title="Ratings: Play Console ratings CSV export (delayed). Written counts: Play Reviews API + monthly review CSVs." />
+            ) : (
+              <SourceBadge kind="official-api" title="Written-review counts from the Play Reviews API + monthly review CSVs." />
+            )}
+          </div>
           <ul className="space-y-0.5">
             {territories.map((t) => {
               const active = t.territory === selected;
@@ -293,7 +317,14 @@ function StoreScoreCard({
       {/* Distribution of stored written reviews (not the official rating) */}
       <div className="mt-5 border-t pt-4">
         <div className="mb-2.5 flex items-center justify-between">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Written review breakdown</p>
+          <div className="flex items-center gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Written review breakdown</p>
+            {isApple ? (
+              <SourceBadge kind="official-api" title="App Store Connect API customerReviews — official, last ~500 per storefront." />
+            ) : (
+              <SourceBadge kind="official-api" label="API + CSV" title="Play Reviews API (last ~7 days) + monthly Play Console review CSV exports." />
+            )}
+          </div>
           <p className="text-[11px] text-muted-foreground/70">
             {total.toLocaleString()} stored
             {summary && summary.negative > 0 ? ` · ${summary.negative} ≤${negativeThreshold}★` : ""}
@@ -348,7 +379,10 @@ function AppMetaCard({ store, meta }: { store: StoreKey; meta: AppMetadata }) {
   return (
     <div className="w-full rounded-2xl border bg-card p-6">
       <div className="mb-4 flex items-center justify-between">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">App details</p>
+        <div className="flex items-center gap-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">App details</p>
+          <SourceBadge kind="official-api" title="Apple iTunes Lookup — official public Apple endpoint." />
+        </div>
         <span className="text-[11px] text-muted-foreground/60">{storeLabel} · official store metadata</span>
       </div>
       <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-5">
@@ -369,6 +403,99 @@ function AppMetaCard({ store, meta }: { store: StoreKey; meta: AppMetadata }) {
   );
 }
 
+function asMetricsObj(v: unknown): Record<string, number | null> {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, number | null>;
+  if (typeof v === "string") {
+    try {
+      const p = JSON.parse(v);
+      return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, number | null>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+function pickMetric(m: Record<string, number | null>, ...keys: string[]): number | null {
+  for (const k of keys) if (typeof m[k] === "number") return m[k] as number;
+  return null;
+}
+const INSTALL_METRIC_KEYS = ["active_device_installs", "current_device_installs", "total_user_installs", "daily_device_installs", "daily_user_installs"];
+
+/** Top dimension values for an installs breakdown, ranked by install volume. */
+function topInstallBreakdown(breakdowns: ReportBreakdown[], dimension: string, n: number): Array<{ label: string; value: number | null }> {
+  return breakdowns
+    .filter((b) => b.report === "installs" && b.dimension === dimension && b.dimension_value && b.dimension_value !== "overview")
+    .map((b) => ({ label: b.dimension_value, value: pickMetric(asMetricsObj(b.metrics), ...INSTALL_METRIC_KEYS) }))
+    .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
+    .slice(0, n);
+}
+
+/**
+ * Google Play details derived ONLY from Play Console install reports we already
+ * ingest. Google exposes no catalog-metadata endpoint (size, age rating,
+ * category, price) like Apple's iTunes Lookup, so we never fabricate those.
+ */
+function GoogleDetailsCard({ breakdowns, installs }: { breakdowns: ReportBreakdown[]; installs: ReportPoint[] }) {
+  const topVersion = topInstallBreakdown(breakdowns, "app_version", 1)[0]?.label ?? null;
+  const languages = breakdowns.filter((b) => b.report === "installs" && b.dimension === "language" && b.dimension_value && b.dimension_value !== "overview");
+  const topDevices = topInstallBreakdown(breakdowns, "device", 5);
+  const topOs = topInstallBreakdown(breakdowns, "os_version", 4);
+  const topCountries = topInstallBreakdown(breakdowns, "country", 5);
+  const lastInstalls = installs.length ? asMetricsObj(installs[installs.length - 1].metrics) : {};
+  const activeInstalls = pickMetric(lastInstalls, "active_device_installs", "current_device_installs", "total_user_installs");
+
+  const facts: Array<{ label: string; value: string; title?: string }> = [];
+  if (topVersion) facts.push({ label: "Top version", value: topVersion });
+  if (activeInstalls != null) facts.push({ label: "Active installs", value: activeInstalls.toLocaleString() });
+  if (languages.length > 0)
+    facts.push({ label: "Languages", value: String(languages.length), title: languages.map((l) => l.dimension_value).join(", ") });
+  if (topCountries.length > 0)
+    facts.push({ label: "Top country", value: countryName(topCountries[0].label) });
+
+  const chips: Array<{ title: string; items: string[] }> = [];
+  if (topDevices.length > 0) chips.push({ title: "Top devices", items: topDevices.map((d) => d.label) });
+  if (topOs.length > 0) chips.push({ title: "Android versions", items: topOs.map((o) => o.label) });
+  if (topCountries.length > 0) chips.push({ title: "Top countries", items: topCountries.map((c) => countryName(c.label)) });
+
+  if (facts.length === 0 && chips.length === 0) return null;
+
+  return (
+    <div className="w-full rounded-2xl border bg-card p-6">
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">App details</p>
+          <SourceBadge kind="csv" label="CSV-derived" title="Derived from Google Play Console install CSV exports — Google has no catalog-metadata API." />
+        </div>
+        <span className="text-[11px] text-muted-foreground/60">Google Play · derived from Play Console install reports</span>
+      </div>
+      {facts.length > 0 ? (
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+          {facts.map((f) => (
+            <MetaFact key={f.label} label={f.label} value={f.value} title={f.title} />
+          ))}
+        </div>
+      ) : null}
+      {chips.length > 0 ? (
+        <div className="mt-4 grid gap-4 border-t pt-4 sm:grid-cols-3">
+          {chips.map((c) => (
+            <div key={c.title}>
+              <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">{c.title}</p>
+              <div className="flex flex-wrap gap-1">
+                {c.items.map((it) => (
+                  <span key={it} className="rounded-md bg-muted/50 px-1.5 py-0.5 text-[11px] text-foreground/80">{it}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <p className="mt-4 text-[11px] leading-relaxed text-muted-foreground/60">
+        Google’s API exposes no catalog metadata (size, age rating, category, price) the way Apple’s does. These facts are derived from the install reports you’ve downloaded.
+      </p>
+    </div>
+  );
+}
+
 export function AppDetailClient({ appId }: { appId: string }) {
   const router = useRouter();
   const { ready, isEnabled } = useModules();
@@ -383,6 +510,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
   const [digest, setDigest] = useState<{ summary_md: string; created_at: string } | null>(null);
   const [genBusy, setGenBusy] = useState(false);
   const [refreshingReports, setRefreshingReports] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [reports, setReports] = useState<{ installs: ReportPoint[]; crashes: ReportPoint[]; storePerformance: ReportPoint[]; trafficSources: TrafficSource[]; files: ReportFileRow[]; breakdowns: ReportBreakdown[] }>({ installs: [], crashes: [], storePerformance: [], trafficSources: [], files: [], breakdowns: [] });
 
   useEffect(() => {
@@ -428,6 +556,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
   // Live sync on mount, then revalidate.
   useEffect(() => {
     let cancelled = false;
+    setSyncing(true);
     void (async () => {
       await fetch("/api/mobile-apps/sync", {
         method: "POST",
@@ -438,10 +567,37 @@ export function AppDetailClient({ appId }: { appId: string }) {
         await loadRef.current();
         setRefreshKey((k) => k + 1);
       }
-    })().catch(() => null);
+    })()
+      .catch(() => null)
+      .finally(() => {
+        if (!cancelled) setSyncing(false);
+      });
     return () => {
       cancelled = true;
     };
+  }, [appId]);
+
+  // Manual "Refresh" — force a fresh check of the live review APIs (Apple Connect /
+  // Google Reviews) right now. syncReports:false keeps it fast; the heavy Play
+  // Console CSV scan stays behind the reports card's own refresh button.
+  const refreshNow = useCallback(async () => {
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/mobile-apps/sync", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ appId, force: true, syncReports: false }),
+      });
+      const json = await res.json().catch(() => null);
+      await loadRef.current();
+      setRefreshKey((k) => k + 1);
+      if (json && json.ok === false) toast.error(json.error || "Refresh failed");
+      else toast.success("Re-checked the stores for new reviews");
+    } catch {
+      toast.error("Refresh failed");
+    } finally {
+      setSyncing(false);
+    }
   }, [appId]);
 
   // SSE live updates.
@@ -515,6 +671,17 @@ export function AppDetailClient({ appId }: { appId: string }) {
     return rows.map((t) => ({ day: t.day, avg: t.avg, count: t.count }));
   }, [trend, store]);
 
+  // Release marker on the trend chart: only where we have a real release date.
+  // Apple's iTunes Lookup gives the current version's release date; Google's API
+  // exposes no per-version release date, so we never invent one.
+  const trendMarkers: TrendMarker[] = useMemo(() => {
+    const meta = listings.find((l) => l.store === store)?.store_metadata;
+    if (store === "apple" && meta?.currentVersionReleaseDate) {
+      return [{ day: meta.currentVersionReleaseDate, label: meta.version ? `v${meta.version}` : "Update" }];
+    }
+    return [];
+  }, [listings, store]);
+
   const lastSyncedAt = useMemo(
     () => listings.map((l) => l.last_synced_at).filter(Boolean).sort().at(-1) ?? null,
     [listings],
@@ -547,18 +714,30 @@ export function AppDetailClient({ appId }: { appId: string }) {
   }
 
   const headerActions = (
-    <div className="flex items-center gap-0.5 rounded-lg bg-muted/60 p-0.5">
-      {availableStores.map((val) => (
-        <button
-          key={val}
-          onClick={() => setStore(val)}
-          className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-            store === val ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          {STORE_META[val].label}
-        </button>
-      ))}
+    <div className="flex items-center gap-2">
+      <div className="flex items-center gap-0.5 rounded-lg bg-muted/60 p-0.5">
+        {availableStores.map((val) => (
+          <button
+            key={val}
+            onClick={() => setStore(val)}
+            className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+              store === val ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {STORE_META[val].label}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => void refreshNow()}
+        disabled={syncing}
+        title="Re-check the App Store & Google Play review APIs for new reviews now"
+        className="inline-flex items-center gap-1.5 rounded-lg border bg-background px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <IconRefresh className={`size-3.5 ${syncing ? "animate-spin" : ""}`} />
+        {syncing ? "Refreshing…" : "Refresh"}
+      </button>
     </div>
   );
 
@@ -585,17 +764,33 @@ export function AppDetailClient({ appId }: { appId: string }) {
               )}
               <div>
                 <h1 className="text-2xl font-semibold tracking-tight">{app?.name ?? "App"}</h1>
-                <p className="mt-0.5 text-sm text-muted-foreground">
-                  {availableStores.length > 0
-                    ? availableStores.map((s) => STORE_META[s].label).join(" · ")
-                    : "No store listings"}
-                  {lastSyncedAt ? ` · synced ${lastSync(lastSyncedAt)}` : ""}
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground">
+                  <span>
+                    {availableStores.length > 0
+                      ? availableStores.map((s) => STORE_META[s].label).join(" · ")
+                      : "No store listings"}
+                  </span>
+                  {syncing ? (
+                    <span className="inline-flex items-center gap-1 text-foreground/70">
+                      <IconRefresh className="size-3 animate-spin" /> checking stores…
+                    </span>
+                  ) : lastSyncedAt ? (
+                    <span
+                      title={`Last checked the store review APIs at ${new Date(lastSyncedAt).toLocaleString()}. A newly posted review can still take time to appear — Apple and Google expose new reviews on their own delay.`}
+                    >
+                      · synced {lastSync(lastSyncedAt)}
+                    </span>
+                  ) : null}
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-6">
-              <Metric value={combined.total.toLocaleString()} label="Stored written reviews" />
+              <Metric
+                value={combined.total.toLocaleString()}
+                label="Stored written reviews"
+                badge={<SourceBadge kind="official-api" label="API + CSV" title={store === "apple" ? "App Store Connect API customerReviews." : "Play Reviews API (last ~7 days) + monthly Play Console review CSV exports."} />}
+              />
               <div className="h-9 w-px bg-border" />
               <Metric
                 value={combined.negative.toLocaleString()}
@@ -606,6 +801,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
               <Metric
                 value={combined.total > 0 ? `${Math.round((combined.responded / combined.total) * 100)}%` : "—"}
                 label="Developer replies"
+                badge={<SourceBadge kind="derived" title="Share of stored reviews that have a developer response — computed from review data." />}
               />
             </div>
           </div>
@@ -626,7 +822,8 @@ export function AppDetailClient({ appId }: { appId: string }) {
                       run={syncRuns.find((x) => x.store === s)}
                       negativeThreshold={negativeThreshold}
                     />
-                    {listing?.store_metadata ? <AppMetaCard store={s} meta={listing.store_metadata} /> : null}
+                    {s === "apple" && listing?.store_metadata ? <AppMetaCard store={s} meta={listing.store_metadata} /> : null}
+                    {s === "google" ? <GoogleDetailsCard breakdowns={reports.breakdowns} installs={reports.installs} /> : null}
                   </div>
                 );
               })}
@@ -655,10 +852,13 @@ export function AppDetailClient({ appId }: { appId: string }) {
             <div className="flex flex-col gap-5">
               <section className="rounded-xl border bg-card p-4">
                 <div className="mb-3">
-                  <h2 className="text-sm font-semibold">Review ratings over time</h2>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-semibold">Review ratings over time</h2>
+                    <SourceBadge kind="derived" title="Daily average computed from stored written reviews — not the official store rating." />
+                  </div>
                   <p className="text-[11px] text-muted-foreground/70">Average of stored written reviews, not the store rating</p>
                 </div>
-                <RatingTrend data={trendData} />
+                <RatingTrend data={trendData} markers={trendMarkers} />
               </section>
               <SentimentDigest
                 summaryMd={digest?.summary_md ?? null}
@@ -679,11 +879,13 @@ function Metric({
   label,
   accent,
   danger,
+  badge,
 }: {
   value: string;
   label: string;
   accent?: boolean;
   danger?: boolean;
+  badge?: ReactNode;
 }) {
   return (
     <div className="flex flex-col">
@@ -694,7 +896,10 @@ function Metric({
       >
         {value}
       </span>
-      <span className="mt-1 text-xs text-muted-foreground">{label}</span>
+      <span className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+        {label}
+        {badge}
+      </span>
     </div>
   );
 }

@@ -1,18 +1,39 @@
 "use client";
 
 import { useId } from "react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { IconChartLine } from "@tabler/icons-react";
 
 export type TrendPoint = { day: string; avg: number; count: number };
+/** A real release date + label, snapped to the nearest plotted day for placement. */
+export type TrendMarker = { day: string; label: string };
 
 function fmtDay(day: string): string {
   const d = new Date(day);
   return Number.isNaN(d.getTime()) ? day : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export function RatingTrend({ data }: { data: TrendPoint[] }) {
+/** Snap each marker's real date to the closest plotted day (categorical axis needs
+ *  an exact category to position on). Markers outside the data window are dropped. */
+function snapMarkers(markers: TrendMarker[], data: TrendPoint[]): Array<{ day: string; label: string }> {
+  if (data.length === 0) return [];
+  const times = data.map((d) => ({ day: d.day, t: new Date(d.day).getTime() }));
+  const min = times[0].t;
+  const max = times[times.length - 1].t;
+  const out: Array<{ day: string; label: string }> = [];
+  for (const m of markers) {
+    const mt = new Date(m.day).getTime();
+    if (!Number.isFinite(mt) || mt < min || mt > max) continue;
+    let best = times[0];
+    for (const c of times) if (Math.abs(c.t - mt) < Math.abs(best.t - mt)) best = c;
+    out.push({ day: best.day, label: m.label });
+  }
+  return out;
+}
+
+export function RatingTrend({ data, markers = [] }: { data: TrendPoint[]; markers?: TrendMarker[] }) {
   const gradientId = useId().replace(/:/g, "");
+  const snapped = snapMarkers(markers, data);
 
   if (data.length < 2) {
     return (
@@ -77,6 +98,16 @@ export function RatingTrend({ data }: { data: TrendPoint[] }) {
             activeDot={{ r: 3, strokeWidth: 0 }}
             isAnimationActive={false}
           />
+          {snapped.map((m, i) => (
+            <ReferenceLine
+              key={`${m.day}-${i}`}
+              x={m.day}
+              stroke="var(--muted-foreground)"
+              strokeDasharray="3 3"
+              strokeOpacity={0.6}
+              label={{ value: m.label, position: "top", fontSize: 9, fill: "var(--muted-foreground)" }}
+            />
+          ))}
         </AreaChart>
       </ResponsiveContainer>
     </div>

@@ -13,6 +13,7 @@ import {
   IconWorld,
   IconChevronDown,
 } from "@tabler/icons-react";
+import { SourceBadge } from "@/components/mobile-apps/source-badge";
 
 export type ReportPoint = { date: string; metrics: unknown; source?: string | null };
 export type TrafficSource = { dimensions: unknown; metrics: unknown };
@@ -208,9 +209,15 @@ export function PlayReportsCard({
 
   const lastInstall = installs.length ? asMetrics(installs[installs.length - 1].metrics) : {};
   const activeInstalls = pick(lastInstall, "active_device_installs", "current_device_installs", "total_user_installs");
+  const dailyInstalls = pick(lastInstall, "daily_device_installs", "daily_user_installs");
+  const dailyUninstalls = pick(lastInstall, "daily_device_uninstalls", "daily_user_uninstalls");
+  const uninstallRate = dailyInstalls && dailyUninstalls != null ? (dailyUninstalls / dailyInstalls) * 100 : null;
   const lastCrash = crashes.length ? asMetrics(crashes[crashes.length - 1].metrics) : {};
   const dailyCrashes = pick(lastCrash, "daily_crashes");
   const dailyAnrs = pick(lastCrash, "daily_anrs");
+  // Approximate stability rate: report APIs give counts, not Google's official
+  // vitals rate. crashes ÷ active installs × 1000 is a useful proxy, clearly labeled.
+  const crashesPer1k = activeInstalls && dailyCrashes != null ? (dailyCrashes / activeInstalls) * 1000 : null;
 
   const spData = useMemo(
     () =>
@@ -246,6 +253,7 @@ export function PlayReportsCard({
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <IconBrandGooglePlay className="size-4" />
             Google Play Console reports
+            <SourceBadge kind="csv" title="All figures here come from Google Play Console CSV exports in your GCS bucket — delayed (daily/monthly), not a live API." />
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
             Downloaded from official Play Console CSV exports. Refresh re-lists the bucket and downloads changed/missing files, including monthly reviews CSVs.
@@ -289,7 +297,9 @@ export function PlayReportsCard({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">active</span>
           </div>
           <MiniArea data={installData} series={[{ key: "installs", color: "var(--chart-3)" }, { key: "uninstalls", color: "var(--destructive)" }]} />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily installs vs uninstalls · downloaded months</p>
+          <p className="mt-1 text-[10px] text-muted-foreground/60">
+            Daily installs vs uninstalls{uninstallRate != null ? ` · ${uninstallRate.toFixed(0)}% uninstall rate` : ""}
+          </p>
         </div>
 
         <div className="rounded-xl border bg-background/40 p-4">
@@ -302,7 +312,9 @@ export function PlayReportsCard({
             {dailyAnrs != null ? <span className="ml-2 text-sm text-muted-foreground">· {dailyAnrs.toLocaleString()} ANRs</span> : null}
           </div>
           <MiniArea data={crashData} series={[{ key: "crashes", color: "var(--destructive)" }, { key: "anrs", color: "var(--chart-4)" }]} />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily crashes &amp; ANRs · downloaded months</p>
+          <p className="mt-1 text-[10px] text-muted-foreground/60">
+            Daily crashes &amp; ANRs{crashesPer1k != null ? ` · ~${crashesPer1k.toFixed(1)}/1k installs (approx)` : ""}
+          </p>
         </div>
 
         <div className="rounded-xl border bg-background/40 p-4">
