@@ -155,7 +155,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         }));
       }
 
-      // All acquisition traffic sources for the latest available traffic-source date.
+      // Top acquisition traffic sources (latest available date).
       const traffic = (await sql`
         select dimensions, metrics
         from mobile_app_report_metrics
@@ -170,13 +170,17 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       `) as unknown as Array<{ dimensions: unknown; metrics: unknown }>;
       if (traffic.length > 0) reports.traffic_sources = traffic.map((r) => ({ dimensions: r.dimensions, metrics: r.metrics }));
 
-      // Every downloaded report row, uncapped, so the Google Play layout can show
-      // all device/country/app-version/language/OS/date breakdowns without hiding data.
+      // Latest row for every downloaded report/dimension/value so the Google Play
+      // layout can show device/country/app-version/language/OS breakdowns.
       const breakdowns = (await sql`
-        select report, dimension, dimension_value, to_char(metric_date, 'YYYY-MM-DD') as date, metrics, dimensions
-        from mobile_app_report_metrics
-        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-        order by report, dimension, dimension_value, metric_date desc
+        select * from (
+          select distinct on (report, dimension, dimension_value)
+            report, dimension, dimension_value, to_char(metric_date, 'YYYY-MM-DD') as date, metrics, dimensions
+          from mobile_app_report_metrics
+          where listing_id = any(${sql.array(googleListingIds)}::uuid[])
+          order by report, dimension, dimension_value, metric_date desc
+        ) latest
+        order by report, dimension, dimension_value
       `) as unknown as Array<Record<string, unknown>>;
       if (breakdowns.length > 0) reports.breakdowns = breakdowns;
 

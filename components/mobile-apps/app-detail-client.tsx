@@ -141,12 +141,12 @@ function StoreScoreCard({
   const selEntry = territories.find((t) => t.territory === selected) ?? null;
   const fromReport = listing?.rating_source === "google_play_console_ratings_report";
 
-  // Do not invent a fake global Google Play rating.
-  // Apple exposes a storefront rating/count. Google Play reports expose per-country
-  // Total Average Rating rows; the headline is the selected country row, not a
-  // computed global average.
+  // Apple can show a current storefront rating/count from Lookup.
+  // Google Play does not expose a live global public rating/count. For Google
+  // reports, the headline is always the selected country row from the downloaded
+  // Play Console ratings CSVs — never a fake/global computed average.
   const headlineAvg = selEntry ? selEntry.avg : listing?.current_rating ?? null;
-  const headlineCount = selEntry ? selEntry.count : listing?.ratings_count ?? null;
+  const headlineCount = isApple && selEntry ? selEntry.count : isApple ? listing?.ratings_count ?? null : null;
   const storeRatingLabel = isApple
     ? "App Store storefront rating"
     : fromReport
@@ -197,26 +197,26 @@ function StoreScoreCard({
                   ? `official · ${headlineCount?.toLocaleString() ?? "—"} ratings`
                   : "no rating from the App Store API yet"
                 : fromReport
-                  ? `selected country row from downloaded Play Console rating CSVs · not Google’s official public global rating${listing?.rating_as_of ? ` · latest report date ${formatDate(listing.rating_as_of)}` : ""}`
+                  ? `selected country row from downloaded Play Console ratings CSVs · no Google global live count available${listing?.rating_as_of ? ` · as of ${formatDate(listing.rating_as_of)}` : ""}`
                   : headlineAvg != null
-                    ? `from ${headlineCount?.toLocaleString() ?? "—"} written reviews only · not a store-wide rating`
+                    ? `from ${listing?.ratings_count?.toLocaleString() ?? "—"} written reviews only · not a store-wide rating`
                     : "no written reviews fetched yet"}
             </p>
           </div>
         </div>
         {!isApple && fromReport ? (
           <p className="mt-3 text-xs leading-relaxed text-muted-foreground/70">
-            Google does not expose an Apple-style live global public rating/count through the Reviews API. These rows come from downloaded Play Console country rating CSVs.
+            Google does not expose an Apple-style live global rating/count through the Reviews API. Pick a country below to see the latest downloaded Play Console rating row for that country.
             {selEntry ? ` Selected country: ${flagEmoji(selected)} ${countryName(selected)} ${selEntry.avg != null ? selEntry.avg.toFixed(1) : "—"}.` : ""}
           </p>
         ) : null}
       </div>
 
-      {/* Per-country switcher: Apple and Google both switch the headline to that exact country/storefront row. */}
+      {/* Per-storefront switcher: Apple switches the headline; Google shows country rows used for the report average. */}
       {territories.length > 0 ? (
         <div className="mt-5 border-t pt-4">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            By country <span className="font-normal normal-case text-muted-foreground/60">{isApple ? "· all storefronts found by lookup · tap to switch" : "· all latest countries from downloaded reports · tap to switch"}</span>
+            By country <span className="font-normal normal-case text-muted-foreground/60">{isApple ? "· tap to switch" : "· tap to switch · all downloaded country rows"}</span>
           </p>
           <ul className="space-y-0.5">
             {territories.map((t) => {
@@ -279,13 +279,18 @@ export function AppDetailClient({ appId }: { appId: string }) {
   const [digest, setDigest] = useState<{ summary_md: string; created_at: string } | null>(null);
   const [genBusy, setGenBusy] = useState(false);
   const [refreshingReports, setRefreshingReports] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncingStore, setSyncingStore] = useState<StoreKey | null>(null);
+  const [initialSyncDone, setInitialSyncDone] = useState(false);
   const [reports, setReports] = useState<{ installs: ReportPoint[]; crashes: ReportPoint[]; storePerformance: ReportPoint[]; trafficSources: TrafficSource[]; files: ReportFileRow[]; breakdowns: ReportBreakdown[] }>({ installs: [], crashes: [], storePerformance: [], trafficSources: [], files: [], breakdowns: [] });
 
   useEffect(() => {
     if (ready && !isEnabled("mobile-apps")) router.replace("/settings#modules");
   }, [ready, isEnabled, router]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts: { silent?: boolean } = {}) => {
+    if (!opts.silent) setLoading(true);
     try {
       const res = await fetch(`/api/mobile-apps/${appId}`, { cache: "no-store" });
       const json = await res.json();
@@ -310,6 +315,8 @@ export function AppDetailClient({ appId }: { appId: string }) {
       }
     } catch {
       toast.error("Failed to load app");
+    } finally {
+      if (!opts.silent) setLoading(false);
     }
   }, [appId]);
 
@@ -320,26 +327,6 @@ export function AppDetailClient({ appId }: { appId: string }) {
   useEffect(() => {
     void load();
   }, [load]);
-
-  // Live sync for the selected store, then revalidate.
-  // Google reports are re-listed and re-downloaded; the DB file table is only a download index.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      await fetch("/api/mobile-apps/sync", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId, store, force: true, refreshReports: store === "google" }),
-      }).catch(() => null);
-      if (!cancelled) {
-        await loadRef.current();
-        setRefreshKey((k) => k + 1);
-      }
-    })().catch(() => null);
-    return () => {
-      cancelled = true;
-    };
-  }, [appId, store]);
 
   // SSE live updates.
   useEffect(() => {
@@ -422,21 +409,61 @@ export function AppDetailClient({ appId }: { appId: string }) {
     return m;
   }, [listings]);
 
-  async function refreshGoogleReports() {
-    setRefreshingReports(true);
+  const syncSeqRef = useRef(0);
+  const syncSelectedStore = useCallback(async (targetStore: StoreKey, opts: { refreshReports?: boolean; toastSuccess?: string } = {}) => {
+    const syncId = ++syncSeqRef.current;
+    setSyncing(true);
+    setSyncingStore(targetStore);
     try {
       const res = await fetch("/api/mobile-apps/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId, store: "google", force: true, refreshReports: true }),
+        body: JSON.stringify({
+          appId,
+          store: targetStore,
+          force: true,
+          refreshReports: Boolean(opts.refreshReports),
+          // Normal page/tab sync must stay light. Google Play report CSVs are a
+          // separate heavy refresh operation, triggered by the reports button.
+          syncReports: Boolean(opts.refreshReports),
+        }),
       });
       const json = await res.json();
       if (!json.ok) throw new Error(json.error || "Failed");
-      await loadRef.current();
+      await loadRef.current({ silent: true });
       setRefreshKey((k) => k + 1);
-      toast.success("Google Play reports refreshed");
+      if (opts.toastSuccess) toast.success(opts.toastSuccess);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to refresh reports");
+      toast.error(e instanceof Error ? e.message : `Failed to sync ${STORE_META[targetStore].label}`);
+    } finally {
+      if (syncId === syncSeqRef.current) {
+        setSyncing(false);
+        setSyncingStore(null);
+      }
+    }
+  }, [appId]);
+
+  const initialSyncStarted = useRef(false);
+  useEffect(() => {
+    if (loading || initialSyncDone || initialSyncStarted.current) return;
+    if (availableStores.length === 0) {
+      setInitialSyncDone(true);
+      return;
+    }
+    const target = availableStores.includes(store) ? store : availableStores[0];
+    initialSyncStarted.current = true;
+    void syncSelectedStore(target).finally(() => setInitialSyncDone(true));
+  }, [availableStores, initialSyncDone, loading, store, syncSelectedStore]);
+
+  function selectStore(nextStore: StoreKey) {
+    setStore(nextStore);
+    void syncSelectedStore(nextStore);
+  }
+
+  async function refreshGoogleReports() {
+    setRefreshingReports(true);
+    try {
+      await syncSelectedStore("google", { refreshReports: true, toastSuccess: "Google Play reports refreshed" });
     } finally {
       setRefreshingReports(false);
     }
@@ -447,7 +474,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
       {availableStores.map((val) => (
         <button
           key={val}
-          onClick={() => setStore(val)}
+          onClick={() => selectStore(val)}
           className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
             store === val ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"
           }`}
@@ -457,6 +484,13 @@ export function AppDetailClient({ appId }: { appId: string }) {
       ))}
     </div>
   );
+
+  const showDataLoader = loading || syncing || !initialSyncDone;
+  const loaderLabel = syncingStore
+    ? `Syncing latest ${STORE_META[syncingStore].label} data…`
+    : loading
+      ? "Loading Mobile Applications data…"
+      : "Syncing latest Mobile Applications data…";
 
   return (
     <>
@@ -503,6 +537,10 @@ export function AppDetailClient({ appId }: { appId: string }) {
 
           <StoreConfigBanner />
 
+          {showDataLoader ? (
+            <LoadingPanel label={loaderLabel} />
+          ) : (
+            <>
           {/* Store score cards */}
           {shownStores.length > 0 ? (
             <div className="grid w-full gap-5">
@@ -554,9 +592,27 @@ export function AppDetailClient({ appId }: { appId: string }) {
               />
             </div>
           </div>
+            </>
+          )}
         </div>
       </div>
     </>
+  );
+}
+
+function LoadingPanel({ label }: { label: string }) {
+  return (
+    <div className="grid min-h-[420px] place-items-center rounded-2xl border bg-card/70 p-8 text-center">
+      <div className="flex max-w-sm flex-col items-center gap-3">
+        <div className="size-9 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-foreground" />
+        <div>
+          <p className="text-sm font-medium">{label}</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            Current data is hidden while sync is running so stale values are not shown.
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 

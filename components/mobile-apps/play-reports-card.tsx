@@ -235,6 +235,8 @@ export function PlayReportsCard({
 
   const groupedFiles = useMemo(() => groupFiles(files), [files]);
   const [open, setOpen] = useState(false);
+  const [openBreakdowns, setOpenBreakdowns] = useState<Record<string, boolean>>({});
+  const [openFileMonths, setOpenFileMonths] = useState<Record<string, boolean>>({});
 
   if (installs.length === 0 && crashes.length === 0 && storePerformance.length === 0 && trafficSources.length === 0 && files.length === 0)
     return null;
@@ -248,7 +250,7 @@ export function PlayReportsCard({
             Google Play Console reports
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Official Play Console CSV exports. Sync/refresh re-lists the bucket and re-downloads the reports so the dashboard uses the latest available CSV data.
+            Downloaded from official Play Console CSV exports. Refresh re-lists the bucket and downloads the latest available report files.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -275,7 +277,19 @@ export function PlayReportsCard({
 
       {!open ? (
         <div className="mt-4 rounded-xl border bg-background/40 px-4 py-3 text-xs text-muted-foreground">
-          Reports are collapsed. Click <span className="font-medium text-foreground">Show reports</span> to view installs, crashes, store performance, every breakdown row, and downloaded CSV metadata.
+          Reports are collapsed. Click <span className="font-medium text-foreground">Show reports</span> to view installs, crashes, store performance, breakdowns, and downloaded CSVs.
+        </div>
+      ) : refreshing ? (
+        <div className="mt-4 grid min-h-[220px] place-items-center rounded-xl border bg-background/40 p-6 text-center">
+          <div className="flex max-w-sm flex-col items-center gap-3">
+            <div className="size-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-foreground" />
+            <div>
+              <p className="text-sm font-medium">Refreshing Google Play reports…</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Old report values are hidden while the latest CSV files are being downloaded and parsed.
+              </p>
+            </div>
+          </div>
         </div>
       ) : (
         <>
@@ -289,7 +303,7 @@ export function PlayReportsCard({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">active</span>
           </div>
           <MiniArea data={installData} series={[{ key: "installs", color: "var(--chart-3)" }, { key: "uninstalls", color: "var(--destructive)" }]} />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily installs vs uninstalls · all downloaded report months</p>
+          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily installs vs uninstalls · all downloaded months</p>
         </div>
 
         <div className="rounded-xl border bg-background/40 p-4">
@@ -302,7 +316,7 @@ export function PlayReportsCard({
             {dailyAnrs != null ? <span className="ml-2 text-sm text-muted-foreground">· {dailyAnrs.toLocaleString()} ANRs</span> : null}
           </div>
           <MiniArea data={crashData} series={[{ key: "crashes", color: "var(--destructive)" }, { key: "anrs", color: "var(--chart-4)" }]} />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily crashes &amp; ANRs · all downloaded report months</p>
+          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily crashes &amp; ANRs · all downloaded months</p>
         </div>
 
         <div className="rounded-xl border bg-background/40 p-4">
@@ -314,13 +328,13 @@ export function PlayReportsCard({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">conversion</span>
           </div>
           <MiniArea data={spData} series={[{ key: "visitors", color: "var(--chart-2)" }]} />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Store listing visitors · acquisitions ÷ visitors · latest downloaded reports</p>
+          <p className="mt-1 text-[10px] text-muted-foreground/60">Store listing visitors · acquisitions ÷ visitors</p>
         </div>
       </div>
 
       {trafficSources.length > 0 ? (
         <div className="mt-5 rounded-xl border bg-background/40 p-4">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">All acquisition sources from latest traffic-source report</p>
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Acquisition sources from downloaded CSVs</p>
           <ul className="grid gap-1 sm:grid-cols-2">
             {trafficSources.map((t, i) => {
               const d = asDims(t.dimensions);
@@ -342,28 +356,39 @@ export function PlayReportsCard({
         <div className="mt-5 rounded-xl border bg-background/40 p-4">
           <div className="mb-3 flex items-center gap-2">
             <IconDeviceMobile className="size-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">All breakdown rows from downloaded CSVs</h3>
+            <h3 className="text-sm font-semibold">Breakdowns from downloaded CSVs</h3>
           </div>
-          <p className="mb-3 text-xs text-muted-foreground/70">No rows are hidden or capped here; each card lists every date/value row returned from the downloaded CSVs.</p>
           <div className="grid gap-4 lg:grid-cols-2">
             {groupedBreakdowns.map(([key, rows]) => {
               const [report, dimension] = key.split(":");
-              const sample = rows;
+              const isOpen = Boolean(openBreakdowns[key]);
               return (
                 <div key={key} className="rounded-lg border bg-card p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOpenBreakdowns((v) => ({ ...v, [key]: !v[key] }))}
+                    className="mb-2 flex w-full items-center justify-between gap-2 text-left"
+                    aria-expanded={isOpen}
+                  >
                     <p className="text-xs font-semibold">{nice(report)} · {nice(dimension)}</p>
-                    <span className="text-[10px] text-muted-foreground">{rows.length.toLocaleString()} rows</span>
-                  </div>
-                  <ul className="max-h-96 space-y-1 overflow-y-auto pr-1">
-                    {sample.map((r, i) => (
-                      <li key={`${r.report}-${r.dimension}-${r.dimension_value}-${i}`} className="flex items-center gap-2 text-xs">
-                        <span className="min-w-0 flex-1 truncate text-foreground/80">{labelForBreakdown(r)}</span>
-                        <span className="w-20 shrink-0 text-right text-muted-foreground tabular-nums">{r.date}</span>
-                        <span className="w-32 shrink-0 truncate text-right text-muted-foreground tabular-nums">{metricSummary(r.report, asMetrics(r.metrics))}</span>
-                      </li>
-                    ))}
-                  </ul>
+                    <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                      {rows.length.toLocaleString()} rows
+                      <IconChevronDown className={`size-3 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                    </span>
+                  </button>
+                  {isOpen ? (
+                    <ul className="max-h-[520px] space-y-1 overflow-y-auto pr-1">
+                      {rows.map((r, i) => (
+                        <li key={`${r.report}-${r.dimension}-${r.dimension_value}-${i}`} className="flex items-center gap-2 text-xs">
+                          <span className="min-w-0 flex-1 truncate text-foreground/80">{labelForBreakdown(r)}</span>
+                          <span className="w-20 shrink-0 text-right text-muted-foreground tabular-nums">{r.date}</span>
+                          <span className="w-32 shrink-0 truncate text-right text-muted-foreground tabular-nums">{metricSummary(r.report, asMetrics(r.metrics))}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground/70">Collapsed to keep the page responsive. Open to view all rows.</p>
+                  )}
                 </div>
               );
             })}
@@ -375,33 +400,49 @@ export function PlayReportsCard({
         <div className="mt-5 rounded-xl border bg-background/40 p-4">
           <div className="mb-3 flex items-center gap-2">
             <IconDatabase className="size-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Downloaded CSV files by year/month</h3>
+            <h3 className="text-sm font-semibold">Downloaded CSV index by year/month</h3>
           </div>
           <div className="space-y-3">
             {groupedFiles.map(([year, months]) => (
               <div key={year}>
                 <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold"><IconWorld className="size-3.5" /> {year}</p>
                 <div className="grid gap-2 md:grid-cols-2">
-                  {[...months.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([month, rows]) => (
-                    <div key={`${year}-${month}`} className="rounded-lg border bg-card p-2.5">
-                      <div className="mb-1.5 flex items-center justify-between">
-                        <span className="text-xs font-medium">{year}-{month}</span>
-                        <span className="text-[10px] text-muted-foreground">{rows.length} CSVs</span>
+                  {[...months.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([month, rows]) => {
+                    const monthKey = `${year}-${month}`;
+                    const isOpen = Boolean(openFileMonths[monthKey]);
+                    return (
+                      <div key={monthKey} className="rounded-lg border bg-card p-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setOpenFileMonths((v) => ({ ...v, [monthKey]: !v[monthKey] }))}
+                          className="mb-1.5 flex w-full items-center justify-between text-left"
+                          aria-expanded={isOpen}
+                        >
+                          <span className="text-xs font-medium">{monthKey}</span>
+                          <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                            {rows.length} CSVs
+                            <IconChevronDown className={`size-3 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                          </span>
+                        </button>
+                        {isOpen ? (
+                          <ul className="max-h-[360px] space-y-1 overflow-y-auto pr-1">
+                            {rows.map((f) => (
+                              <li key={f.object_path} className="flex items-center gap-2 text-[11px]">
+                                <span className="min-w-0 flex-1 truncate" title={f.object_path}>{nice(f.report)} · {nice(f.dimension)}</span>
+                                <span className="text-muted-foreground tabular-nums">{Number(f.rows_count ?? 0).toLocaleString()} rows</span>
+                                <span className="text-muted-foreground">{formatBytes(f.size_bytes)}</span>
+                                <span className={`rounded-full px-1.5 py-0.5 ${f.status === "failed" ? "bg-red-500/10 text-red-600" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"}`}>
+                                  {f.status ?? "parsed"}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-[11px] text-muted-foreground/70">Collapsed. Open to view all CSV files for this month.</p>
+                        )}
                       </div>
-                      <ul className="space-y-1">
-                        {rows.map((f) => (
-                          <li key={f.object_path} className="flex items-center gap-2 text-[11px]">
-                            <span className="min-w-0 flex-1 truncate" title={f.object_path}>{nice(f.report)} · {nice(f.dimension)}</span>
-                            <span className="text-muted-foreground tabular-nums">{Number(f.rows_count ?? 0).toLocaleString()} rows</span>
-                            <span className="text-muted-foreground">{formatBytes(f.size_bytes)}</span>
-                            <span className={`rounded-full px-1.5 py-0.5 ${f.status === "failed" ? "bg-red-500/10 text-red-600" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"}`}>
-                              {f.status ?? "parsed"}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ))}
