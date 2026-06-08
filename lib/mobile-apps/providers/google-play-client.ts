@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { google } from "googleapis";
-import type { androidpublisher_v3 } from "googleapis";
+// Use the auth helper re-exported by the scoped package so the google-auth-library
+// version matches the one the client expects (avoids a type/instance mismatch).
+import { androidpublisher, auth, type androidpublisher_v3 } from "@googleapis/androidpublisher";
 import type { GoogleConfig } from "@/lib/mobile-apps/config";
 
 /** The single OAuth scope the Android Publisher reviews API requires. */
@@ -35,6 +36,6 @@ function loadServiceAccount(cfg: GoogleConfig): Record<string, unknown> {
  */
 export function createAndroidPublisherClient(cfg: GoogleConfig): androidpublisher_v3.Androidpublisher {
   const credentials = loadServiceAccount(cfg);
-  const auth = new google.auth.GoogleAuth({ credentials, scopes: [ANDROID_PUBLISHER_SCOPE] });
-  return google.androidpublisher({ version: "v3", auth });
+  const googleAuth = new auth.GoogleAuth({ credentials, scopes: [ANDROID_PUBLISHER_SCOPE] });
+  return androidpublisher({ version: "v3", auth: googleAuth });
 }

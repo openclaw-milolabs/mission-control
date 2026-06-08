@@ -1,4 +1,4 @@
-import type { androidpublisher_v3 } from "googleapis";
+import type { androidpublisher_v3 } from "@googleapis/androidpublisher";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
 import { createAndroidPublisherClient } from "@/lib/mobile-apps/providers/google-play-client";
 import type { ListingRef, RawReview, ReviewProvider } from "@/lib/mobile-apps/types";
