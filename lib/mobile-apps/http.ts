@@ -16,7 +16,7 @@ export async function fetchWithRetry(
     try {
       const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
       if ((res.status === 429 || res.status >= 500) && attempt < retries) {
-        await delay(retryDelayMs(res, attempt));
+        await sleep(retryDelayMs(res, attempt));
         continue;
       }
       return res;
@@ -24,7 +24,7 @@ export async function fetchWithRetry(
       // Network error / timeout (AbortError) — retry a couple of times.
       lastErr = err;
       if (attempt < retries) {
-        await delay(300 * 2 ** attempt);
+        await sleep(300 * 2 ** attempt);
         continue;
       }
       throw err;
@@ -33,12 +33,36 @@ export async function fetchWithRetry(
   throw lastErr instanceof Error ? lastErr : new Error("Request failed");
 }
 
+/**
+ * Retry a promise-returning op while `shouldRetry(err)` holds, with capped
+ * exponential backoff. Used for non-fetch clients (e.g. googleapis), where each
+ * attempt keeps its own per-call timeout.
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  shouldRetry: (err: unknown) => boolean,
+  opts: { retries?: number } = {},
+): Promise<T> {
+  const retries = opts.retries ?? 2;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt < retries && shouldRetry(err)) {
+        await sleep(Math.min(500 * 2 ** attempt, 8_000));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 function retryDelayMs(res: Response, attempt: number): number {
   const ra = Number(res.headers.get("retry-after"));
   if (Number.isFinite(ra) && ra > 0) return Math.min(ra * 1000, 10_000);
   return Math.min(500 * 2 ** attempt, 8_000);
 }
 
-function delay(ms: number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

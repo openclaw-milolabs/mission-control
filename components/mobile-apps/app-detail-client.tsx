@@ -29,6 +29,20 @@ type Listing = {
 
 type TerritoryRating = { territory: string; avg: number | null; count: number | null };
 
+/** jsonb can arrive as an array, a JSON string, or null depending on the driver. */
+function asTerritoryRatings(v: unknown): TerritoryRating[] {
+  if (Array.isArray(v)) return v as TerritoryRating[];
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? (parsed as TerritoryRating[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 type Summary = {
   store: string;
   total: number;
@@ -233,10 +247,11 @@ export function AppDetailClient({ appId }: { appId: string }) {
       const json = await res.json();
       if (json.ok) {
         setApp(json.app ?? null);
-        setListings(json.listings ?? []);
-        setSummary(json.summary ?? []);
-        setTrend(json.trend ?? []);
-        setSyncRuns(json.syncRuns ?? []);
+        const rawListings = (Array.isArray(json.listings) ? json.listings : []) as Listing[];
+        setListings(rawListings.map((l) => ({ ...l, official_ratings: asTerritoryRatings(l.official_ratings) })));
+        setSummary(Array.isArray(json.summary) ? json.summary : []);
+        setTrend(Array.isArray(json.trend) ? json.trend : []);
+        setSyncRuns(Array.isArray(json.syncRuns) ? json.syncRuns : []);
         setNegativeThreshold(json.negativeThreshold ?? 3);
       } else {
         toast.error(json.error ?? "Failed to load app");

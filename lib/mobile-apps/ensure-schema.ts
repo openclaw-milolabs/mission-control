@@ -36,9 +36,17 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
   await sql`CREATE INDEX IF NOT EXISTS mobile_app_listings_app_idx ON mobile_app_listings(mobile_app_id)`;
   // Official per-storefront ratings (Apple iTunes Lookup): [{territory, avg, count}].
   await sql`ALTER TABLE mobile_app_listings ADD COLUMN IF NOT EXISTS official_ratings jsonb`;
-  // Backfill the store CHECK on pre-existing tables (idempotent).
-  await sql`ALTER TABLE mobile_app_listings DROP CONSTRAINT IF EXISTS mobile_app_listings_store_check`.catch(() => null);
-  await sql`ALTER TABLE mobile_app_listings ADD CONSTRAINT mobile_app_listings_store_check CHECK (store IN ('apple','google'))`.catch(() => null);
+  // Backfill the store CHECK on pre-existing tables — add ONLY if missing, never
+  // drop (so a sync can't briefly run against a table with no constraint, and a
+  // failed add leaves any existing constraint intact).
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mobile_app_listings_store_check') THEN
+        ALTER TABLE mobile_app_listings ADD CONSTRAINT mobile_app_listings_store_check CHECK (store IN ('apple','google'));
+      END IF;
+    END $$;
+  `.catch(() => null);
   await sql`
     CREATE TABLE IF NOT EXISTS app_reviews (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -109,7 +117,7 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     CREATE TABLE IF NOT EXISTS app_review_sync_runs (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
-      store text NOT NULL,
+      store text NOT NULL CHECK (store IN ('apple','google')),
       app_identifier text NOT NULL,
       status text NOT NULL CHECK (status IN ('running','success','failed')),
       started_at timestamptz NOT NULL DEFAULT now(),
@@ -121,5 +129,14 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS app_review_sync_runs_listing_idx ON app_review_sync_runs(listing_id, started_at desc)`;
+  // Backfill the store CHECK on pre-existing sync_runs tables — add only if missing.
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_review_sync_runs_store_check') THEN
+        ALTER TABLE app_review_sync_runs ADD CONSTRAINT app_review_sync_runs_store_check CHECK (store IN ('apple','google'));
+      END IF;
+    END $$;
+  `.catch(() => null);
   _ensured = true;
 }

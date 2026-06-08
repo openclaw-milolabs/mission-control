@@ -1,7 +1,14 @@
 import type { androidpublisher_v3 } from "@googleapis/androidpublisher";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
 import { createAndroidPublisherClient } from "@/lib/mobile-apps/providers/google-play-client";
+import { withRetry } from "@/lib/mobile-apps/http";
 import type { ListingRef, RawReview, ReviewProvider } from "@/lib/mobile-apps/types";
+
+/** Numeric HTTP status from a googleapis/Gaxios error, or NaN. */
+function googleErrorStatus(err: unknown): number {
+  const e = err as { code?: number | string; response?: { status?: number } };
+  return Number(e?.response?.status ?? e?.code);
+}
 
 type GpReview = androidpublisher_v3.Schema$Review;
 
@@ -47,8 +54,8 @@ export function mapGoogleReviews(raw: GpReview[]): RawReview[] {
 
 /** Turn a googleapis/Gaxios error into a clean, secret-free message. */
 function cleanGoogleError(err: unknown, packageName: string): Error {
-  const e = err as { code?: number | string; response?: { status?: number }; message?: string };
-  const status = Number(e?.response?.status ?? e?.code);
+  const e = err as { message?: string };
+  const status = googleErrorStatus(err);
   if (status === 401 || status === 403)
     return new Error(
       `Google Play API rejected the request for "${packageName}" (auth/permission). Confirm the service account is linked to this app with review access.`,
@@ -74,7 +81,15 @@ export class GoogleProvider implements ReviewProvider {
     let token: string | undefined;
     try {
       for (let page = 0; page < cfg.sync.maxPages; page++) {
-        const res = await client.reviews.list({ packageName, maxResults: 100, token }, { timeout: 30_000 });
+        // Retry transient rate-limit / server errors; each attempt keeps a 30s timeout.
+        const res = await withRetry(
+          () => client.reviews.list({ packageName, maxResults: 100, token }, { timeout: 30_000 }),
+          (err) => {
+            const s = googleErrorStatus(err);
+            return s === 429 || (s >= 500 && s < 600);
+          },
+          { retries: 2 },
+        );
         all.push(...mapGoogleReviews(res.data.reviews ?? []));
         token = res.data.tokenPagination?.nextPageToken ?? undefined;
         if (!token) break;

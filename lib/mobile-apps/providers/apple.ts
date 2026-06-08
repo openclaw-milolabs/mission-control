@@ -96,10 +96,12 @@ export class AppleProvider implements ReviewProvider {
     const token = await createAppStoreConnectToken(cfg.apple);
 
     const all: RawReview[] = [];
-    // include=response pulls developer replies into the `included` payload (read-only).
+    // include=response pulls developer replies into the `included` payload, and
+    // fields[customerReviewResponses]=responseBody scopes them to just the body
+    // we map. Read-only — we never create or modify responses.
     let url: string | null = `${APPSTORE_CONNECT_BASE_URL}/v1/apps/${encodeURIComponent(
       appId,
-    )}/customerReviews?limit=200&sort=-createdDate&include=response`;
+    )}/customerReviews?limit=200&sort=-createdDate&include=response&fields[customerReviewResponses]=responseBody`;
 
     for (let page = 0; page < cfg.sync.maxPages && url; page++) {
       const res: Response = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${token}` } });

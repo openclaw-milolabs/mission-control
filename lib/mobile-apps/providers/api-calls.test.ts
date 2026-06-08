@@ -73,6 +73,25 @@ describe("GoogleProvider.fetchReviews (official Android Publisher API)", () => {
     expect(reviews).toHaveLength(1);
   });
 
+  it("retries reviews.list once on a 429 then succeeds", async () => {
+    loadCfg.mockReturnValue(cfg());
+    const list = vi
+      .fn()
+      .mockRejectedValueOnce({ response: { status: 429 } })
+      .mockResolvedValueOnce({
+        data: { reviews: [{ reviewId: "r1", comments: [{ userComment: { starRating: 5 } }] }], tokenPagination: {} },
+      });
+    const reply = vi.fn();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    makeClient.mockReturnValue({ reviews: { list, reply } } as any);
+
+    const reviews = await new GoogleProvider().fetchReviews({ store: "google", storeAppId: "com.example.app", country: "us" });
+
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(reply).not.toHaveBeenCalled();
+    expect(reviews).toHaveLength(1);
+  });
+
   it("throws a clean error when Google is not configured", async () => {
     loadCfg.mockReturnValue(cfg({ google: { ...cfg().google, configured: false, error: "Missing required Google Play config: GOOGLE_PLAY_PACKAGE_NAME" } }));
     await expect(
@@ -95,8 +114,16 @@ describe("AppleProvider.fetchReviews (official App Store Connect API)", () => {
     const reviews = await new AppleProvider().fetchReviews({ store: "apple", storeAppId: "9999", country: "us" });
 
     const calledUrls = fetchSpy.mock.calls.map((c) => String(c[0]));
-    expect(calledUrls.some((u) => u.includes("/v1/apps/9999/customerReviews"))).toBe(true);
-    expect(calledUrls.some((u) => u.includes("customerReviewResponses"))).toBe(false);
+    const reviewsUrl = calledUrls.find((u) => u.includes("/v1/apps/9999/customerReviews"));
+    expect(reviewsUrl).toBeTruthy();
+    // Responses are READ explicitly via include + a scoped fields param.
+    expect(reviewsUrl).toContain("include=response");
+    expect(reviewsUrl).toContain("fields[customerReviewResponses]=responseBody");
+    // Never hit the response WRITE endpoint, and every call is a read.
+    expect(calledUrls.some((u) => /\/v1\/customerReviewResponses(\?|\/|$)/.test(u))).toBe(false);
+    for (const c of fetchSpy.mock.calls) {
+      expect((c[1]?.method ?? "GET").toUpperCase()).toBe("GET");
+    }
     expect(reviews).toHaveLength(1);
   });
 
