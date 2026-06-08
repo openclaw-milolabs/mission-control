@@ -700,6 +700,9 @@ export async function POST(request: Request) {
       for (let i = 0; i < orderedColumnIds.length; i += 1) {
         await sql`update columns set position=${i}, updated_at=now() where id=${String(orderedColumnIds[i])}`;
       }
+      if (orderedColumnIds.length > 0) {
+        await audit({ event: 'Lists reordered', details: `${orderedColumnIds.length} lists`, level: 'info' });
+      }
       return ok();
     }
 
@@ -733,7 +736,7 @@ export async function POST(request: Request) {
       `;
       const created = rows[0];
       if (created?.id) {
-        await audit({ event: 'Ticket created', details: created.title || title, level: 'success' });
+        await audit({ event: 'Ticket created', details: created.title || title, level: 'success', ticketId: String(created.id) });
       }
       return ok({ ticket: created });
     }
@@ -831,10 +834,32 @@ export async function POST(request: Request) {
 
     if (action === "reorderTickets") {
       const columnId = String(body.columnId || "");
-      const orderedTicketIds = Array.isArray(body.orderedTicketIds) ? body.orderedTicketIds : [];
+      const orderedTicketIds = Array.isArray(body.orderedTicketIds) ? body.orderedTicketIds.map(String) : [];
       if (!columnId) return fail("Column id is required.");
+
+      // Work out which card actually moved (the one with the largest position
+      // delta) so we can attribute the reorder to a real ticket in the feed.
+      const beforeRows = await sql`select id, position from tickets where column_id=${columnId} order by position asc`;
+      const oldIndex = new Map(beforeRows.map((r, i) => [String(r.id), i]));
+      let movedId: string | null = null;
+      let maxDelta = 0;
+      orderedTicketIds.forEach((id, newIdx) => {
+        const oldIdx = oldIndex.get(id);
+        if (oldIdx == null) return;
+        const delta = Math.abs(oldIdx - newIdx);
+        if (delta > maxDelta) {
+          maxDelta = delta;
+          movedId = id;
+        }
+      });
+
       for (let i = 0; i < orderedTicketIds.length; i += 1) {
-        await sql`update tickets set position=${i}, updated_at=now() where id=${String(orderedTicketIds[i])} and column_id=${columnId}`;
+        await sql`update tickets set position=${i}, updated_at=now() where id=${orderedTicketIds[i]} and column_id=${columnId}`;
+      }
+
+      if (movedId && maxDelta > 0) {
+        const newPos = orderedTicketIds.indexOf(movedId) + 1;
+        await audit({ event: 'Ticket reordered', details: `Moved to position ${newPos}.`, level: 'info', ticketId: movedId });
       }
       return ok();
     }
@@ -880,6 +905,7 @@ export async function POST(request: Request) {
         returning *
       `;
       await sql`update tickets set attachments_count = coalesce((select count(*) from ticket_attachments where ticket_id=${ticketId}), 0), updated_at=now() where id=${ticketId}`;
+      await audit({ event: 'Attachment added', details: file.name, level: 'success', ticketId });
       return ok({ attachment: rows[0] });
     }
 
@@ -925,15 +951,17 @@ export async function POST(request: Request) {
         returning *
       `;
       await sql`update tickets set attachments_count = coalesce((select count(*) from ticket_attachments where ticket_id=${ticketId}), 0), updated_at=now() where id=${ticketId}`;
+      await audit({ event: 'Attachment added', details: fileName, level: 'success', ticketId });
       return ok({ attachment: rows[0] });
     }
 
     if (action === "deleteAttachment") {
       const attachmentId = String(body.attachmentId || "");
-      const rows = await sql`delete from ticket_attachments where id=${attachmentId} returning ticket_id`;
+      const rows = await sql`delete from ticket_attachments where id=${attachmentId} returning ticket_id, name`;
       const ticketId = rows[0]?.ticket_id;
       if (ticketId) {
         await sql`update tickets set attachments_count = coalesce((select count(*) from ticket_attachments where ticket_id=${ticketId}), 0), updated_at=now() where id=${ticketId}`;
+        await audit({ event: 'Attachment removed', details: String(rows[0]?.name ?? ""), level: 'warning', ticketId: String(ticketId) });
       }
       return ok();
     }
@@ -951,6 +979,7 @@ export async function POST(request: Request) {
       if (!ticketId || !title) return fail("Ticket and title are required.");
       const posRows = await sql`select coalesce(max(position), -1) + 1 as pos from ticket_subtasks where ticket_id=${ticketId} and checklist_name=${checklistName}`;
       const rows = await sql`insert into ticket_subtasks (ticket_id, title, position, checklist_name) values (${ticketId}, ${title}, ${Number(posRows[0]?.pos ?? 0)}, ${checklistName}) returning *`;
+      await audit({ event: 'Checklist item added', details: title, level: 'info', ticketId });
       return ok({ subtask: rows[0] });
     }
 
@@ -958,12 +987,21 @@ export async function POST(request: Request) {
       const subtaskId = String(body.subtaskId || "");
       const checklistName = body.checklistName != null ? String(body.checklistName).trim() || null : null;
       const rows = await sql`update ticket_subtasks set title=coalesce(${body.title || null}, title), completed=coalesce(${body.completed ?? null}, completed), checklist_name=coalesce(${checklistName}, checklist_name), updated_at=now() where id=${subtaskId} returning *`;
+      const st = rows[0] as { ticket_id?: string; title?: string; completed?: boolean } | undefined;
+      if (st?.ticket_id) {
+        const event = body.completed === true ? 'Checklist item completed' : body.completed === false ? 'Checklist item reopened' : 'Checklist item updated';
+        await audit({ event, details: String(st.title ?? ""), level: 'info', ticketId: String(st.ticket_id) });
+      }
       return ok({ subtask: rows[0] });
     }
 
     if (action === "deleteSubtask") {
       const subtaskId = String(body.subtaskId || "");
-      await sql`delete from ticket_subtasks where id=${subtaskId}`;
+      const rows = await sql`delete from ticket_subtasks where id=${subtaskId} returning ticket_id, title`;
+      const st = rows[0] as { ticket_id?: string; title?: string } | undefined;
+      if (st?.ticket_id) {
+        await audit({ event: 'Checklist item removed', details: String(st.title ?? ""), level: 'warning', ticketId: String(st.ticket_id) });
+      }
       return ok();
     }
 
@@ -973,6 +1011,7 @@ export async function POST(request: Request) {
       const newName = String(body.newName || "").trim();
       if (!ticketId || !oldName || !newName) return fail("ticketId, oldName, and newName are required.");
       await sql`update ticket_subtasks set checklist_name=${newName}, updated_at=now() where ticket_id=${ticketId} and checklist_name=${oldName}`;
+      await audit({ event: 'Checklist renamed', details: `${oldName} → ${newName}`, level: 'info', ticketId });
       return ok();
     }
 
@@ -981,6 +1020,7 @@ export async function POST(request: Request) {
       const checklistName = String(body.checklistName || "").trim();
       if (!ticketId || !checklistName) return fail("ticketId and checklistName are required.");
       await sql`delete from ticket_subtasks where ticket_id=${ticketId} and checklist_name=${checklistName}`;
+      await audit({ event: 'Checklist deleted', details: checklistName, level: 'warning', ticketId });
       return ok();
     }
 
@@ -999,6 +1039,8 @@ export async function POST(request: Request) {
       const commentRows = await sql`insert into ticket_comments (ticket_id, author_id, author_name, content) values (${ticketId}, ${authorId}, ${authorName}, ${content}) returning *`;
       const comment = commentRows[0];
       await sql`update tickets set comments_count = coalesce((select count(*) from ticket_comments where ticket_id=${ticketId}), 0), updated_at=now() where id=${ticketId}`;
+      const commentPreview = content.length > 160 ? `${content.slice(0, 157)}...` : content;
+      await audit({ event: 'Comment added', details: commentPreview, level: 'info', ticketId });
 
       // Resolve the ticket's board so we know which assignees are eligible to be mentioned.
       const ticketCtx = await sql`select board_id from tickets where id=${ticketId} limit 1`;
@@ -1040,6 +1082,7 @@ export async function POST(request: Request) {
       const ticketId = rows[0]?.ticket_id;
       if (ticketId) {
         await sql`update tickets set comments_count = coalesce((select count(*) from ticket_comments where ticket_id=${ticketId}), 0), updated_at=now() where id=${ticketId}`;
+        await audit({ event: 'Comment deleted', level: 'warning', ticketId: String(ticketId) });
       }
       return ok();
     }

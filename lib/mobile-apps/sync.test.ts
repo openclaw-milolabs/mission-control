@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/local-db", () => ({ getSql: vi.fn() }));
 vi.mock("@/lib/mobile-apps/config", () => ({ loadMobileReviewsConfig: vi.fn() }));
 vi.mock("@/lib/mobile-apps/providers", () => ({ getProvider: vi.fn() }));
-vi.mock("@/lib/mobile-apps/alerts", () => ({ evaluateAndFire: vi.fn(async () => {}) }));
 
 import { getSql } from "@/lib/local-db";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";

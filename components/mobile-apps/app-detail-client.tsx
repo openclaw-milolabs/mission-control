@@ -2,78 +2,145 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from "recharts";
-import { Button } from "@/components/ui/button";
-import { ReviewCard, type ReviewRow } from "@/components/mobile-apps/review-card";
+import { IconBrandApple, IconBrandGooglePlay, IconStarFilled } from "@tabler/icons-react";
+import { PageHeader } from "@/components/layout/page-header";
 import { StoreConfigBanner } from "@/components/mobile-apps/store-config-banner";
+import { ReviewsStream } from "@/components/mobile-apps/reviews-stream";
+import { RatingDistribution } from "@/components/mobile-apps/rating-distribution";
+import { RatingTrend, type TrendPoint } from "@/components/mobile-apps/rating-trend";
+import { SentimentDigest } from "@/components/mobile-apps/sentiment-digest";
 import { useModules } from "@/components/modules/modules-provider";
 import { toast } from "sonner";
+
+type StoreKey = "apple" | "google";
+type Filter = "" | StoreKey;
 
 type Listing = {
   id: string;
   store: string;
+  store_app_id: string;
+  country: string;
   current_rating: number | null;
   ratings_count: number | null;
   last_synced_at: string | null;
 };
 
-type Snapshot = {
-  listing_id: string;
+type Summary = {
   store: string;
-  captured_at: string;
+  total: number;
   avg_rating: number | null;
-  ratings_count: number | null;
-  histogram: Record<string, number> | null;
+  r1: number; r2: number; r3: number; r4: number; r5: number;
+  negative: number;
+  latest_review_at: string | null;
 };
+
+type TrendRow = { store: string; day: string; avg: number; count: number };
 
 type SyncRun = {
   listing_id: string;
   store: string;
   status: "running" | "success" | "failed";
-  started_at: string;
   finished_at: string | null;
   fetched_count: number;
   upserted_count: number;
   error_message: string | null;
 };
 
-const METRIC_LABEL: Record<string, string> = {
-  avg_rating: "Avg rating",
-  one_star_spike: "1★ reviews today",
-  review_volume: "Reviews today",
+const STORE_META: Record<StoreKey, { label: string; Icon: typeof IconBrandApple }> = {
+  apple: { label: "App Store", Icon: IconBrandApple },
+  google: { label: "Google Play", Icon: IconBrandGooglePlay },
 };
-const OP_SYMBOL: Record<string, string> = {
-  lt: "<", lte: "≤", gt: ">", gte: "≥", eq: "=",
-};
-function formatRule(metric: string, operator: string, threshold: number): string {
-  return `${METRIC_LABEL[metric] ?? metric} ${OP_SYMBOL[operator] ?? operator} ${threshold}`;
+
+function lastSync(iso: string | null): string {
+  if (!iso) return "never";
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+  return `${Math.floor(mins / 1440)}d ago`;
+}
+
+function Stars({ n, size = "size-4" }: { n: number | null; size?: string }) {
+  const count = Math.max(0, Math.min(5, Math.round(n ?? 0)));
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <IconStarFilled key={i} className={`${size} ${i < count ? "text-amber-500" : "text-foreground/15"}`} />
+      ))}
+    </span>
+  );
+}
+
+function StoreScoreCard({
+  store,
+  summary,
+  listing,
+  run,
+  negativeThreshold,
+}: {
+  store: StoreKey;
+  summary: Summary | undefined;
+  listing: Listing | undefined;
+  run: SyncRun | undefined;
+  negativeThreshold: number;
+}) {
+  const { label, Icon } = STORE_META[store];
+  const counts: [number, number, number, number, number] = [
+    summary?.r1 ?? 0, summary?.r2 ?? 0, summary?.r3 ?? 0, summary?.r4 ?? 0, summary?.r5 ?? 0,
+  ];
+  const avg = summary?.avg_rating ?? null;
+  const total = summary?.total ?? 0;
+  const failed = run?.status === "failed";
+
+  return (
+    <div className="rounded-xl border bg-card p-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <Icon className="size-4" />
+          {label}
+        </div>
+        <span
+          className={`flex items-center gap-1.5 text-xs ${failed ? "text-red-600 dark:text-red-400" : "text-muted-foreground"}`}
+          title={run?.error_message ?? undefined}
+        >
+          <span className={`size-1.5 rounded-full ${failed ? "bg-red-500" : "bg-emerald-500"}`} />
+          {failed ? "sync failed" : lastSync(listing?.last_synced_at ?? null)}
+        </span>
+      </div>
+
+      <div className="mt-3 flex items-end gap-3">
+        <span className="text-4xl font-semibold leading-none tabular-nums">{avg != null ? avg.toFixed(2) : "—"}</span>
+        <div className="pb-0.5">
+          <Stars n={avg} />
+          <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+            {total.toLocaleString()} reviews
+            {summary && summary.negative > 0 ? (
+              <span className="text-red-600/90 dark:text-red-400/90"> · {summary.negative} ≤{negativeThreshold}★</span>
+            ) : null}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <RatingDistribution counts={counts} />
+      </div>
+    </div>
+  );
 }
 
 export function AppDetailClient({ appId }: { appId: string }) {
   const router = useRouter();
   const { ready, isEnabled } = useModules();
-  const [app, setApp] = useState<{ id: string; name: string; icon_url: string | null } | null>(
-    null,
-  );
+  const [app, setApp] = useState<{ id: string; name: string; icon_url: string | null } | null>(null);
   const [listings, setListings] = useState<Listing[]>([]);
-  const [reviews, setReviews] = useState<ReviewRow[]>([]);
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [summary, setSummary] = useState<Summary[]>([]);
+  const [trend, setTrend] = useState<TrendRow[]>([]);
   const [syncRuns, setSyncRuns] = useState<SyncRun[]>([]);
-  const [store, setStore] = useState<"" | "apple" | "google">("");
-  const [minRating, setMinRating] = useState(0);
-  const [syncing, setSyncing] = useState(false);
+  const [negativeThreshold, setNegativeThreshold] = useState(3);
+  const [store, setStore] = useState<Filter>("");
+  const [refreshKey, setRefreshKey] = useState(0);
   const [digest, setDigest] = useState<{ summary_md: string; created_at: string } | null>(null);
   const [genBusy, setGenBusy] = useState(false);
-  const [rules, setRules] = useState<Array<{ id: string; metric: string; operator: string; threshold: number; enabled: boolean; mobile_app_id: string | null }>>([]);
-  const [newThreshold, setNewThreshold] = useState(4.0);
 
   useEffect(() => {
     if (ready && !isEnabled("mobile-apps")) router.replace("/settings#modules");
@@ -81,45 +148,32 @@ export function AppDetailClient({ appId }: { appId: string }) {
 
   const load = useCallback(async () => {
     try {
-      const params = new URLSearchParams();
-      if (store) params.set("store", store);
-      if (minRating) params.set("minRating", String(minRating));
-      const res = await fetch(`/api/mobile-apps/${appId}?${params.toString()}`, {
-        cache: "no-store",
-      });
-      const json = (await res.json()) as {
-        ok: boolean;
-        error?: string;
-        app?: { id: string; name: string; icon_url: string | null };
-        listings?: Listing[];
-        reviews?: ReviewRow[];
-        snapshots?: Snapshot[];
-        syncRuns?: SyncRun[];
-      };
+      const res = await fetch(`/api/mobile-apps/${appId}`, { cache: "no-store" });
+      const json = await res.json();
       if (json.ok) {
         setApp(json.app ?? null);
         setListings(json.listings ?? []);
-        setReviews(json.reviews ?? []);
-        setSnapshots(json.snapshots ?? []);
+        setSummary(json.summary ?? []);
+        setTrend(json.trend ?? []);
         setSyncRuns(json.syncRuns ?? []);
+        setNegativeThreshold(json.negativeThreshold ?? 3);
       } else {
         toast.error(json.error ?? "Failed to load app");
       }
     } catch {
       toast.error("Failed to load app");
     }
-  }, [appId, store, minRating]);
+  }, [appId]);
 
   const loadRef = useRef(load);
   useEffect(() => {
     loadRef.current = load;
   });
-
   useEffect(() => {
     void load();
   }, [load]);
 
-  // Stale-while-revalidate: live sync this app on mount.
+  // Live sync on mount, then revalidate.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -128,23 +182,26 @@ export function AppDetailClient({ appId }: { appId: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ appId }),
       }).catch(() => null);
-      if (!cancelled) await load();
+      if (!cancelled) {
+        await loadRef.current();
+        setRefreshKey((k) => k + 1);
+      }
     })().catch(() => null);
     return () => {
       cancelled = true;
     };
-    // Intentionally omit `load` from deps: this sync must run once per appId,
-    // not on every filter change. load() is invoked explicitly after the sync.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId]);
 
-  // SSE live updates: reload when this app is synced in another tab/process.
+  // SSE live updates.
   useEffect(() => {
     const es = new EventSource("/api/mobile-apps/stream");
     es.addEventListener("change", (ev) => {
       try {
         const data = JSON.parse((ev as MessageEvent).data || "{}");
-        if (!data.appId || data.appId === appId) void loadRef.current();
+        if (!data.appId || data.appId === appId) {
+          void loadRef.current();
+          setRefreshKey((k) => k + 1);
+        }
       } catch {
         /* ignore */
       }
@@ -161,68 +218,9 @@ export function AppDetailClient({ appId }: { appId: string }) {
       /* ignore */
     }
   }, [appId]);
-
   useEffect(() => {
     void loadDigest();
   }, [loadDigest]);
-
-  const loadRules = useCallback(async () => {
-    try {
-      const res = await fetch("/api/mobile-apps/alerts", { cache: "no-store" });
-      const json = await res.json();
-      if (json.ok) setRules(json.rules);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-  useEffect(() => {
-    void loadRules();
-  }, [loadRules]);
-
-  async function addRule() {
-    try {
-      const res = await fetch("/api/mobile-apps/alerts", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mobileAppId: appId, metric: "avg_rating", operator: "lt", threshold: newThreshold }),
-      });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || "Failed");
-      await loadRules();
-      toast.success("Alert added");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to add alert");
-    }
-  }
-  async function deleteRule(id: string) {
-    try {
-      const res = await fetch("/api/mobile-apps/alerts", {
-        method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }),
-      });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || "Failed to delete alert");
-      await loadRules();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to delete alert");
-    }
-  }
-
-  async function refresh() {
-    setSyncing(true);
-    try {
-      await fetch("/api/mobile-apps/sync", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId, force: true }),
-      });
-      await load();
-      toast.success("Synced");
-    } catch {
-      toast.error("Sync failed");
-    } finally {
-      setSyncing(false);
-    }
-  }
 
   async function generate() {
     setGenBusy(true);
@@ -239,206 +237,164 @@ export function AppDetailClient({ appId }: { appId: string }) {
     }
   }
 
-  const chartData = useMemo(() => {
-    return snapshots
-      .filter((s) => !store || s.store === store)
-      .map((s) => ({
-        t: new Date(s.captured_at).toLocaleDateString(),
-        rating: s.avg_rating != null ? Number(s.avg_rating) : null,
-        store: s.store,
-      }));
-  }, [snapshots, store]);
+  const availableStores = useMemo(
+    () => listings.map((l) => l.store).filter((s): s is StoreKey => s === "apple" || s === "google"),
+    [listings],
+  );
+  const shownStores = store ? [store] : availableStores;
 
-  const histogram = useMemo(() => {
-    const filtered = snapshots.filter((s) => (!store || s.store === store) && s.histogram);
-    const latest = filtered[filtered.length - 1];
-    return latest?.histogram ?? null;
-  }, [snapshots, store]);
+  const combined = useMemo(() => {
+    const rows = store ? summary.filter((s) => s.store === store) : summary;
+    const total = rows.reduce((a, r) => a + r.total, 0);
+    const negative = rows.reduce((a, r) => a + r.negative, 0);
+    const weighted = rows.reduce((a, r) => a + (r.avg_rating ?? 0) * r.total, 0);
+    return { total, negative, avg: total > 0 ? weighted / total : null };
+  }, [summary, store]);
 
-  const histogramTotal = useMemo(
-    () => (histogram ? Object.values(histogram).reduce((a, b) => a + Number(b), 0) || 1 : 1),
-    [histogram],
+  const trendData: TrendPoint[] = useMemo(() => {
+    const rows = store ? trend.filter((t) => t.store === store) : trend;
+    if (store) return rows.map((t) => ({ day: t.day, avg: t.avg, count: t.count }));
+    const byDay = new Map<string, { sum: number; count: number }>();
+    for (const r of rows) {
+      const b = byDay.get(r.day) ?? { sum: 0, count: 0 };
+      b.sum += r.avg * r.count;
+      b.count += r.count;
+      byDay.set(r.day, b);
+    }
+    return [...byDay.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([day, b]) => ({ day, avg: Math.round((b.sum / b.count) * 100) / 100, count: b.count }));
+  }, [trend, store]);
+
+  const lastSyncedAt = useMemo(
+    () => listings.map((l) => l.last_synced_at).filter(Boolean).sort().at(-1) ?? null,
+    [listings],
+  );
+
+  const headerActions = (
+    <div className="flex items-center gap-0.5 rounded-lg bg-muted/60 p-0.5">
+      {([["", "All"], ["apple", "App Store"], ["google", "Google Play"]] as const).map(([val, label]) => (
+        <button
+          key={val}
+          onClick={() => setStore(val)}
+          className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+            store === val ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
   );
 
   return (
-    <div className="flex flex-col gap-4 overflow-auto p-4 md:p-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          {app?.icon_url ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={app.icon_url} alt="" className="size-10 rounded-lg" />
-          ) : null}
-          <h1 className="text-xl font-semibold">{app?.name ?? "App"}</h1>
-        </div>
-        <Button variant="outline" onClick={() => void refresh()} disabled={syncing}>
-          {syncing ? "Syncing…" : "Refresh now"}
-        </Button>
-      </div>
+    <>
+      <PageHeader
+        page={app?.name ?? "App"}
+        crumbs={[{ label: "Mobile Apps", href: "/mobile-apps" }]}
+        actions={headerActions}
+      />
 
-      <StoreConfigBanner />
-
-      {syncRuns.length > 0 ? (
-        <div className="rounded-xl border bg-card p-4">
-          <h2 className="mb-2 text-sm font-medium">Sync health</h2>
-          <ul className="space-y-1 text-xs">
-            {syncRuns.map((run) => (
-              <li key={run.listing_id} className="flex flex-wrap items-center gap-2">
-                <span className="w-20 capitalize text-muted-foreground">{run.store}</span>
-                <span
-                  className={
-                    run.status === "success"
-                      ? "rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-400"
-                      : run.status === "failed"
-                        ? "rounded bg-red-500/15 px-1.5 py-0.5 text-red-700 dark:text-red-400"
-                        : "rounded bg-muted px-1.5 py-0.5 text-muted-foreground"
-                  }
-                >
-                  {run.status}
-                </span>
-                <span className="text-muted-foreground">
-                  {run.finished_at ? new Date(run.finished_at).toLocaleString() : "in progress"}
-                </span>
-                {run.status === "success" ? (
-                  <span className="text-muted-foreground">
-                    · {run.fetched_count} fetched, {run.upserted_count} new
-                  </span>
-                ) : null}
-                {run.error_message ? (
-                  <span className="text-red-600 dark:text-red-400">· {run.error_message}</span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <select
-          aria-label="Filter by store"
-          className="rounded-md border bg-background px-2 py-1"
-          value={store}
-          onChange={(e) => setStore(e.target.value as "" | "apple" | "google")}
-        >
-          <option value="">All stores</option>
-          <option value="apple">App Store</option>
-          <option value="google">Google Play</option>
-        </select>
-        <select
-          aria-label="Minimum rating"
-          className="rounded-md border bg-background px-2 py-1"
-          value={minRating}
-          onChange={(e) => setMinRating(Number(e.target.value))}
-        >
-          <option value={0}>Any rating</option>
-          <option value={1}>★ 1+</option>
-          <option value={2}>★ 2+</option>
-          <option value={3}>★ 3+</option>
-          <option value={4}>★ 4+</option>
-          <option value={5}>★ 5 only</option>
-        </select>
-        {listings.map((l) => (
-          <span key={l.id} className="rounded-md border px-2 py-1 text-xs capitalize">
-            {l.store}: {l.current_rating?.toFixed(2) ?? "—"} (
-            {l.ratings_count?.toLocaleString() ?? "—"})
-          </span>
-        ))}
-      </div>
-
-      <div className="rounded-xl border bg-card p-4">
-        <h2 className="mb-2 text-sm font-medium">Rating over time</h2>
-        <div className="h-56">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="t" fontSize={11} />
-              <YAxis domain={[0, 5]} fontSize={11} />
-              <Tooltip />
-              <Line
-                type="monotone"
-                dataKey="rating"
-                stroke="var(--chart-1)"
-                dot={false}
-                connectNulls
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {histogram ? (
-        <div className="rounded-xl border bg-card p-4">
-          <h2 className="mb-2 text-sm font-medium">Star distribution</h2>
-          <div className="space-y-1">
-            {[5, 4, 3, 2, 1].map((star) => {
-              const v = Number(histogram[String(star)] ?? 0);
-              return (
-                <div key={star} className="flex items-center gap-2 text-xs">
-                  <span className="w-6">{star}★</span>
-                  <div className="h-2 flex-1 rounded bg-muted">
-                    <div
-                      className="h-2 rounded bg-amber-500"
-                      style={{ width: `${(v / histogramTotal) * 100}%` }}
-                    />
-                  </div>
-                  <span className="w-12 text-right text-muted-foreground">
-                    {v.toLocaleString()}
-                  </span>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
+        <div className="mx-auto flex max-w-6xl flex-col gap-5">
+          {/* Masthead */}
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              {app?.icon_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={app.icon_url} alt="" className="size-14 rounded-2xl border" />
+              ) : (
+                <div className="grid size-14 place-items-center rounded-2xl border bg-muted text-lg font-semibold text-muted-foreground">
+                  {(app?.name ?? "?").slice(0, 1).toUpperCase()}
                 </div>
-              );
-            })}
+              )}
+              <div>
+                <h1 className="text-2xl font-semibold tracking-tight">{app?.name ?? "App"}</h1>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  {availableStores.length > 0
+                    ? availableStores.map((s) => STORE_META[s].label).join(" · ")
+                    : "No store listings"}
+                  {lastSyncedAt ? ` · synced ${lastSync(lastSyncedAt)}` : ""}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-6">
+              <Metric value={combined.avg != null ? combined.avg.toFixed(2) : "—"} label="Avg rating" accent />
+              <div className="h-9 w-px bg-border" />
+              <Metric value={combined.total.toLocaleString()} label="Reviews" />
+              <div className="h-9 w-px bg-border" />
+              <Metric
+                value={combined.negative.toLocaleString()}
+                label={`Negative ≤${negativeThreshold}★`}
+                danger={combined.negative > 0}
+              />
+            </div>
+          </div>
+
+          <StoreConfigBanner />
+
+          {/* Store score cards */}
+          {shownStores.length > 0 ? (
+            <div className={`grid gap-4 ${shownStores.length > 1 ? "sm:grid-cols-2" : "max-w-md"}`}>
+              {shownStores.map((s) => (
+                <StoreScoreCard
+                  key={s}
+                  store={s}
+                  summary={summary.find((x) => x.store === s)}
+                  listing={listings.find((x) => x.store === s)}
+                  run={syncRuns.find((x) => x.store === s)}
+                  negativeThreshold={negativeThreshold}
+                />
+              ))}
+            </div>
+          ) : null}
+
+          {/* Main: reviews + rail */}
+          <div className="grid gap-5 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <ReviewsStream appId={appId} store={store} refreshKey={refreshKey} />
+            </div>
+            <div className="flex flex-col gap-5">
+              <section className="rounded-xl border bg-card p-4">
+                <h2 className="mb-3 text-sm font-semibold">Rating trend</h2>
+                <RatingTrend data={trendData} />
+              </section>
+              <SentimentDigest
+                summaryMd={digest?.summary_md ?? null}
+                createdAt={digest?.created_at ?? null}
+                busy={genBusy}
+                onGenerate={() => void generate()}
+              />
+            </div>
           </div>
         </div>
-      ) : null}
-
-      <div className="rounded-xl border bg-card p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-medium">Sentiment digest</h2>
-          <Button size="sm" variant="outline" onClick={() => void generate()} disabled={genBusy}>
-            {genBusy ? "Generating…" : "Generate digest now"}
-          </Button>
-        </div>
-        {digest ? (
-          <div className="prose prose-sm max-w-none whitespace-pre-wrap text-sm text-muted-foreground">
-            {digest.summary_md}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">No digest yet. Generate one from the latest reviews.</p>
-        )}
       </div>
+    </>
+  );
+}
 
-      <div className="rounded-xl border bg-card p-4">
-        <h2 className="mb-2 text-sm font-medium">Alerts</h2>
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
-          <span>Notify when average rating drops below</span>
-          <input
-            type="number" step="0.1" min={0} max={5}
-            aria-label="Average rating threshold"
-            className="w-20 rounded-md border bg-background px-2 py-1"
-            value={newThreshold}
-            onChange={(e) => setNewThreshold(Number(e.target.value))}
-          />
-          <Button size="sm" variant="outline" onClick={() => void addRule()}>Add alert</Button>
-        </div>
-        <ul className="space-y-1 text-sm">
-          {rules.filter((r) => r.mobile_app_id === appId || r.mobile_app_id == null).map((r) => (
-            <li key={r.id} className="flex items-center justify-between rounded border px-2 py-1">
-              <span>{formatRule(r.metric, r.operator, r.threshold)}{r.enabled ? "" : " (disabled)"}</span>
-              <Button size="sm" variant="ghost" onClick={() => void deleteRule(r.id)}>Remove</Button>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="space-y-2">
-        <h2 className="text-sm font-medium">Reviews ({reviews.length})</h2>
-        {reviews.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No reviews match the current filters.
-          </p>
-        ) : (
-          reviews.map((r) => <ReviewCard key={r.id} review={r} />)
-        )}
-      </div>
+function Metric({
+  value,
+  label,
+  accent,
+  danger,
+}: {
+  value: string;
+  label: string;
+  accent?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <div className="flex flex-col">
+      <span
+        className={`text-xl font-semibold tabular-nums leading-none ${
+          danger ? "text-red-600 dark:text-red-400" : accent ? "text-foreground" : "text-foreground"
+        }`}
+      >
+        {value}
+      </span>
+      <span className="mt-1 text-xs text-muted-foreground">{label}</span>
     </div>
   );
 }

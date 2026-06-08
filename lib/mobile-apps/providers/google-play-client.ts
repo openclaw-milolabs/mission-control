@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 // Use the auth helper re-exported by the scoped package so the google-auth-library
 // version matches the one the client expects (avoids a type/instance mismatch).
 import { androidpublisher, auth, type androidpublisher_v3 } from "@googleapis/androidpublisher";
-import type { GoogleConfig } from "@/lib/mobile-apps/config";
+import { expandHomePath, type GoogleConfig } from "@/lib/mobile-apps/config";
 
 /** The single OAuth scope the Android Publisher reviews API requires. */
 export const ANDROID_PUBLISHER_SCOPE = "https://www.googleapis.com/auth/androidpublisher";
@@ -15,7 +15,7 @@ export const ANDROID_PUBLISHER_SCOPE = "https://www.googleapis.com/auth/androidp
 function loadServiceAccount(cfg: GoogleConfig): Record<string, unknown> {
   try {
     if (cfg.serviceAccountJsonPath) {
-      return JSON.parse(readFileSync(cfg.serviceAccountJsonPath, "utf8")) as Record<string, unknown>;
+      return JSON.parse(readFileSync(expandHomePath(cfg.serviceAccountJsonPath), "utf8")) as Record<string, unknown>;
     }
     if (cfg.serviceAccountJsonBase64) {
       const json = Buffer.from(cfg.serviceAccountJsonBase64, "base64").toString("utf8");

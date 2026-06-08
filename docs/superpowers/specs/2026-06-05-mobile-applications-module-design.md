@@ -1,5 +1,7 @@
 # Mobile Applications module — design
 
+> **⚠️ SUPERSEDED (2026-06-08):** This historical design used `google-play-scraper` and the Apple customer-reviews RSS feed. The shipped module now uses the **official store APIs only** (Google Play Android Publisher API + Apple App Store Connect API), is **view-only**, loads credentials from `secrets.env`, paginates the reviews feed, and **no longer includes threshold alerts**. The data-source rows below are kept only as a record of the initial approach and do not reflect the current code.
+
 **Date:** 2026-06-05
 **Status:** Approved design, ready for implementation planning
 **Module key:** `mobile-apps` · **Route:** `/mobile-apps` · **Nav label:** "Mobile Applications"

@@ -16,7 +16,7 @@ async function workspaceId(sql: ReturnType<typeof getSql>) {
   return rows[0]?.id ?? null;
 }
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const session = await getSession();
     if (!session?.email) return fail("Not authenticated", 401);
@@ -28,12 +28,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     await ensureMobileAppsSchema(sql);
     const wid = await workspaceId(sql);
     if (!wid) return fail("App not found", 404);
-    const url = new URL(request.url);
-    const store = url.searchParams.get("store"); // 'apple' | 'google' | null
-    const minRatingRaw = Number(url.searchParams.get("minRating") || "0");
-    const minRating = Number.isFinite(minRatingRaw) ? minRatingRaw : 0;
-    const limitRaw = Number(url.searchParams.get("limit") || "100");
-    const limit = Math.min(Number.isFinite(limitRaw) ? limitRaw : 100, 500);
 
     const appRows = (await sql`
       select id::text, name, icon_url, notes from mobile_apps where id = ${id}::uuid and workspace_id = ${wid}::uuid limit 1
@@ -46,31 +40,22 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     `) as unknown as Array<{ id: string; store: string }>;
     const listingIds = listings.map((l) => l.id);
 
-    const reviews =
+    // Review-based daily average rating per store (clean trend, no snapshot noise).
+    const trend =
       listingIds.length === 0
         ? []
         : await sql`
             select
-              r.id::text, r.listing_id::text, l.store, r.author, r.rating, r.title, r.body,
-              r.app_version, r.country, r.submitted_at, r.store_response, r.sentiment, r.themes
+              l.store,
+              to_char(date_trunc('day', r.submitted_at), 'YYYY-MM-DD') as day,
+              round(avg(r.rating)::numeric, 2)::float8 as avg,
+              count(*)::int as count
             from app_reviews r
             join mobile_app_listings l on l.id = r.listing_id
             where r.listing_id = any(${sql.array(listingIds)}::uuid[])
-              and (${store}::text is null or l.store = ${store})
-              and (r.rating is null or r.rating >= ${minRating})
-            order by r.submitted_at desc nulls last
-            limit ${limit}
-          `;
-
-    const snapshots =
-      listingIds.length === 0
-        ? []
-        : await sql`
-            select s.listing_id::text, l.store, s.captured_at, s.avg_rating::float8 as avg_rating, s.ratings_count, s.histogram
-            from app_rating_snapshots s
-            join mobile_app_listings l on l.id = s.listing_id
-            where s.listing_id = any(${sql.array(listingIds)}::uuid[])
-            order by s.captured_at asc
+              and r.submitted_at is not null and r.rating is not null
+            group by l.store, date_trunc('day', r.submitted_at)
+            order by day asc
           `;
 
     // Latest sync run per listing → "last sync status/error per store".
@@ -110,7 +95,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
             group by l.store
           `;
 
-    return ok({ app: appRows[0], listings, reviews, snapshots, syncRuns, summary, negativeThreshold });
+    return ok({ app: appRows[0], listings, trend, syncRuns, summary, negativeThreshold });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to load app", 500);
   }

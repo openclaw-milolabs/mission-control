@@ -1,5 +1,20 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseMobileReviewsConfig, publicConfigStatus } from "@/lib/mobile-apps/config";
+import { expandHomePath, parseMobileReviewsConfig, publicConfigStatus } from "@/lib/mobile-apps/config";
+
+describe("expandHomePath", () => {
+  it("expands a leading ~/ to the home directory", () => {
+    expect(expandHomePath("~/creds/key.p8")).toBe(join(homedir(), "creds/key.p8"));
+  });
+  it("expands a bare ~", () => {
+    expect(expandHomePath("~")).toBe(homedir());
+  });
+  it("leaves absolute and relative paths untouched", () => {
+    expect(expandHomePath("/abs/key.p8")).toBe("/abs/key.p8");
+    expect(expandHomePath("credentials/key.p8")).toBe("credentials/key.p8");
+  });
+});
 
 const base = {
   GOOGLE_PLAY_ENABLED: "false",

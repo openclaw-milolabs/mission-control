@@ -1,5 +1,7 @@
 # Mobile Applications Module Implementation Plan
 
+> **⚠️ SUPERSEDED (2026-06-08):** This historical plan describes the original v1 that used `google-play-scraper` and the Apple customer-reviews RSS feed. The shipped module now uses the **official store APIs only** (Google Play Android Publisher API + Apple App Store Connect API), is **view-only**, loads credentials from `secrets.env`, paginates the reviews feed, and **no longer includes threshold alerts**. References to scraping / RSS / `google-play-scraper` below are kept only as a record of the initial approach and do not reflect the current code.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a toggleable "Mobile Applications" module that fetches App Store + Google Play reviews and ratings for our own apps in real time on page load, stores history, and surfaces them with ratings charts, a filterable reviews feed, on-demand agent sentiment digests, and threshold alerts.

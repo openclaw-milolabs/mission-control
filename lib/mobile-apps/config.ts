@@ -1,6 +1,18 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+
+/**
+ * Expand a leading `~` to the user's home dir. `~` is a shell convention, not a
+ * filesystem one — Node's fs functions treat it literally — so operators who put
+ * `~/...` in secrets.env would otherwise hit "file could not be read".
+ */
+export function expandHomePath(p: string): string {
+  if (p === "~") return homedir();
+  if (p.startsWith("~/") || p.startsWith("~\\")) return join(homedir(), p.slice(2));
+  return p;
+}
 
 /**
  * Configuration for the official Google Play + App Store Connect review

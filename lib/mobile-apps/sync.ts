@@ -1,6 +1,5 @@
 import pLimit from "p-limit";
 import { getSql } from "@/lib/local-db";
-import { evaluateAndFire } from "@/lib/mobile-apps/alerts";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
 import { summarizeReviews } from "@/lib/mobile-apps/metrics";
 import { getProvider } from "@/lib/mobile-apps/providers";
@@ -142,8 +141,6 @@ export async function syncApp(
   const limit = pLimit(Math.max(1, cfg.sync.concurrency));
   const results = await Promise.all(listings.map((l) => limit(() => syncListing(sql, l, { force, dedupeMs }))));
 
-  // Evaluate alert rules against fresh signals (best-effort; must not break sync or notify).
-  await evaluateAndFire(appId).catch(() => null);
   // Notify SSE listeners that this app changed.
   await sql`select pg_notify('mobile_apps_change', ${JSON.stringify({ appId })})`.catch(() => null);
   return results;

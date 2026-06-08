@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { IconStarFilled, IconBrandApple, IconBrandGooglePlay } from "@tabler/icons-react";
+import { formatDate } from "@/lib/format-date";
 
 export type ReviewRow = {
   id: string;
@@ -11,20 +13,19 @@ export type ReviewRow = {
   body: string | null;
   app_version: string | null;
   country: string | null;
+  language?: string | null;
   submitted_at: string | null;
   store_response: string | null;
-  sentiment: string | null;
-  themes: string[] | null;
 };
 
 function Stars({ n }: { n: number | null }) {
   const count = Math.max(0, Math.min(5, Math.round(n ?? 0)));
   return (
-    <span className="inline-flex items-center gap-0.5">
+    <span className="inline-flex items-center gap-px" aria-label={`${count} out of 5 stars`}>
       {Array.from({ length: 5 }).map((_, i) => (
         <IconStarFilled
           key={i}
-          className={i < count ? "size-3.5 text-amber-500" : "size-3.5 text-muted-foreground/30"}
+          className={i < count ? "size-3 text-amber-500" : "size-3 text-foreground/15"}
         />
       ))}
     </span>
@@ -33,33 +34,57 @@ function Stars({ n }: { n: number | null }) {
 
 export function ReviewCard({ review }: { review: ReviewRow }) {
   const StoreIcon = review.store === "apple" ? IconBrandApple : IconBrandGooglePlay;
+  const [expanded, setExpanded] = useState(false);
+  const body = review.body ?? "";
+  const long = body.length > 280;
+
   return (
-    <div className="rounded-lg border bg-card p-3 text-sm">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <StoreIcon className="size-4 text-muted-foreground" />
-          <Stars n={review.rating} />
-          <span className="font-medium">{review.title || "—"}</span>
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {review.submitted_at ? new Date(review.submitted_at).toLocaleDateString() : ""}
-        </div>
+    <article className="py-4 first:pt-0">
+      <div className="flex items-center gap-2.5">
+        <Stars n={review.rating} />
+        {review.title ? (
+          <h3 className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">{review.title}</h3>
+        ) : (
+          <span className="min-w-0 flex-1" />
+        )}
+        <time className="shrink-0 text-xs text-muted-foreground" dateTime={review.submitted_at ?? undefined}>
+          {formatDate(review.submitted_at)}
+        </time>
       </div>
-      {review.body ? <p className="mt-2 whitespace-pre-wrap text-muted-foreground">{review.body}</p> : null}
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        {review.author ? <span>{review.author}</span> : null}
-        {review.app_version ? <span>· v{review.app_version}</span> : null}
-        {review.country ? <span>· {review.country.toUpperCase()}</span> : null}
-        {review.sentiment ? (
-          <span className="rounded bg-muted px-1.5 py-0.5 capitalize">{review.sentiment}</span>
-        ) : null}
+
+      {body ? (
+        <p
+          className={`mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground/80 ${
+            !expanded && long ? "line-clamp-4" : ""
+          }`}
+        >
+          {body}
+        </p>
+      ) : null}
+      {long ? (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-xs font-medium text-primary transition-opacity hover:opacity-70"
+        >
+          {expanded ? "Show less" : "Read more"}
+        </button>
+      ) : null}
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <StoreIcon className="size-3.5" />
+        {review.author ? <span className="font-medium text-foreground/65">{review.author}</span> : null}
+        {review.app_version ? <span>v{review.app_version}</span> : null}
+        {review.country ? <span className="uppercase">{review.country}</span> : null}
       </div>
+
       {review.store_response ? (
-        <div className="mt-2 rounded border-l-2 border-primary/50 bg-muted/40 p-2 text-xs">
-          <span className="font-medium">Developer response: </span>
-          {review.store_response}
+        <div className="mt-2.5 rounded-lg bg-muted/60 px-3 py-2.5">
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Developer response
+          </div>
+          <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/75">{review.store_response}</p>
         </div>
       ) : null}
-    </div>
+    </article>
   );
 }

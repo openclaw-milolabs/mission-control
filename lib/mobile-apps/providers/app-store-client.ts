@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { SignJWT, importPKCS8 } from "jose";
-import type { AppleConfig } from "@/lib/mobile-apps/config";
+import { expandHomePath, type AppleConfig } from "@/lib/mobile-apps/config";
 
 export const APPSTORE_CONNECT_AUDIENCE = "appstoreconnect-v1";
 export const APPSTORE_CONNECT_BASE_URL = "https://api.appstoreconnect.apple.com";
@@ -13,7 +13,7 @@ const TOKEN_TTL_SECONDS = 10 * 60;
  */
 function loadPrivateKeyPem(cfg: AppleConfig): string {
   try {
-    if (cfg.privateKeyPath) return readFileSync(cfg.privateKeyPath, "utf8");
+    if (cfg.privateKeyPath) return readFileSync(expandHomePath(cfg.privateKeyPath), "utf8");
     if (cfg.privateKeyBase64) return Buffer.from(cfg.privateKeyBase64, "base64").toString("utf8");
   } catch {
     throw new Error("App Store Connect private key could not be read. Check APPSTORE_CONNECT_PRIVATE_KEY_PATH.");

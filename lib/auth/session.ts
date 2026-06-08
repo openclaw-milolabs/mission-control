@@ -3,8 +3,8 @@ import { cookies } from "next/headers";
 import type { NextRequest } from "next/server";
 
 export const SESSION_COOKIE = "mc-session";
-export const SESSION_DURATION_SECONDS = 24 * 60 * 60; // 24 hours
-export const SESSION_REFRESH_THRESHOLD = 12 * 60 * 60; // refresh if <12h left
+export const SESSION_DURATION_SECONDS = 7 * 24 * 60 * 60; // 7 days
+export const SESSION_REFRESH_THRESHOLD = 3 * 24 * 60 * 60; // sliding: refresh if <3 days left
 
 export type SessionUser = {
   sub: string;
