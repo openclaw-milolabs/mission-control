@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useModules } from "@/components/modules/modules-provider";
 import { AddAppDialog } from "@/components/mobile-apps/add-app-dialog";
 import { AppCard, type AppSummary } from "@/components/mobile-apps/app-card";
+import { StoreConfigBanner } from "@/components/mobile-apps/store-config-banner";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -76,6 +77,8 @@ export function MobileAppsClient() {
           <AddAppDialog onAdded={load} />
         </div>
       </div>
+
+      <StoreConfigBanner />
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>

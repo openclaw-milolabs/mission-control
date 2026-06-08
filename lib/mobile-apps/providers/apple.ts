@@ -1,93 +1,91 @@
-import type { ListingRef, RatingSummary, RawReview, ReviewProvider } from "@/lib/mobile-apps/types";
+import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
+import {
+  APPSTORE_CONNECT_BASE_URL,
+  createAppStoreConnectToken,
+} from "@/lib/mobile-apps/providers/app-store-client";
+import type { ListingRef, RawReview, ReviewProvider } from "@/lib/mobile-apps/types";
 
-type AppleEntry = {
-  id?: { label?: string };
-  author?: { name?: { label?: string } };
-  "im:rating"?: { label?: string };
-  "im:version"?: { label?: string };
-  title?: { label?: string };
-  content?: { label?: string };
-  updated?: { label?: string };
+type AppleReviewResource = {
+  id?: string;
+  attributes?: {
+    rating?: number;
+    title?: string | null;
+    body?: string | null;
+    reviewerNickname?: string | null;
+    createdDate?: string | null;
+    territory?: string | null;
+  };
 };
 
-function round2(n: number | null): number | null {
-  return n == null || !Number.isFinite(n) ? null : Math.round(n * 100) / 100;
-}
+type CustomerReviewsResponse = {
+  data?: AppleReviewResource[];
+  links?: { next?: string | null };
+};
 
-function toIso(label: string | undefined | null): string | null {
-  if (!label) return null;
-  const d = new Date(label);
+function toIso(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-/** Pure: turn an Apple customer-reviews RSS JSON object into RawReview[]. */
-export function parseAppleReviews(feedJson: unknown, country: string): RawReview[] {
-  const feed = (feedJson as { feed?: { entry?: AppleEntry | AppleEntry[] } })?.feed;
-  if (!feed?.entry) return [];
-  const entries = Array.isArray(feed.entry) ? feed.entry : [feed.entry];
-
+/**
+ * Pure: map official App Store Connect `customerReviews` resources to the
+ * internal RawReview shape. Developer responses live in a separate relationship
+ * we do not fetch (view-only), so storeResponse is always null.
+ */
+export function mapAppleReviews(resources: AppleReviewResource[]): RawReview[] {
+  if (!Array.isArray(resources)) return [];
   const out: RawReview[] = [];
-  for (const e of entries) {
-    const ratingLabel = e["im:rating"]?.label;
-    // The app-metadata entry has no im:rating — skip it.
-    if (ratingLabel == null) continue;
-    const id = e.id?.label;
-    if (!id) continue;
+  for (const r of resources) {
+    if (!r || !r.id) continue;
+    const a = r.attributes ?? {};
     out.push({
-      storeReviewId: String(id),
-      author: e.author?.name?.label ?? null,
-      rating: Number.isFinite(Number(ratingLabel)) ? Number(ratingLabel) : null,
-      title: e.title?.label ?? null,
-      body: e.content?.label ?? null,
-      appVersion: e["im:version"]?.label ?? null,
-      country,
-      submittedAt: toIso(e.updated?.label),
+      storeReviewId: String(r.id),
+      author: a.reviewerNickname ?? null,
+      rating: typeof a.rating === "number" ? a.rating : null,
+      title: a.title ?? null,
+      body: a.body ?? null,
+      appVersion: null,
+      country: a.territory ?? null,
+      language: null,
+      submittedAt: toIso(a.createdDate),
       storeResponse: null,
+      raw: r,
     });
   }
   return out;
 }
 
-/** Pure: turn an iTunes Lookup response into a RatingSummary. */
-export function parseiTunesLookup(lookupJson: unknown): RatingSummary {
-  const r = (lookupJson as { results?: Array<Record<string, unknown>> })?.results?.[0];
-  if (!r) return { avgRating: null, ratingsCount: null, histogram: null };
-  return {
-    avgRating: round2(typeof r.averageUserRating === "number" ? r.averageUserRating : null),
-    ratingsCount: typeof r.userRatingCount === "number" ? r.userRatingCount : null,
-    histogram: null, // iTunes Lookup does not expose a per-star histogram
-    name: typeof r.trackName === "string" ? r.trackName : null,
-    iconUrl:
-      (typeof r.artworkUrl512 === "string" && r.artworkUrl512 ? r.artworkUrl512 : null) ??
-      (typeof r.artworkUrl100 === "string" && r.artworkUrl100 ? r.artworkUrl100 : null),
-  };
+function cleanAppleError(status: number, appId: string): Error {
+  if (status === 401) return new Error("App Store Connect authentication failed (check key id / issuer id / .p8 key).");
+  if (status === 403)
+    return new Error(`App Store Connect denied access to app "${appId}". Confirm the API key role can read reviews.`);
+  if (status === 404) return new Error(`App Store Connect app "${appId}" was not found.`);
+  if (status === 429) return new Error("App Store Connect rate limit reached. Try again shortly.");
+  return new Error(`App Store Connect API error (HTTP ${status}).`);
 }
 
 export class AppleProvider implements ReviewProvider {
   async fetchReviews(ref: ListingRef): Promise<RawReview[]> {
-    // Apple paginates 1..10; pull the first few pages of most-recent reviews.
+    const cfg = loadMobileReviewsConfig();
+    if (!cfg.apple.enabled) throw new Error("App Store integration is disabled (APPSTORE_CONNECT_ENABLED=false).");
+    if (!cfg.apple.configured) throw new Error(cfg.apple.error ?? "App Store Connect is not configured.");
+
+    const appId = ref.storeAppId;
+    const token = await createAppStoreConnectToken(cfg.apple);
+
     const all: RawReview[] = [];
-    for (let page = 1; page <= 5; page++) {
-      const url = `https://itunes.apple.com/${encodeURIComponent(ref.country)}/rss/customerreviews/page=${page}/id=${encodeURIComponent(ref.storeAppId)}/sortby=mostrecent/json`;
-      const res = await fetch(url, { headers: { "User-Agent": "MissionControl/1.0" } });
-      if (!res.ok) break;
-      let json: unknown;
-      try {
-        json = await res.json();
-      } catch {
-        break;
-      }
-      const batch = parseAppleReviews(json, ref.country);
-      if (batch.length === 0) break;
-      all.push(...batch);
+    let url: string | null = `${APPSTORE_CONNECT_BASE_URL}/v1/apps/${encodeURIComponent(
+      appId,
+    )}/customerReviews?limit=200&sort=-createdDate`;
+
+    for (let page = 0; page < cfg.sync.maxPages && url; page++) {
+      const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw cleanAppleError(res.status, appId);
+      const json = (await res.json()) as CustomerReviewsResponse;
+      all.push(...mapAppleReviews(json.data ?? []));
+      url = json.links?.next ?? null;
     }
     return all;
-  }
-
-  async fetchRatingSummary(ref: ListingRef): Promise<RatingSummary> {
-    const url = `https://itunes.apple.com/lookup?id=${encodeURIComponent(ref.storeAppId)}&country=${encodeURIComponent(ref.country)}`;
-    const res = await fetch(url, { headers: { "User-Agent": "MissionControl/1.0" } });
-    if (!res.ok) return { avgRating: null, ratingsCount: null, histogram: null };
-    return parseiTunesLookup(await res.json());
   }
 }

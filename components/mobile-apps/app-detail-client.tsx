@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { Button } from "@/components/ui/button";
 import { ReviewCard, type ReviewRow } from "@/components/mobile-apps/review-card";
+import { StoreConfigBanner } from "@/components/mobile-apps/store-config-banner";
 import { useModules } from "@/components/modules/modules-provider";
 import { toast } from "sonner";
 
@@ -31,6 +32,17 @@ type Snapshot = {
   avg_rating: number | null;
   ratings_count: number | null;
   histogram: Record<string, number> | null;
+};
+
+type SyncRun = {
+  listing_id: string;
+  store: string;
+  status: "running" | "success" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  fetched_count: number;
+  upserted_count: number;
+  error_message: string | null;
 };
 
 const METRIC_LABEL: Record<string, string> = {
@@ -54,6 +66,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
   const [listings, setListings] = useState<Listing[]>([]);
   const [reviews, setReviews] = useState<ReviewRow[]>([]);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [syncRuns, setSyncRuns] = useState<SyncRun[]>([]);
   const [store, setStore] = useState<"" | "apple" | "google">("");
   const [minRating, setMinRating] = useState(0);
   const [syncing, setSyncing] = useState(false);
@@ -81,12 +94,14 @@ export function AppDetailClient({ appId }: { appId: string }) {
         listings?: Listing[];
         reviews?: ReviewRow[];
         snapshots?: Snapshot[];
+        syncRuns?: SyncRun[];
       };
       if (json.ok) {
         setApp(json.app ?? null);
         setListings(json.listings ?? []);
         setReviews(json.reviews ?? []);
         setSnapshots(json.snapshots ?? []);
+        setSyncRuns(json.syncRuns ?? []);
       } else {
         toast.error(json.error ?? "Failed to load app");
       }
@@ -259,6 +274,43 @@ export function AppDetailClient({ appId }: { appId: string }) {
           {syncing ? "Syncing…" : "Refresh now"}
         </Button>
       </div>
+
+      <StoreConfigBanner />
+
+      {syncRuns.length > 0 ? (
+        <div className="rounded-xl border bg-card p-4">
+          <h2 className="mb-2 text-sm font-medium">Sync health</h2>
+          <ul className="space-y-1 text-xs">
+            {syncRuns.map((run) => (
+              <li key={run.listing_id} className="flex flex-wrap items-center gap-2">
+                <span className="w-20 capitalize text-muted-foreground">{run.store}</span>
+                <span
+                  className={
+                    run.status === "success"
+                      ? "rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-400"
+                      : run.status === "failed"
+                        ? "rounded bg-red-500/15 px-1.5 py-0.5 text-red-700 dark:text-red-400"
+                        : "rounded bg-muted px-1.5 py-0.5 text-muted-foreground"
+                  }
+                >
+                  {run.status}
+                </span>
+                <span className="text-muted-foreground">
+                  {run.finished_at ? new Date(run.finished_at).toLocaleString() : "in progress"}
+                </span>
+                {run.status === "success" ? (
+                  <span className="text-muted-foreground">
+                    · {run.fetched_count} fetched, {run.upserted_count} new
+                  </span>
+                ) : null}
+                {run.error_message ? (
+                  <span className="text-red-600 dark:text-red-400">· {run.error_message}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <select

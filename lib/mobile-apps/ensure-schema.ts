@@ -51,6 +51,10 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS app_reviews_listing_idx ON app_reviews(listing_id, submitted_at desc)`;
+  // Migration: official-API reviews carry a few extra fields. Idempotent adds.
+  await sql`ALTER TABLE app_reviews ADD COLUMN IF NOT EXISTS language text`;
+  await sql`ALTER TABLE app_reviews ADD COLUMN IF NOT EXISTS device text`;
+  await sql`ALTER TABLE app_reviews ADD COLUMN IF NOT EXISTS raw_json jsonb`;
   await sql`
     CREATE TABLE IF NOT EXISTS app_rating_snapshots (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -92,5 +96,22 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+  // Per-listing sync run history: powers "last sync status/error per store".
+  await sql`
+    CREATE TABLE IF NOT EXISTS app_review_sync_runs (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+      store text NOT NULL,
+      app_identifier text NOT NULL,
+      status text NOT NULL CHECK (status IN ('running','success','failed')),
+      started_at timestamptz NOT NULL DEFAULT now(),
+      finished_at timestamptz,
+      fetched_count integer NOT NULL DEFAULT 0,
+      upserted_count integer NOT NULL DEFAULT 0,
+      error_message text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS app_review_sync_runs_listing_idx ON app_review_sync_runs(listing_id, started_at desc)`;
   _ensured = true;
 }

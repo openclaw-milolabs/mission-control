@@ -1,5 +1,8 @@
+import pLimit from "p-limit";
 import { getSql } from "@/lib/local-db";
 import { evaluateAndFire } from "@/lib/mobile-apps/alerts";
+import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
+import { summarizeReviews } from "@/lib/mobile-apps/metrics";
 import { getProvider } from "@/lib/mobile-apps/providers";
 import type { Store } from "@/lib/mobile-apps/types";
 
@@ -16,99 +19,131 @@ type ListingRow = {
 export type SyncResult = {
   listingId: string;
   store: Store;
+  appIdentifier: string;
   inserted: number;
+  fetched: number;
   ratingCaptured: boolean;
   skipped: boolean;
+  status: "success" | "failed" | "skipped";
   error: string | null;
 };
 
 const DEFAULT_DEDUPE_MS = 60_000;
 
+/** Sync a single listing: fetch official reviews, upsert, snapshot, record the run. */
+async function syncListing(
+  sql: Sql,
+  listing: ListingRow,
+  opts: { force: boolean; dedupeMs: number },
+): Promise<SyncResult> {
+  const store = listing.store as Store;
+  const appIdentifier = listing.store_app_id;
+  const base = { listingId: listing.id, store, appIdentifier };
+
+  const recentlySynced =
+    listing.last_synced_at && Date.now() - new Date(listing.last_synced_at).getTime() < opts.dedupeMs;
+  if (!opts.force && recentlySynced) {
+    return { ...base, inserted: 0, fetched: 0, ratingCaptured: false, skipped: true, status: "skipped", error: null };
+  }
+
+  const runRows = (await sql`
+    insert into app_review_sync_runs (listing_id, store, app_identifier, status)
+    values (${listing.id}::uuid, ${store}, ${appIdentifier}, 'running')
+    returning id::text
+  `) as unknown as Array<{ id: string }>;
+  const runId = runRows[0]?.id;
+
+  try {
+    const provider = getProvider(store);
+    const reviews = await provider.fetchReviews({ store, storeAppId: appIdentifier, country: listing.country });
+
+    let inserted = 0;
+    for (const r of reviews) {
+      const res = await sql`
+        insert into app_reviews (
+          listing_id, store_review_id, author, rating, title, body,
+          app_version, country, submitted_at, store_response, language, device, raw_json
+        ) values (
+          ${listing.id}, ${r.storeReviewId}, ${r.author}, ${r.rating}, ${r.title}, ${r.body},
+          ${r.appVersion}, ${r.country}, ${r.submittedAt}, ${r.storeResponse}, ${r.language ?? null},
+          ${r.device ?? null}, ${r.raw ? JSON.stringify(r.raw) : null}
+        )
+        on conflict (listing_id, store_review_id) do update
+          set store_response = excluded.store_response,
+              raw_json = excluded.raw_json
+        returning (xmax = 0) as inserted
+      `;
+      if ((res as unknown as Array<{ inserted: boolean }>)[0]?.inserted) inserted += 1;
+    }
+
+    // Ratings are derived from the reviews we fetched (official APIs expose no aggregate).
+    const summary = summarizeReviews(reviews);
+    await sql`
+      insert into app_rating_snapshots (listing_id, avg_rating, ratings_count, histogram)
+      values (${listing.id}, ${summary.avgRating}, ${summary.ratingsCount}, ${JSON.stringify(summary.histogram)})
+    `;
+    await sql`
+      update mobile_app_listings
+      set current_rating = ${summary.avgRating},
+          ratings_count = ${summary.ratingsCount},
+          last_synced_at = now()
+      where id = ${listing.id}
+    `;
+    if (runId) {
+      await sql`
+        update app_review_sync_runs
+        set status = 'success', finished_at = now(), fetched_count = ${reviews.length}, upserted_count = ${inserted}
+        where id = ${runId}::uuid
+      `;
+    }
+    return {
+      ...base,
+      inserted,
+      fetched: reviews.length,
+      ratingCaptured: true,
+      skipped: false,
+      status: "success",
+      error: null,
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    if (runId) {
+      await sql`
+        update app_review_sync_runs
+        set status = 'failed', finished_at = now(), error_message = ${error}
+        where id = ${runId}::uuid
+      `.catch(() => null);
+    }
+    return { ...base, inserted: 0, fetched: 0, ratingCaptured: false, skipped: false, status: "failed", error };
+  }
+}
+
 /**
- * Sync one app: for each of its listings, fetch reviews + rating summary,
- * upsert reviews (dedup on store_review_id), write a fresh rating snapshot,
- * and update the listing's current_rating / last_synced_at.
- *
- * @param force when true, ignore the de-dupe window (manual "Refresh now").
+ * Sync one app: for each of its listings (optionally filtered to a single store),
+ * fetch reviews via the official APIs and upsert. Listings are processed with a
+ * small concurrency limit so one store failing never blocks the other.
  */
 export async function syncApp(
   appId: string,
-  opts: { force?: boolean; dedupeMs?: number } = {},
+  opts: { force?: boolean; dedupeMs?: number; store?: Store } = {},
 ): Promise<SyncResult[]> {
   const sql: Sql = getSql();
+  const cfg = loadMobileReviewsConfig();
   const dedupeMs = opts.dedupeMs ?? DEFAULT_DEDUPE_MS;
+  const force = Boolean(opts.force);
+
   const listings = (await sql`
     select id::text, store, store_app_id, country, last_synced_at
     from mobile_app_listings
     where mobile_app_id = ${appId}
+      and (${opts.store ?? null}::text is null or store = ${opts.store ?? null})
   `) as unknown as ListingRow[];
 
-  const results: SyncResult[] = [];
-  for (const l of listings) {
-    const store = l.store as Store;
-    const recentlySynced =
-      l.last_synced_at && Date.now() - new Date(l.last_synced_at).getTime() < dedupeMs;
-    if (!opts.force && recentlySynced) {
-      results.push({ listingId: l.id, store, inserted: 0, ratingCaptured: false, skipped: true, error: null });
-      continue;
-    }
-
-    try {
-      const provider = getProvider(store);
-      const ref = { store, storeAppId: l.store_app_id, country: l.country };
-      const [reviews, summary] = await Promise.all([
-        provider.fetchReviews(ref),
-        provider.fetchRatingSummary(ref),
-      ]);
-
-      let inserted = 0;
-      for (const r of reviews) {
-        const res = await sql`
-          insert into app_reviews (
-            listing_id, store_review_id, author, rating, title, body,
-            app_version, country, submitted_at, store_response
-          ) values (
-            ${l.id}, ${r.storeReviewId}, ${r.author}, ${r.rating}, ${r.title}, ${r.body},
-            ${r.appVersion}, ${r.country}, ${r.submittedAt}, ${r.storeResponse}
-          )
-          on conflict (listing_id, store_review_id) do update
-            set store_response = excluded.store_response
-          returning (xmax = 0) as inserted
-        `;
-        if ((res as unknown as Array<{ inserted: boolean }>)[0]?.inserted) inserted += 1;
-      }
-
-      await sql`
-        insert into app_rating_snapshots (listing_id, avg_rating, ratings_count, histogram)
-        values (${l.id}, ${summary.avgRating}, ${summary.ratingsCount}, ${
-          summary.histogram ? JSON.stringify(summary.histogram) : null
-        })
-      `;
-
-      await sql`
-        update mobile_app_listings
-        set current_rating = ${summary.avgRating},
-            ratings_count = ${summary.ratingsCount},
-            last_synced_at = now()
-        where id = ${l.id}
-      `;
-
-      results.push({ listingId: l.id, store, inserted, ratingCaptured: true, skipped: false, error: null });
-    } catch (err) {
-      results.push({
-        listingId: l.id,
-        store,
-        inserted: 0,
-        ratingCaptured: false,
-        skipped: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  const limit = pLimit(Math.max(1, cfg.sync.concurrency));
+  const results = await Promise.all(listings.map((l) => limit(() => syncListing(sql, l, { force, dedupeMs }))));
 
   // Evaluate alert rules against fresh signals (best-effort; must not break sync or notify).
   await evaluateAndFire(appId).catch(() => null);
-
   // Notify SSE listeners that this app changed.
   await sql`select pg_notify('mobile_apps_change', ${JSON.stringify({ appId })})`.catch(() => null);
   return results;

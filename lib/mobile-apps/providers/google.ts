@@ -1,84 +1,84 @@
-import type { ListingRef, RatingSummary, RawReview, ReviewProvider } from "@/lib/mobile-apps/types";
+import type { androidpublisher_v3 } from "googleapis";
+import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
+import { createAndroidPublisherClient } from "@/lib/mobile-apps/providers/google-play-client";
+import type { ListingRef, RawReview, ReviewProvider } from "@/lib/mobile-apps/types";
 
-type GpReview = {
-  id?: string;
-  userName?: string;
-  score?: number;
-  title?: string | null;
-  text?: string | null;
-  version?: string | null;
-  date?: string | Date | null;
-  replyText?: string | null;
-};
+type GpReview = androidpublisher_v3.Schema$Review;
 
-type GpApp = {
-  title?: string;
-  score?: number;
-  ratings?: number;
-  icon?: string;
-  histogram?: Record<string | number, number>;
-};
-
-function round2(n: number | null): number | null {
-  return n == null || !Number.isFinite(n) ? null : Math.round(n * 100) / 100;
+function toIsoFromSeconds(seconds: string | null | undefined): string | null {
+  if (seconds == null) return null;
+  const n = Number(seconds);
+  if (!Number.isFinite(n)) return null;
+  return new Date(n * 1000).toISOString();
 }
 
-function toIso(d: string | Date | null | undefined): string | null {
-  if (!d) return null;
-  const dt = new Date(d);
-  return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
-}
-
-/** Pure: map google-play-scraper review objects to RawReview[]. */
-export function mapGoogleReviews(raw: GpReview[], country: string): RawReview[] {
+/**
+ * Pure: map official Google Play Android Publisher `reviews.list` objects to the
+ * internal RawReview shape. Google Play reviews carry no title.
+ */
+export function mapGoogleReviews(raw: GpReview[]): RawReview[] {
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((r) => r && r.id)
-    .map((r) => ({
-      storeReviewId: String(r.id),
-      author: r.userName ?? null,
-      rating: typeof r.score === "number" ? r.score : null,
-      title: r.title ?? null,
-      body: r.text ?? null,
-      appVersion: r.version ?? null,
-      country,
-      submittedAt: toIso(r.date),
-      storeResponse: r.replyText ?? null,
-    }));
+  const out: RawReview[] = [];
+  for (const r of raw) {
+    if (!r || !r.reviewId) continue;
+    const comment = r.comments?.[0];
+    const user = comment?.userComment;
+    const dev = comment?.developerComment;
+    out.push({
+      storeReviewId: String(r.reviewId),
+      author: r.authorName ?? null,
+      rating: typeof user?.starRating === "number" ? user.starRating : null,
+      title: null,
+      body: user?.text ?? null,
+      appVersion: user?.appVersionName ?? null,
+      country: null,
+      language: user?.reviewerLanguage ?? null,
+      device: user?.device ?? null,
+      submittedAt: toIsoFromSeconds(user?.lastModified?.seconds),
+      storeResponse: dev?.text ?? null,
+      raw: r,
+    });
+  }
+  return out;
 }
 
-/** Pure: map a google-play-scraper app object to a RatingSummary. */
-export function mapGoogleApp(app: GpApp): RatingSummary {
-  const hist = app?.histogram
-    ? Object.fromEntries(Object.entries(app.histogram).map(([k, v]) => [String(k), Number(v)]))
-    : null;
-  return {
-    avgRating: round2(typeof app?.score === "number" ? app.score : null),
-    ratingsCount: typeof app?.ratings === "number" ? app.ratings : null,
-    histogram: hist,
-    name: typeof app?.title === "string" ? app.title : null,
-    iconUrl: typeof app?.icon === "string" ? app.icon : null,
-  };
+/** Turn a googleapis/Gaxios error into a clean, secret-free message. */
+function cleanGoogleError(err: unknown, packageName: string): Error {
+  const e = err as { code?: number | string; response?: { status?: number }; message?: string };
+  const status = Number(e?.response?.status ?? e?.code);
+  if (status === 401 || status === 403)
+    return new Error(
+      `Google Play API rejected the request for "${packageName}" (auth/permission). Confirm the service account is linked to this app with review access.`,
+    );
+  if (status === 429) return new Error("Google Play API rate limit reached. Try again shortly.");
+  if (status === 404) return new Error(`Google Play app "${packageName}" was not found for this service account.`);
+  return new Error(e?.message ? `Google Play API error: ${e.message}` : "Google Play API request failed.");
 }
 
 export class GoogleProvider implements ReviewProvider {
   async fetchReviews(ref: ListingRef): Promise<RawReview[]> {
-    const gplay = (await import("google-play-scraper")).default;
-    // sort.NEWEST = 2 per the package's own enum definition
-    const NEWEST = 2 as Parameters<typeof gplay.reviews>[0]["sort"];
-    const result = await gplay.reviews({
-      appId: ref.storeAppId,
-      country: ref.country,
-      sort: NEWEST,
-      num: 200,
-    });
-    const data = Array.isArray(result) ? result : (result?.data ?? []);
-    return mapGoogleReviews(data as GpReview[], ref.country);
-  }
+    const cfg = loadMobileReviewsConfig();
+    if (!cfg.google.enabled) throw new Error("Google Play integration is disabled (GOOGLE_PLAY_ENABLED=false).");
+    if (!cfg.google.configured) throw new Error(cfg.google.error ?? "Google Play is not configured.");
 
-  async fetchRatingSummary(ref: ListingRef): Promise<RatingSummary> {
-    const gplay = (await import("google-play-scraper")).default;
-    const app = await gplay.app({ appId: ref.storeAppId, country: ref.country });
-    return mapGoogleApp(app as GpApp);
+    // Use the listing's package name as the target. The service-account auth
+    // enforces that only apps it owns return data, so this also matches the
+    // configured GOOGLE_PLAY_PACKAGE_NAME for the owned app.
+    const packageName = ref.storeAppId;
+    const client = createAndroidPublisherClient(cfg.google);
+
+    const all: RawReview[] = [];
+    let token: string | undefined;
+    try {
+      for (let page = 0; page < cfg.sync.maxPages; page++) {
+        const res = await client.reviews.list({ packageName, maxResults: 100, token });
+        all.push(...mapGoogleReviews(res.data.reviews ?? []));
+        token = res.data.tokenPagination?.nextPageToken ?? undefined;
+        if (!token) break;
+      }
+    } catch (err) {
+      throw cleanGoogleError(err, packageName);
+    }
+    return all;
   }
 }

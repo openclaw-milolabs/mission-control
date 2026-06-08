@@ -5,7 +5,7 @@ import { GoogleProvider } from "@/lib/mobile-apps/providers/google";
 const apple = new AppleProvider();
 const google = new GoogleProvider();
 
-/** Returns the provider for a store. Swapping in official APIs later = change here only. */
+/** Returns the official-API provider for a store (Android Publisher / App Store Connect). */
 export function getProvider(store: Store): ReviewProvider {
   return store === "apple" ? apple : google;
 }

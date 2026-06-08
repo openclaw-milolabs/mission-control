@@ -34,6 +34,15 @@ yarn-error.log*
 .env*
 !.env.example
 
+# secrets (mobile store review API credentials, etc.) — never commit
+secrets.env
+secrets.*.env
+*.p8
+google-play-service-account*.json
+!secrets.env.example
+# Folder for Apple/Google store certificates & service-account keys — never commit
+/credentials/
+
 # vercel
 .vercel
 

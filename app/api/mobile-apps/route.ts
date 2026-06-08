@@ -3,7 +3,6 @@ import { getSql } from "@/lib/local-db";
 import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
 import { resolveListing } from "@/lib/mobile-apps/resolve";
-import { getProvider } from "@/lib/mobile-apps/providers";
 import { syncApp } from "@/lib/mobile-apps/sync";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 
@@ -86,17 +85,10 @@ export async function POST(request: Request) {
       return fail(e instanceof Error ? e.message : "Invalid app reference", 400);
     }
 
-    // Discover a display name/icon from the first listing's provider.
-    let name = String(body.name || "").trim();
-    let iconUrl: string | null = null;
-    try {
-      const first = resolved[0];
-      const summary = await getProvider(first.store).fetchRatingSummary(first);
-      if (!name) name = summary.name || "Untitled app";
-      iconUrl = summary.iconUrl ?? null;
-    } catch {
-      if (!name) name = "Untitled app";
-    }
+    // The official publisher APIs are review-only and expose no store listing
+    // metadata, so we name the app from the provided name or its store id.
+    const name = String(body.name || "").trim() || resolved[0].storeAppId || "Untitled app";
+    const iconUrl: string | null = null;
 
     const appRows = (await sql`
       insert into mobile_apps (workspace_id, name, icon_url)

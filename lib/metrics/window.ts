@@ -96,6 +96,19 @@ export function isValidWindow(value: unknown): value is WindowName {
 }
 
 /**
+ * Does this metric's SQL actually respond to the window controls?
+ *
+ * A query is "windowed" when it references at least one of the window
+ * placeholders — `:since`, `:until`, or `:bucket`. Queries that reference none
+ * of them (e.g. a lifetime breakdown) produce identical results regardless of
+ * the selected window, so the UI hides the Hour/Day/Week/Month/Year pills for
+ * them. Matched as `:word` so `created_at` or `::cast` never trip it.
+ */
+export function usesWindow(sql: string): boolean {
+  return /(?<![:\w]):(?:since|until|bucket)\b/i.test(sql);
+}
+
+/**
  * Human-readable summary of a resolved window for card UI:
  *   "Last 48 hours · hourly"
  *   "Last 12 weeks · weekly"

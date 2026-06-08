@@ -12,7 +12,7 @@ import {
 import { Loader2Icon, MoreHorizontalIcon, PencilIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MetricChart } from "@/components/metrics/metric-chart";
-import { describeWindow } from "@/lib/metrics/window";
+import { describeWindow, usesWindow } from "@/lib/metrics/window";
 import { makeLimiter } from "@/lib/metrics/limiter";
 
 // Shared across every card instance: load a few at a time instead of firing
@@ -68,8 +68,14 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ durationMs: number; rowCount: number; truncated: boolean } | null>(null);
 
-  const effectiveWindow: WindowName =
-    override !== "inherit"
+  // Windowless metrics (no :since/:until/:bucket) ignore the window entirely:
+  // the result is identical regardless, so we hide the pills and pin the window
+  // to a stable value to keep the per-window cache key constant.
+  const windowed = usesWindow(metric.sql_text);
+
+  const effectiveWindow: WindowName = !windowed
+    ? "monthly"
+    : override !== "inherit"
       ? override
       : globalWindow;
 
@@ -129,7 +135,7 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
           )}
           {meta && (
             <p className="mt-1 text-[10px] text-muted-foreground/70 tabular-nums">
-              {describeWindow(effectiveWindow).range} · {describeWindow(effectiveWindow).granularity} · {meta.rowCount} rows · {meta.durationMs}ms{meta.truncated ? " · truncated" : ""}
+              {windowed ? `${describeWindow(effectiveWindow).range} · ${describeWindow(effectiveWindow).granularity} · ` : ""}{meta.rowCount} rows · {meta.durationMs}ms{meta.truncated ? " · truncated" : ""}
             </p>
           )}
         </div>
@@ -161,25 +167,27 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
         </div>
       </header>
 
-      <div className="flex items-center gap-1 border-b bg-muted/[0.04] px-3 py-2">
-        {WINDOW_PILLS.map((p) => {
-          const active = effectiveWindow === p.key;
-          return (
-            <button
-              key={p.key}
-              onClick={() => setOverride(p.key)}
-              className={cn(
-                "rounded-full px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider transition-colors",
-                active
-                  ? "bg-foreground text-background"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
-              )}
-            >
-              {p.label}
-            </button>
-          );
-        })}
-      </div>
+      {windowed && (
+        <div className="flex items-center gap-1 border-b bg-muted/[0.04] px-3 py-2">
+          {WINDOW_PILLS.map((p) => {
+            const active = effectiveWindow === p.key;
+            return (
+              <button
+                key={p.key}
+                onClick={() => setOverride(p.key)}
+                className={cn(
+                  "rounded-full px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider transition-colors",
+                  active
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="flex-1 min-h-[260px] p-3">
         {error ? (
