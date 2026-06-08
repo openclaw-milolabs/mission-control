@@ -4,6 +4,16 @@ import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
 import { summarizeReviews } from "@/lib/mobile-apps/metrics";
 import { getProvider } from "@/lib/mobile-apps/providers";
 import { fetchAppleTerritoryRatings, type TerritoryRating } from "@/lib/mobile-apps/providers/app-store-ratings";
+import {
+  fetchGooglePlayCountryRatings,
+  fetchInstalls,
+  fetchCrashes,
+  fetchStorePerformanceCountry,
+  fetchStorePerformanceTrafficSource,
+  ReportError,
+  type ReportRecord,
+  type ReportMultiRecord,
+} from "@/lib/mobile-apps/providers/google-play-reports";
 import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 import type { Store } from "@/lib/mobile-apps/types";
@@ -18,6 +28,8 @@ type ListingRow = {
   last_synced_at: string | null;
 };
 
+export type ReportsStatus = "success" | "partial" | "failed" | "not_configured";
+
 export type SyncResult = {
   listingId: string;
   store: Store;
@@ -28,9 +40,93 @@ export type SyncResult = {
   skipped: boolean;
   status: "success" | "failed" | "skipped";
   error: string | null;
+  reportsStatus: ReportsStatus;
+  reportWarnings: string[];
 };
 
 const DEFAULT_DEDUPE_MS = 60_000;
+
+function reportErrMessage(err: unknown): string {
+  if (err instanceof ReportError) return err.message;
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Upsert single-dimension daily report rows under the dimension that was found. */
+async function persistReports(
+  sql: Sql,
+  listingId: string,
+  report: string,
+  dimension: string,
+  records: ReportRecord[],
+  source: string,
+): Promise<void> {
+  for (const r of records) {
+    if (!r.date) continue;
+    await sql`
+      insert into mobile_app_report_metrics (listing_id, report, dimension, dimension_value, metric_date, metrics, source)
+      values (${listingId}, ${report}, ${dimension}, ${r.dimensionValue}, ${r.date}, ${JSON.stringify(r.values)}, ${source})
+      on conflict (listing_id, report, dimension, dimension_value, metric_date) do update
+        set metrics = excluded.metrics, source = excluded.source, captured_at = now()
+    `;
+  }
+}
+
+/** Upsert multi-dimension rows (Store Performance traffic_source), preserving the text dimensions. */
+async function persistMultiReports(
+  sql: Sql,
+  listingId: string,
+  records: ReportMultiRecord[],
+  source: string,
+): Promise<void> {
+  for (const r of records) {
+    if (!r.date) continue;
+    const dimValue = (Object.values(r.dimensions).join("|").toLowerCase().slice(0, 400)) || "all";
+    await sql`
+      insert into mobile_app_report_metrics (listing_id, report, dimension, dimension_value, metric_date, metrics, dimensions, source)
+      values (${listingId}, 'store_performance', 'traffic_source', ${dimValue}, ${r.date}, ${JSON.stringify(r.values)}, ${JSON.stringify(r.dimensions)}, ${source})
+      on conflict (listing_id, report, dimension, dimension_value, metric_date) do update
+        set metrics = excluded.metrics, dimensions = excluded.dimensions, source = excluded.source, captured_at = now()
+    `;
+  }
+}
+
+/** Fetch + persist one single-dimension report; returns a clean warning, else null. */
+async function syncReport(
+  sql: Sql,
+  listingId: string,
+  report: string,
+  source: string,
+  fetcher: () => Promise<{ records: ReportRecord[]; dimension: string } | null>,
+): Promise<string | null> {
+  const label = report.replace(/_/g, " ");
+  try {
+    const found = await fetcher();
+    if (!found) return `${label} report: file not found for the checked months`;
+    if (found.records.length === 0) return `${label} report: no rows after parsing`;
+    await persistReports(sql, listingId, report, found.dimension, found.records, source);
+    return null;
+  } catch (err) {
+    return `${label} report: ${reportErrMessage(err)}`;
+  }
+}
+
+/** Fetch + persist the multi-dimension traffic-source report; returns a clean warning, else null. */
+async function syncTrafficSource(
+  sql: Sql,
+  listingId: string,
+  source: string,
+  fetcher: () => Promise<{ records: ReportMultiRecord[]; dimension: string } | null>,
+): Promise<string | null> {
+  try {
+    const found = await fetcher();
+    if (!found) return `store performance (traffic source) report: file not found for the checked months`;
+    if (found.records.length === 0) return `store performance (traffic source) report: no rows after parsing`;
+    await persistMultiReports(sql, listingId, found.records, source);
+    return null;
+  } catch (err) {
+    return `store performance (traffic source) report: ${reportErrMessage(err)}`;
+  }
+}
 
 /** Sync a single listing: fetch official reviews, upsert, snapshot, record the run. */
 async function syncListing(
@@ -45,7 +141,7 @@ async function syncListing(
   const recentlySynced =
     listing.last_synced_at && Date.now() - new Date(listing.last_synced_at).getTime() < opts.dedupeMs;
   if (!opts.force && recentlySynced) {
-    return { ...base, inserted: 0, fetched: 0, ratingCaptured: false, skipped: true, status: "skipped", error: null };
+    return { ...base, inserted: 0, fetched: 0, ratingCaptured: false, skipped: true, status: "skipped", error: null, reportsStatus: "not_configured", reportWarnings: [] };
   }
 
   const runRows = (await sql`
@@ -96,12 +192,16 @@ async function syncListing(
       values (${listing.id}, ${summary.avgRating}, ${summary.ratingsCount}, ${JSON.stringify(summary.histogram)})
     `;
 
-    // The headline rating is the OFFICIAL value the store API returns, never one
-    // we compute. Apple exposes per-storefront averages via iTunes Lookup; Google
-    // has no official aggregate API, so it stays blank (reviews/distribution only).
+    // The headline rating is the OFFICIAL value the store returns, never one we
+    // compute (except the explicit Google review-average fallback below).
+    const cfg = loadMobileReviewsConfig();
+    const reportWarnings: string[] = [];
+    let reportAttempts = 0;
     let officialRatings: TerritoryRating[] = [];
     let currentRating: number | null = null;
     let ratingsCount: number | null = null;
+    let ratingSource: string | null = null;
+    let ratingAsOf: string | null = null;
     if (store === "apple") {
       // Apple exposes the official displayed per-storefront average via iTunes Lookup.
       const territories = [...reviews.map((r) => r.country ?? ""), listing.country];
@@ -110,24 +210,78 @@ async function syncListing(
         officialRatings.find((t) => t.territory === toAlpha2(listing.country)) ?? officialRatings[0] ?? null;
       currentRating = primary?.avg ?? null;
       ratingsCount = primary?.count ?? null;
+      ratingSource = "itunes_lookup";
     } else {
-      // Google's Android Publisher reviews API returns per-review star ratings but
-      // no store-wide aggregate, so the headline is the average of those reviews.
-      currentRating = summary.avgRating;
-      ratingsCount = summary.ratingsCount;
+      // Google: the official per-country averages come from the Play Console ratings
+      // report (GCS). reviews.list excludes rating-only feedback, so it can't give the
+      // aggregate. Fall back to the fetched-review average only if no report bucket.
+      let usedReport = false;
+      if (cfg.google.reportsBucket) {
+        reportAttempts++;
+        try {
+          const report = await fetchGooglePlayCountryRatings(cfg.google, appIdentifier);
+          if (report && report.territories.length > 0) {
+            officialRatings = report.territories.map((t) => ({ territory: t.territory, avg: t.avg, count: null }));
+            const primary =
+              officialRatings.find((t) => t.territory === toAlpha2(listing.country)) ?? officialRatings[0] ?? null;
+            currentRating = primary?.avg ?? null;
+            ratingsCount = null; // the report has no per-country count
+            ratingSource = "google_play_console_ratings_report";
+            ratingAsOf = report.asOf;
+            usedReport = true;
+          } else {
+            reportWarnings.push("ratings report: no data yet");
+          }
+        } catch (err) {
+          reportWarnings.push(`ratings report: ${reportErrMessage(err)}`);
+        }
+      }
+      if (!usedReport) {
+        currentRating = summary.avgRating;
+        ratingsCount = summary.ratingsCount;
+        ratingSource = "fetched_reviews";
+      }
     }
     await sql`
       update mobile_app_listings
       set current_rating = ${currentRating},
           ratings_count = ${ratingsCount},
           official_ratings = ${officialRatings.length ? JSON.stringify(officialRatings) : null},
+          rating_source = ${ratingSource},
+          rating_as_of = ${ratingAsOf},
           last_synced_at = now()
       where id = ${listing.id}
     `;
+    // Play Console bulk reports: installs, crashes, store-performance time series.
+    // Best-effort — never fail the review sync — but surface warnings instead of
+    // swallowing them, so a bad bucket / permission shows up in the UI.
+    if (store === "google" && cfg.google.reportsBucket) {
+      reportAttempts += 4;
+      const sp = "google_play_console_store_performance_report";
+      const warnings = await Promise.all([
+        syncReport(sql, listing.id, "installs", "google_play_console_stats_report", () => fetchInstalls(cfg.google, appIdentifier)),
+        syncReport(sql, listing.id, "crashes", "google_play_console_crashes_report", () => fetchCrashes(cfg.google, appIdentifier)),
+        syncReport(sql, listing.id, "store_performance", sp, () => fetchStorePerformanceCountry(cfg.google, appIdentifier)),
+        syncTrafficSource(sql, listing.id, sp, () => fetchStorePerformanceTrafficSource(cfg.google, appIdentifier)),
+      ]);
+      for (const w of warnings) if (w) reportWarnings.push(w);
+    }
+
+    const ratingCaptured = currentRating != null || officialRatings.length > 0;
+    const reportsStatus: ReportsStatus =
+      reportAttempts === 0
+        ? "not_configured"
+        : reportWarnings.length === 0
+          ? "success"
+          : reportWarnings.length >= reportAttempts
+            ? "failed"
+            : "partial";
+
     if (runId) {
       await sql`
         update app_review_sync_runs
-        set status = 'success', finished_at = now(), fetched_count = ${reviews.length}, upserted_count = ${inserted}
+        set status = 'success', finished_at = now(), fetched_count = ${reviews.length}, upserted_count = ${inserted},
+            report_status = ${reportsStatus}, report_warnings = ${JSON.stringify(reportWarnings)}
         where id = ${runId}::uuid
       `;
     }
@@ -135,10 +289,12 @@ async function syncListing(
       ...base,
       inserted,
       fetched: reviews.length,
-      ratingCaptured: true,
+      ratingCaptured,
       skipped: false,
       status: "success",
       error: null,
+      reportsStatus,
+      reportWarnings,
     };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -149,7 +305,7 @@ async function syncListing(
         where id = ${runId}::uuid
       `.catch(() => null);
     }
-    return { ...base, inserted: 0, fetched: 0, ratingCaptured: false, skipped: false, status: "failed", error };
+    return { ...base, inserted: 0, fetched: 0, ratingCaptured: false, skipped: false, status: "failed", error, reportsStatus: "not_configured", reportWarnings: [] };
   }
 }
 

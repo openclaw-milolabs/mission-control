@@ -9,7 +9,9 @@ import { ReviewsStream } from "@/components/mobile-apps/reviews-stream";
 import { RatingDistribution } from "@/components/mobile-apps/rating-distribution";
 import { RatingTrend, type TrendPoint } from "@/components/mobile-apps/rating-trend";
 import { SentimentDigest } from "@/components/mobile-apps/sentiment-digest";
+import { PlayReportsCard, type ReportPoint, type TrafficSource } from "@/components/mobile-apps/play-reports-card";
 import { countryName, flagEmoji, toAlpha2 } from "@/lib/mobile-apps/country-codes";
+import { formatDate } from "@/lib/format-date";
 import { useModules } from "@/components/modules/modules-provider";
 import { toast } from "sonner";
 
@@ -24,6 +26,8 @@ type Listing = {
   current_rating: number | null;
   ratings_count: number | null;
   official_ratings: TerritoryRating[] | null;
+  rating_source: string | null;
+  rating_as_of: string | null;
   last_synced_at: string | null;
 };
 
@@ -62,7 +66,22 @@ type SyncRun = {
   fetched_count: number;
   upserted_count: number;
   error_message: string | null;
+  report_status?: string | null;
+  report_warnings?: unknown;
 };
+
+function asStringArray(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(String);
+  if (typeof v === "string") {
+    try {
+      const p = JSON.parse(v);
+      return Array.isArray(p) ? p.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
 
 const STORE_META: Record<StoreKey, { label: string; Icon: typeof IconBrandApple }> = {
   apple: { label: "App Store", Icon: IconBrandApple },
@@ -121,8 +140,12 @@ function StoreScoreCard({
   const selected = picked ?? defaultTerr;
   const selEntry = territories.find((t) => t.territory === selected) ?? null;
 
-  const headlineAvg = isApple ? selEntry?.avg ?? null : listing?.current_rating ?? null;
-  const headlineCount = isApple ? selEntry?.count ?? null : listing?.ratings_count ?? null;
+  // Use the selected storefront when we have per-country data (Apple always;
+  // Google when the Play Console report is configured); else the listing total.
+  const headlineAvg = selEntry ? selEntry.avg : listing?.current_rating ?? null;
+  const headlineCount = selEntry ? selEntry.count : listing?.ratings_count ?? null;
+  const fromReport = listing?.rating_source === "google_play_console_ratings_report";
+  const storeRatingLabel = isApple ? "App Store rating" : "Google Play rating";
 
   return (
     <div className="rounded-2xl border bg-card p-6">
@@ -141,19 +164,24 @@ function StoreScoreCard({
         </span>
       </div>
 
+      {/* Surface Play Console report problems instead of silently swallowing them. */}
+      {!isApple && asStringArray(run?.report_warnings).length > 0 ? (
+        <div className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-500">
+          <span className="font-medium">Reports:</span> {asStringArray(run?.report_warnings).join(" · ")}
+        </div>
+      ) : null}
+
       {/* Headline rating, labeled with the storefront it represents */}
       <div className="mt-5">
         <p className="mb-2 flex items-center gap-1.5 text-sm font-medium">
-          {isApple && selEntry ? (
+          {selEntry ? (
             <>
               <span className="text-base leading-none">{flagEmoji(selected)}</span>
               <span>{countryName(selected)}</span>
-              <span className="text-muted-foreground">App Store rating</span>
+              <span className="text-muted-foreground">{storeRatingLabel}</span>
             </>
-          ) : isApple ? (
-            <span className="text-muted-foreground">App Store rating</span>
           ) : (
-            <span className="text-muted-foreground">All reviews</span>
+            <span className="text-muted-foreground">{storeRatingLabel}</span>
           )}
         </p>
         <div className="flex items-end gap-4">
@@ -167,9 +195,11 @@ function StoreScoreCard({
                 ? headlineAvg != null
                   ? `official · ${headlineCount?.toLocaleString() ?? "—"} ratings`
                   : "no rating from the App Store API yet"
-                : headlineAvg != null
-                  ? `from ${headlineCount?.toLocaleString() ?? "—"} reviews · no store-wide aggregate via API`
-                  : "no reviews fetched yet"}
+                : fromReport
+                  ? `Play Console ratings report · delayed 3–7 days${listing?.rating_as_of ? ` · as of ${formatDate(listing.rating_as_of)}` : ""}`
+                  : headlineAvg != null
+                    ? `from ${headlineCount?.toLocaleString() ?? "—"} reviews · no store-wide aggregate via API`
+                    : "no reviews fetched yet"}
             </p>
           </div>
         </div>
@@ -218,6 +248,11 @@ function StoreScoreCard({
           </p>
         </div>
         <RatingDistribution counts={counts} />
+        {!isApple ? (
+          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/60">
+            Written reviews only; rating-only feedback isn’t returned by the Reviews API.
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -236,6 +271,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [digest, setDigest] = useState<{ summary_md: string; created_at: string } | null>(null);
   const [genBusy, setGenBusy] = useState(false);
+  const [reports, setReports] = useState<{ installs: ReportPoint[]; crashes: ReportPoint[]; storePerformance: ReportPoint[]; trafficSources: TrafficSource[] }>({ installs: [], crashes: [], storePerformance: [], trafficSources: [] });
 
   useEffect(() => {
     if (ready && !isEnabled("mobile-apps")) router.replace("/settings#modules");
@@ -253,6 +289,12 @@ export function AppDetailClient({ appId }: { appId: string }) {
         setTrend(Array.isArray(json.trend) ? json.trend : []);
         setSyncRuns(Array.isArray(json.syncRuns) ? json.syncRuns : []);
         setNegativeThreshold(json.negativeThreshold ?? 3);
+        setReports({
+          installs: Array.isArray(json.reports?.installs) ? json.reports.installs : [],
+          crashes: Array.isArray(json.reports?.crashes) ? json.reports.crashes : [],
+          storePerformance: Array.isArray(json.reports?.store_performance) ? json.reports.store_performance : [],
+          trafficSources: Array.isArray(json.reports?.traffic_sources) ? json.reports.traffic_sources : [],
+        });
       } else {
         toast.error(json.error ?? "Failed to load app");
       }
@@ -449,6 +491,16 @@ export function AppDetailClient({ appId }: { appId: string }) {
                 />
               ))}
             </div>
+          ) : null}
+
+          {/* Play Console bulk reports (installs + stability) — Google only */}
+          {store !== "apple" ? (
+            <PlayReportsCard
+              installs={reports.installs}
+              crashes={reports.crashes}
+              storePerformance={reports.storePerformance}
+              trafficSources={reports.trafficSources}
+            />
           ) : null}
 
           {/* Main: reviews + rail */}

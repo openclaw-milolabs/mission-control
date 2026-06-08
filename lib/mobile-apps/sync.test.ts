@@ -51,7 +51,10 @@ const review = (id: string): RawReview => ({
   raw: { id },
 });
 
-const baseConfig = { sync: { maxPages: 10, concurrency: 2, negativeThreshold: 3 } };
+const baseConfig = {
+  google: { reportsBucket: null, reportsLookbackMonths: 3 },
+  sync: { maxPages: 10, concurrency: 2, negativeThreshold: 3 },
+};
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -87,6 +90,19 @@ describe("syncApp upsert + dedupe", () => {
     expect(upsert).toContain("body = excluded.body");
     expect(upsert).toContain("submitted_at = excluded.submitted_at");
     expect(upsert).toContain("fetched_at = now()");
+  });
+
+  it("ratingCaptured is false when no rating could be captured", async () => {
+    const fake = makeFakeSql([{ id: "L1", store: "google", store_app_id: "com.x", country: "us", last_synced_at: null }]);
+    vi.mocked(getSql).mockReturnValue(fake.sql as never);
+    vi.mocked(loadMobileReviewsConfig).mockReturnValue(baseConfig as never);
+    // A review with no star rating → no review average, and no reports bucket → no official rating.
+    const noStar: RawReview = { ...review("r1"), rating: null };
+    vi.mocked(getProvider).mockReturnValue({ fetchReviews: vi.fn(async () => [noStar]) } as never);
+
+    const [res] = await syncApp("app1", { force: true });
+    expect(res.status).toBe("success");
+    expect(res.ratingCaptured).toBe(false);
   });
 });
 

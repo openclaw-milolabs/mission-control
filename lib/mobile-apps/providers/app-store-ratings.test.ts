@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { parseiTunesLookup } from "@/lib/mobile-apps/providers/app-store-ratings";
+import { parseiTunesLookup, APPLE_STOREFRONTS } from "@/lib/mobile-apps/providers/app-store-ratings";
+
+describe("APPLE_STOREFRONTS", () => {
+  it("covers the full storefront list (incl ro/ru), not just major countries", () => {
+    expect(APPLE_STOREFRONTS).toContain("ro");
+    expect(APPLE_STOREFRONTS).toContain("ru");
+    expect(APPLE_STOREFRONTS).toContain("tr");
+    expect(APPLE_STOREFRONTS).toContain("nl");
+    expect(APPLE_STOREFRONTS.length).toBeGreaterThan(100);
+    expect(new Set(APPLE_STOREFRONTS).size).toBe(APPLE_STOREFRONTS.length); // no dupes
+  });
+});
 
 describe("parseiTunesLookup", () => {
   it("reads the official averageUserRating + userRatingCount Apple returns", () => {

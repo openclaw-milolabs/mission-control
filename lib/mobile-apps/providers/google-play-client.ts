@@ -12,7 +12,7 @@ export const ANDROID_PUBLISHER_SCOPE = "https://www.googleapis.com/auth/androidp
  * variable is an opt-in fallback for runtimes that cannot read external files.
  * The decoded JSON is never logged.
  */
-function loadServiceAccount(cfg: GoogleConfig): Record<string, unknown> {
+export function loadServiceAccount(cfg: GoogleConfig): Record<string, unknown> {
   try {
     if (cfg.serviceAccountJsonPath) {
       return JSON.parse(readFileSync(expandHomePath(cfg.serviceAccountJsonPath), "utf8")) as Record<string, unknown>;

@@ -47,6 +47,8 @@ describe("config-status never leaks secrets to the frontend", () => {
         packageName: "com.secret.package",
         serviceAccountJsonPath: "/secret/path/sa.json",
         serviceAccountJsonBase64: "U0VDUkVU",
+        reportsBucket: "pubsite_prod_rev_secret",
+        reportsLookbackMonths: 3,
       },
       apple: {
         enabled: true,

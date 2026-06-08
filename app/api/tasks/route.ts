@@ -781,12 +781,28 @@ export async function POST(request: Request) {
       `;
       const updated = rows[0];
       if (updated?.id) {
-        await audit({
-          event: 'Ticket updated',
-          details: updated.title || String(body.title || '') || ticketId,
-          level: 'info',
-          ticketId: updated.id,
-        });
+        // If this update moved the ticket between columns, audit it as a status
+        // change (with from→to) rather than a generic edit. The drag/details UI
+        // uses moveTicket, but any caller passing columnId here is covered too.
+        if (updated.column_id && String(updated.column_id) !== String(before.column_id)) {
+          const colRows = await sql`select id, title from columns where id in (${String(before.column_id)}, ${String(updated.column_id)})`;
+          const titleById = new Map(colRows.map((c) => [String(c.id), String(c.title)]));
+          const fromTitle = titleById.get(String(before.column_id)) || 'Unknown';
+          const toTitle = titleById.get(String(updated.column_id)) || 'Unknown';
+          await audit({
+            event: 'Status changed',
+            details: `Moved from ${fromTitle} to ${toTitle}.`,
+            level: 'success',
+            ticketId: updated.id,
+          });
+        } else {
+          await audit({
+            event: 'Ticket updated',
+            details: updated.title || String(body.title || '') || ticketId,
+            level: 'info',
+            ticketId: updated.id,
+          });
+        }
       }
       return ok({ ticket: updated });
     }
@@ -1144,9 +1160,11 @@ export async function POST(request: Request) {
       const ticketId = String(body.ticketId || "");
       const event = String(body.event || "").trim();
       if (!ticketId || !event) return fail("Ticket and event are required.");
+      // Attribute every client-driven activity entry (status changes, edits,
+      // checklist, etc.) to the logged-in user so the feed always shows a user.
       const rows = await sql`
-        insert into ticket_activity (ticket_id, source, event, details, level)
-        values (${ticketId}, ${String(body.source || 'Tasks')}, ${event}, ${String(body.details || '')}, ${String(body.level || 'info')})
+        insert into ticket_activity (ticket_id, source, event, details, level, actor_name, actor_email)
+        values (${ticketId}, ${String(body.source || 'Tasks')}, ${event}, ${String(body.details || '')}, ${String(body.level || 'info')}, ${actor.name}, ${actor.email})
         returning *
       `;
       const inserted = rows[0];

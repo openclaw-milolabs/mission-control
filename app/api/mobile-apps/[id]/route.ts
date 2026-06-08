@@ -16,6 +16,20 @@ async function workspaceId(sql: ReturnType<typeof getSql>) {
   return rows[0]?.id ?? null;
 }
 
+/** jsonb metrics may arrive as an object or a JSON string depending on the driver. */
+function asMetricsObject(v: unknown): Record<string, number | null> {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, number | null>;
+  if (typeof v === "string") {
+    try {
+      const p = JSON.parse(v);
+      return p && typeof p === "object" ? (p as Record<string, number | null>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const session = await getSession();
@@ -35,7 +49,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     if (!appRows[0]) return fail("App not found", 404);
 
     const listings = (await sql`
-      select id::text, store, store_app_id, country, current_rating::float8 as current_rating, ratings_count, official_ratings, last_synced_at
+      select id::text, store, store_app_id, country, current_rating::float8 as current_rating, ratings_count,
+             official_ratings, rating_source, rating_as_of, last_synced_at
       from mobile_app_listings where mobile_app_id = ${id}::uuid
     `) as unknown as Array<{ id: string; store: string }>;
     const listingIds = listings.map((l) => l.id);
@@ -65,7 +80,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         : await sql`
             select distinct on (run.listing_id)
               run.listing_id::text, run.store, run.status, run.started_at, run.finished_at,
-              run.fetched_count, run.upserted_count, run.error_message
+              run.fetched_count, run.upserted_count, run.error_message, run.report_status, run.report_warnings
             from app_review_sync_runs run
             where run.listing_id = any(${sql.array(listingIds)}::uuid[])
             order by run.listing_id, run.started_at desc
@@ -95,7 +110,65 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
             group by l.store
           `;
 
-    return ok({ app: appRows[0], listings, trend, syncRuns, summary, negativeThreshold });
+    // Play Console bulk-report time series, rolled up by date so any breakdown
+    // dimension (overview / country / app_version / …) works.
+    const reports: Record<string, Array<Record<string, unknown>>> = {};
+    if (listingIds.length > 0) {
+      const seriesRows = (await sql`
+        select report, to_char(metric_date, 'YYYY-MM-DD') as date, metrics
+        from mobile_app_report_metrics
+        where listing_id = any(${sql.array(listingIds)}::uuid[])
+          and report in ('installs','crashes')
+        order by metric_date asc
+      `) as unknown as Array<{ report: string; date: string; metrics: unknown }>;
+      const rollup = new Map<string, Map<string, Record<string, number>>>();
+      for (const r of seriesRows) {
+        const m = asMetricsObject(r.metrics);
+        const dates = rollup.get(r.report) ?? new Map<string, Record<string, number>>();
+        const agg = dates.get(r.date) ?? {};
+        for (const [k, v] of Object.entries(m)) if (typeof v === "number") agg[k] = (agg[k] ?? 0) + v;
+        dates.set(r.date, agg);
+        rollup.set(r.report, dates);
+      }
+      for (const [report, dates] of rollup) {
+        reports[report] = [...dates.entries()]
+          .sort(([a], [b]) => (a < b ? -1 : 1))
+          .map(([date, metrics]) => ({ date, metrics }));
+      }
+
+      const storePerf = (await sql`
+        select to_char(metric_date, 'YYYY-MM-DD') as date,
+               sum((metrics->>'store_listing_visitors')::numeric)::float8 as visitors,
+               sum((metrics->>'store_listing_acquisitions')::numeric)::float8 as acquisitions
+        from mobile_app_report_metrics
+        where listing_id = any(${sql.array(listingIds)}::uuid[]) and report = 'store_performance' and dimension = 'country'
+        group by metric_date order by metric_date asc
+      `) as unknown as Array<{ date: string; visitors: number | null; acquisitions: number | null }>;
+      if (storePerf.length > 0) {
+        reports.store_performance = storePerf.map((r) => ({
+          date: r.date,
+          metrics: { store_listing_visitors: r.visitors, store_listing_acquisitions: r.acquisitions },
+        }));
+      }
+
+      // Top acquisition traffic sources (latest available date).
+      const traffic = (await sql`
+        select dimensions, metrics
+        from mobile_app_report_metrics
+        where listing_id = any(${sql.array(listingIds)}::uuid[])
+          and report = 'store_performance' and dimension = 'traffic_source'
+          and metric_date = (
+            select max(metric_date) from mobile_app_report_metrics
+            where listing_id = any(${sql.array(listingIds)}::uuid[])
+              and report = 'store_performance' and dimension = 'traffic_source'
+          )
+        order by (metrics->>'store_listing_acquisitions')::numeric desc nulls last
+        limit 8
+      `) as unknown as Array<{ dimensions: unknown; metrics: unknown }>;
+      if (traffic.length > 0) reports.traffic_sources = traffic.map((r) => ({ dimensions: r.dimensions, metrics: r.metrics }));
+    }
+
+    return ok({ app: appRows[0], listings, trend, syncRuns, summary, negativeThreshold, reports });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to load app", 500);
   }

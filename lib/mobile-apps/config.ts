@@ -108,6 +108,9 @@ export type GoogleConfig = StoreConfigStatus & {
   packageName: string | null;
   serviceAccountJsonPath: string | null;
   serviceAccountJsonBase64: string | null;
+  /** Play Console reporting GCS bucket (e.g. pubsite_prod_rev_xxxxx) for official ratings. */
+  reportsBucket: string | null;
+  reportsLookbackMonths: number;
 };
 
 export type AppleConfig = StoreConfigStatus & {
@@ -162,6 +165,7 @@ export function parseMobileReviewsConfig(env: Record<string, string>): MobileRev
       missing.push("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_PATH (or GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64)");
     if (missing.length) gError = `Missing required Google Play config: ${missing.join(", ")}`;
   }
+  const lookbackRaw = Number.parseInt(clean(env.GOOGLE_PLAY_REPORTS_LOOKBACK_MONTHS), 10);
   const google: GoogleConfig = {
     enabled: gEnabled,
     configured: gEnabled && gError === null,
@@ -169,6 +173,8 @@ export function parseMobileReviewsConfig(env: Record<string, string>): MobileRev
     packageName,
     serviceAccountJsonPath: saPath,
     serviceAccountJsonBase64: saB64,
+    reportsBucket: clean(env.GOOGLE_PLAY_REPORTS_BUCKET) || null,
+    reportsLookbackMonths: Number.isFinite(lookbackRaw) ? Math.min(Math.max(lookbackRaw, 1), 12) : 3,
   };
 
   // Apple

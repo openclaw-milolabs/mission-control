@@ -29,6 +29,8 @@ function cfg(overrides: Partial<MobileReviewsConfig> = {}): MobileReviewsConfig 
       packageName: "com.example.app",
       serviceAccountJsonPath: "/x.json",
       serviceAccountJsonBase64: null,
+      reportsBucket: null,
+      reportsLookbackMonths: 3,
     },
     apple: {
       enabled: true,

@@ -34,8 +34,11 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS mobile_app_listings_app_idx ON mobile_app_listings(mobile_app_id)`;
-  // Official per-storefront ratings (Apple iTunes Lookup): [{territory, avg, count}].
+  // Official per-storefront ratings (Apple iTunes Lookup / Google Play ratings report).
   await sql`ALTER TABLE mobile_app_listings ADD COLUMN IF NOT EXISTS official_ratings jsonb`;
+  // Where current_rating came from + how fresh it is (e.g. google_play_console_ratings_report).
+  await sql`ALTER TABLE mobile_app_listings ADD COLUMN IF NOT EXISTS rating_source text`;
+  await sql`ALTER TABLE mobile_app_listings ADD COLUMN IF NOT EXISTS rating_as_of timestamptz`;
   // Backfill the store CHECK on pre-existing tables — add ONLY if missing, never
   // drop (so a sync can't briefly run against a table with no constraint, and a
   // failed add leaves any existing constraint intact).
@@ -129,6 +132,28 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS app_review_sync_runs_listing_idx ON app_review_sync_runs(listing_id, started_at desc)`;
+  // Play Console report outcome per run (so report failures are visible, not swallowed).
+  await sql`ALTER TABLE app_review_sync_runs ADD COLUMN IF NOT EXISTS report_status text`;
+  await sql`ALTER TABLE app_review_sync_runs ADD COLUMN IF NOT EXISTS report_warnings jsonb`;
+  // Daily metrics from Play Console bulk reports (installs, crashes, ...). One row
+  // per listing/report/dimension/date; `metrics` holds the report's numeric columns.
+  await sql`
+    CREATE TABLE IF NOT EXISTS mobile_app_report_metrics (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+      report text NOT NULL,
+      dimension text NOT NULL DEFAULT 'overview',
+      dimension_value text NOT NULL DEFAULT '',
+      metric_date date NOT NULL,
+      metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+      source text,
+      captured_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (listing_id, report, dimension, dimension_value, metric_date)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_metrics_idx ON mobile_app_report_metrics(listing_id, report, metric_date)`;
+  // Structured text dimensions for multi-dimension reports (traffic source / search term / utm…).
+  await sql`ALTER TABLE mobile_app_report_metrics ADD COLUMN IF NOT EXISTS dimensions jsonb`;
   // Backfill the store CHECK on pre-existing sync_runs tables — add only if missing.
   await sql`
     DO $$
