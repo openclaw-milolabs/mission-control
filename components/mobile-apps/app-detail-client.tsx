@@ -558,10 +558,13 @@ export function AppDetailClient({ appId }: { appId: string }) {
     let cancelled = false;
     setSyncing(true);
     void (async () => {
+      // Light sync on open: refresh live reviews + ratings only. The heavy
+      // all-years Play Console CSV scan (memory-intensive, a likely crash cause)
+      // stays behind the "Refresh reports" button, not every page visit.
       await fetch("/api/mobile-apps/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId }),
+        body: JSON.stringify({ appId, syncReports: false }),
       }).catch(() => null);
       if (!cancelled) {
         await loadRef.current();

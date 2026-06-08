@@ -70,6 +70,22 @@ pid_running() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
+# Keep each log readable + disk bounded. copytruncate-style: copy to ".1" then
+# truncate IN PLACE so a running service's open file descriptor keeps writing to
+# the same (now-empty) file — no restart needed. One previous generation is kept.
+MAX_LOG_BYTES="${MAX_LOG_BYTES:-10485760}"   # 10 MB
+rotate_log() {
+  local f=$1
+  [ -f "$f" ] || return 0
+  local size
+  size=$(wc -c < "$f" 2>/dev/null || echo 0)
+  if [ "$size" -gt "$MAX_LOG_BYTES" ]; then
+    cp "$f" "${f}.1" 2>/dev/null || true
+    : > "$f"
+    echo "[mc] $(date -u +%Y-%m-%dT%H:%M:%SZ) rotated $(basename "$f") (was ${size} bytes; previous kept as $(basename "$f").1)" >> "$f"
+  fi
+}
+
 kill_port() {
   local port=${1:-3000}
   if command -v fuser >/dev/null 2>&1; then
@@ -90,6 +106,8 @@ start_service() {
   local pid_file="${SERVICE_PIDS[$svc]}"
   local log_file="${SERVICE_LOG_FILES[$svc]}"
   local cmd="${SERVICE_CMDS[$svc]}"
+
+  rotate_log "$log_file"
 
   if [ "$svc" = "nextjs" ]; then
     if [ "${NEXTJS_MODE:-prod}" = "dev" ]; then
@@ -229,6 +247,60 @@ WATCHDOG_PID_FILE="$PID_DIR/watchdog.pid"
 WATCHDOG_LOG="$LOG_DIR/watchdog.log"
 WATCHDOG_INTERVAL="${WATCHDOG_INTERVAL:-30}"
 WATCHDOG_SKIP="gateway-sync"
+# HTTP liveness for Next.js: a process can be alive but hung (event loop blocked or
+# deadlocked mid-sync). We probe the port and restart after N consecutive misses.
+# Tune via env: WATCHDOG_HTTP_URL / _TIMEOUT / _FAILS. Needs `curl`; without it the
+# watchdog falls back to PID-only checks.
+WATCHDOG_HTTP_URL="${WATCHDOG_HTTP_URL:-http://127.0.0.1:3000/}"
+WATCHDOG_HTTP_TIMEOUT="${WATCHDOG_HTTP_TIMEOUT:-10}"
+WATCHDOG_HTTP_FAILS="${WATCHDOG_HTTP_FAILS:-3}"
+
+# True if Next.js answers HTTP at all (any status code = accepting + routing).
+# Returns success when curl is unavailable, so we degrade to PID-only checks
+# rather than restart-looping a healthy server.
+nextjs_responsive() {
+  command -v curl >/dev/null 2>&1 || return 0
+  local code
+  code=$(curl -s -o /dev/null -m "$WATCHDOG_HTTP_TIMEOUT" -w "%{http_code}" "$WATCHDOG_HTTP_URL" 2>/dev/null) || true
+  [ -n "$code" ] && [ "$code" != "000" ]
+}
+
+# Restart one service from inside the watchdog, clearing any lingering pid/port.
+watchdog_restart_svc() {
+  local svc=$1 reason=$2
+  local pid_file="${SERVICE_PIDS[$svc]}"
+  local log_file="${SERVICE_LOG_FILES[$svc]}"
+  local cmd="${SERVICE_CMDS[$svc]}"
+  echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) $svc $reason — restarting..." >> "$WATCHDOG_LOG"
+  local old_pid
+  old_pid="$(cat "$pid_file" 2>/dev/null)" || true
+  if [ -n "$old_pid" ] && pid_running "$old_pid"; then
+    kill "$old_pid" 2>/dev/null || true
+    sleep 2
+    pid_running "$old_pid" && kill -9 "$old_pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file"
+  cd "$PROJECT_ROOT"
+  if [ "$svc" = "nextjs" ]; then
+    kill_port 3000
+    sleep 1
+    if [ "${NEXTJS_MODE:-prod}" = "dev" ]; then
+      cmd="$NEXTJS_DEV_CMD"
+    else
+      cmd="$NEXTJS_PROD_CMD"
+    fi
+  fi
+  nohup bash -c "$cmd" >> "$log_file" 2>&1 < /dev/null &
+  local new_pid=$!
+  echo "$new_pid" > "$pid_file"
+  sleep 1
+  if pid_running "$new_pid"; then
+    echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) $svc restarted (pid $new_pid)" >> "$WATCHDOG_LOG"
+  else
+    echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) $svc FAILED to restart — check $log_file" >> "$WATCHDOG_LOG"
+    rm -f "$pid_file"
+  fi
+}
 
 run_watchdog() {
   # Re-source .env so restarted services have DATABASE_URL etc.
@@ -239,9 +311,15 @@ run_watchdog() {
     source "$env_file"
     set +a
   fi
-  echo "[watchdog] Started (pid $$, interval ${WATCHDOG_INTERVAL}s)" >> "$WATCHDOG_LOG"
+  echo "[watchdog] Started (pid $$, interval ${WATCHDOG_INTERVAL}s, http ${WATCHDOG_HTTP_URL} t=${WATCHDOG_HTTP_TIMEOUT}s x${WATCHDOG_HTTP_FAILS})" >> "$WATCHDOG_LOG"
+  local nextjs_misses=0
   while true; do
     sleep "$WATCHDOG_INTERVAL"
+
+    # Keep logs bounded so they stay tailable and never fill the disk.
+    rotate_log "$WATCHDOG_LOG"
+    for svc in $SERVICES; do rotate_log "${SERVICE_LOG_FILES[$svc]}"; done
+
     for svc in $SERVICES; do
       case " $WATCHDOG_SKIP " in *" $svc "*) continue ;; esac
 
@@ -249,32 +327,25 @@ run_watchdog() {
       local pid
       pid="$(cat "$pid_file" 2>/dev/null)" || true
 
+      # 1) Process death → restart immediately.
       if [ -z "$pid" ] || ! pid_running "$pid"; then
-        echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) $svc is DOWN — restarting..." >> "$WATCHDOG_LOG"
-        rm -f "$pid_file"
-        cd "$PROJECT_ROOT"
-        local cmd="${SERVICE_CMDS[$svc]}"
-        local log_file="${SERVICE_LOG_FILES[$svc]}"
+        [ "$svc" = "nextjs" ] && nextjs_misses=0
+        watchdog_restart_svc "$svc" "is DOWN"
+        continue
+      fi
 
-        if [ "$svc" = "nextjs" ]; then
-          kill_port 3000
-          sleep 1
-          if [ "${NEXTJS_MODE:-prod}" = "dev" ]; then
-            cmd="$NEXTJS_DEV_CMD"
-          else
-            cmd="$NEXTJS_PROD_CMD"
-          fi
-        fi
-
-        nohup bash -c "$cmd" >> "$log_file" 2>&1 < /dev/null &
-        local new_pid=$!
-        echo "$new_pid" > "$pid_file"
-        sleep 1
-        if pid_running "$new_pid"; then
-          echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) $svc restarted (pid $new_pid)" >> "$WATCHDOG_LOG"
+      # 2) Next.js alive but hung (no HTTP) → restart after N consecutive misses,
+      #    so a brief slowdown during a heavy sync doesn't bounce a healthy server.
+      if [ "$svc" = "nextjs" ]; then
+        if nextjs_responsive; then
+          nextjs_misses=0
         else
-          echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) $svc FAILED to restart — check $log_file" >> "$WATCHDOG_LOG"
-          rm -f "$pid_file"
+          nextjs_misses=$((nextjs_misses + 1))
+          echo "[watchdog] $(date -u +%Y-%m-%dT%H:%M:%SZ) nextjs unresponsive over HTTP (#${nextjs_misses}/${WATCHDOG_HTTP_FAILS})" >> "$WATCHDOG_LOG"
+          if [ "$nextjs_misses" -ge "$WATCHDOG_HTTP_FAILS" ]; then
+            watchdog_restart_svc "nextjs" "hung (no HTTP response)"
+            nextjs_misses=0
+          fi
         fi
       fi
     done
@@ -287,8 +358,8 @@ start_watchdog() {
     return 0
   fi
   nohup bash -c "
-$(declare -p SERVICES SERVICE_CMDS SERVICE_LOG_FILES SERVICE_PIDS WATCHDOG_INTERVAL WATCHDOG_LOG WATCHDOG_SKIP PROJECT_ROOT PID_DIR LOG_DIR NEXTJS_MODE NEXTJS_DEV_CMD NEXTJS_PROD_CMD 2>/dev/null)
-$(declare -f run_watchdog pid_running kill_port)
+$(declare -p SERVICES SERVICE_CMDS SERVICE_LOG_FILES SERVICE_PIDS WATCHDOG_INTERVAL WATCHDOG_LOG WATCHDOG_SKIP WATCHDOG_HTTP_URL WATCHDOG_HTTP_TIMEOUT WATCHDOG_HTTP_FAILS MAX_LOG_BYTES PROJECT_ROOT PID_DIR LOG_DIR NEXTJS_MODE NEXTJS_DEV_CMD NEXTJS_PROD_CMD 2>/dev/null)
+$(declare -f run_watchdog watchdog_restart_svc nextjs_responsive rotate_log pid_running kill_port)
 run_watchdog" >> "$WATCHDOG_LOG" 2>&1 < /dev/null &
   local wpid=$!
   echo "$wpid" > "$WATCHDOG_PID_FILE"
@@ -313,7 +384,7 @@ DEV_MODE=0
 
 for arg in "$@"; do
   case "$arg" in
-    start|stop|restart|status|watch)
+    start|stop|restart|status|watch|logs)
       CMD="$arg"
       ;;
     --dev)
@@ -416,8 +487,19 @@ case "$CMD" in
   watch)
     start_watchdog
     ;;
+  logs)
+    # Follow a service log (default: nextjs). Ctrl-C to stop.
+    svc="${TARGET_SERVICE:-nextjs}"
+    log_file="${SERVICE_LOG_FILES[$svc]:-$LOG_DIR/${svc}.log}"
+    if [ ! -f "$log_file" ]; then
+      echo "No log yet at $log_file"
+      exit 0
+    fi
+    echo "[mc-services] Following $log_file (Ctrl-C to stop)"
+    tail -n 200 -f "$log_file"
+    ;;
   *)
-    echo "Usage: mc-services {start|stop|restart|status|watch} [service-name] [--dev]"
+    echo "Usage: mc-services {start|stop|restart|status|watch|logs} [service-name] [--dev]"
     echo "Services: $SERVICES"
     exit 1
     ;;
