@@ -30,6 +30,7 @@ type Health = {
   version?: string | null;
   isReadOnlyUser?: boolean | null;
   secretsPath?: string;
+  dataAsOf?: string | null;
 };
 
 const WINDOW_PILLS: Array<{ key: WindowName; label: string }> = [
@@ -292,6 +293,7 @@ export function MetricsClient() {
                 key={`${m.id}-${refreshKey}`}
                 metric={m}
                 globalWindow={globalWindow}
+                dataAsOf={health?.dataAsOf ?? null}
                 onEdit={() => openEdit(m)}
                 onDelete={() => setDeleteTarget(m)}
               />

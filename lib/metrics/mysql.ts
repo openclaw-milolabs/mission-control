@@ -134,6 +134,31 @@ export async function executeMetricQuery(
   });
 }
 
+// Backup-DB freshness: the max timestamp in the busiest/most-recent table.
+// Cached briefly so every card load doesn't re-probe. Best-effort — null when the
+// table is absent or the query fails (e.g. a deployment without PlayerSession).
+let _freshness: { at: number; value: string | null } | null = null;
+const FRESHNESS_TTL_MS = 60_000;
+const FRESHNESS_SQL = "SELECT MAX(`start`) AS as_of FROM PlayerSession";
+
+export async function fetchDataFreshness(): Promise<string | null> {
+  if (_freshness && Date.now() - _freshness.at < FRESHNESS_TTL_MS) return _freshness.value;
+  const creds = getMysqlCredentials();
+  if (!creds.ok) return null;
+  try {
+    const pool = await ensurePool(creds);
+    const [rows] = await pool.query<RowDataPacket[]>(FRESHNESS_SQL);
+    const raw = (rows[0] as { as_of?: string | null } | undefined)?.as_of ?? null;
+    // dateStrings:true → raw is already "YYYY-MM-DD HH:MM:SS" in DB-local time.
+    const value = raw ? String(raw) : null;
+    _freshness = { at: Date.now(), value };
+    return value;
+  } catch {
+    _freshness = { at: Date.now(), value: null };
+    return null;
+  }
+}
+
 export async function pingMysql(): Promise<{
   ok: boolean;
   error: string | null;
@@ -142,6 +167,7 @@ export async function pingMysql(): Promise<{
   version: string | null;
   isReadOnlyUser: boolean | null;
   secretsPath: string;
+  dataAsOf: string | null;
 }> {
   const creds = getMysqlCredentials();
   if (!creds.ok) {
@@ -153,6 +179,7 @@ export async function pingMysql(): Promise<{
       version: null,
       isReadOnlyUser: null,
       secretsPath: creds.secretsPath,
+      dataAsOf: null,
     };
   }
   try {
@@ -181,6 +208,7 @@ export async function pingMysql(): Promise<{
       version,
       isReadOnlyUser,
       secretsPath: creds.secretsPath,
+      dataAsOf: await fetchDataFreshness().catch(() => null),
     };
   } catch (err) {
     return {
@@ -191,6 +219,7 @@ export async function pingMysql(): Promise<{
       version: null,
       isReadOnlyUser: null,
       secretsPath: creds.secretsPath,
+      dataAsOf: null,
     };
   }
 }

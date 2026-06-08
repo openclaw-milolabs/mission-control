@@ -109,6 +109,21 @@ export function usesWindow(sql: string): boolean {
 }
 
 /**
+ * Does this metric actually bucket BY TIME?
+ *
+ * Only queries that reference `:bucket` are genuine time series, where the
+ * Hour/Day/Week/Month/Year *granularity* is meaningful (it picks the DATE_FORMAT
+ * mask). A query that uses `:since`/`:until` but NO `:bucket` is a windowed
+ * snapshot — e.g. a category donut grouped by platform. For those, granularity
+ * does nothing; only the lookback length matters, so the UI shows a single range
+ * selector instead of granularity pills. Matched as `:word` so `::cast` / column
+ * names never trip it.
+ */
+export function usesBucket(sql: string): boolean {
+  return /(?<![:\w]):bucket\b/i.test(sql);
+}
+
+/**
  * Human-readable summary of a resolved window for card UI:
  *   "Last 48 hours · hourly"
  *   "Last 12 weeks · weekly"

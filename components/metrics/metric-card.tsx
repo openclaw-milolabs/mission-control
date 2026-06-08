@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,10 +9,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Loader2Icon, MoreHorizontalIcon, PencilIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
+import { ChevronDownIcon, Loader2Icon, MoreHorizontalIcon, PencilIcon, RefreshCwIcon, Trash2Icon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MetricChart } from "@/components/metrics/metric-chart";
-import { describeWindow, usesWindow } from "@/lib/metrics/window";
+import { describeWindow, usesWindow, usesBucket } from "@/lib/metrics/window";
+import { computeBucketDelta, formatBucketLabel, parseDbDateTime } from "@/lib/metrics/delta";
 import { makeLimiter } from "@/lib/metrics/limiter";
 
 // Shared across every card instance: load a few at a time instead of firing
@@ -38,17 +39,10 @@ type WindowName = "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "custom
 type Props = {
   metric: MetricDef;
   globalWindow: WindowName;
+  /** Backup-DB freshness (max timestamp), so deltas ignore not-yet-synced buckets. */
+  dataAsOf?: string | null;
   onEdit: () => void;
   onDelete: () => void;
-};
-
-const WINDOW_LABEL: Record<WindowName, string> = {
-  hourly: "Hour",
-  daily: "Day",
-  weekly: "Week",
-  monthly: "Month",
-  yearly: "Year",
-  custom: "Custom",
 };
 
 const WINDOW_PILLS: Array<{ key: WindowName; label: string }> = [
@@ -59,7 +53,16 @@ const WINDOW_PILLS: Array<{ key: WindowName; label: string }> = [
   { key: "yearly", label: "Year" },
 ];
 
-export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
+// Snapshot lookback options (no time bucket): the same windows, framed as a
+// range to look back over rather than a granularity to bucket by.
+const LOOKBACK_OPTIONS: WindowName[] = ["hourly", "daily", "weekly", "monthly", "yearly"];
+
+/** Compact "data through" timestamp for the freshness note. */
+function fmtAsOf(d: Date): string {
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+export function MetricCard({ metric, globalWindow, dataAsOf = null, onEdit, onDelete }: Props) {
   const [override, setOverride] = useState<WindowName | "inherit">("inherit");
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   // Start true: a load always fires on mount (often queued behind the shared
@@ -68,16 +71,29 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ durationMs: number; rowCount: number; truncated: boolean } | null>(null);
 
-  // Windowless metrics (no :since/:until/:bucket) ignore the window entirely:
-  // the result is identical regardless, so we hide the pills and pin the window
-  // to a stable value to keep the per-window cache key constant.
+  // Three control modes, by what the SQL actually references:
+  //  - bucketed  (:bucket)            → real time series → granularity pills
+  //  - windowed  (:since/:until only) → snapshot         → single range selector
+  //  - neither                        → lifetime         → no control at all
+  // Windowless metrics ignore the window entirely (identical result regardless),
+  // so we pin to a stable value to keep the per-window cache key constant.
   const windowed = usesWindow(metric.sql_text);
+  const bucketed = usesBucket(metric.sql_text);
 
   const effectiveWindow: WindowName = !windowed
     ? "monthly"
     : override !== "inherit"
       ? override
       : globalWindow;
+
+  // Period-over-period delta (time-series only): change between the last two
+  // COMPLETE buckets, excluding any the backup hasn't fully synced yet.
+  const asOf = useMemo(() => parseDbDateTime(dataAsOf), [dataAsOf]);
+  const yCol = metric.y_columns[0] ?? "";
+  const delta = useMemo(
+    () => (bucketed && yCol ? computeBucketDelta({ rows, xColumn: metric.x_column, yColumn: yCol, window: effectiveWindow, asOf }) : null),
+    [bucketed, yCol, rows, metric.x_column, effectiveWindow, asOf],
+  );
 
   // We cache per-window so re-pressing a pill doesn't re-hit MySQL.
   const cache = useRef<Map<string, { rows: Record<string, unknown>[]; meta: NonNullable<typeof meta> }>>(new Map());
@@ -135,7 +151,38 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
           )}
           {meta && (
             <p className="mt-1 text-[10px] text-muted-foreground/70 tabular-nums">
-              {windowed ? `${describeWindow(effectiveWindow).range} · ${describeWindow(effectiveWindow).granularity} · ` : ""}{meta.rowCount} rows · {meta.durationMs}ms{meta.truncated ? " · truncated" : ""}
+              {bucketed
+                ? `${describeWindow(effectiveWindow).range} · ${describeWindow(effectiveWindow).granularity} · `
+                : windowed
+                  ? `${describeWindow(effectiveWindow).range} · `
+                  : ""}{meta.rowCount} rows · {meta.durationMs}ms{meta.truncated ? " · truncated" : ""}
+            </p>
+          )}
+          {delta && (
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-semibold tabular-nums",
+                  delta.delta > 0
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                    : delta.delta < 0
+                      ? "bg-rose-500/10 text-rose-600 dark:text-rose-400"
+                      : "bg-muted text-muted-foreground",
+                )}
+                title={`${yCol}: ${delta.previous.toLocaleString()} → ${delta.current.toLocaleString()}`}
+              >
+                {delta.delta > 0 ? <TrendingUpIcon className="size-3" /> : delta.delta < 0 ? <TrendingDownIcon className="size-3" /> : null}
+                {delta.delta > 0 ? "+" : ""}{delta.delta.toLocaleString()}
+              </span>
+              <span className="text-muted-foreground/70">
+                {formatBucketLabel(delta.previousLabel, effectiveWindow)} → {formatBucketLabel(delta.currentLabel, effectiveWindow)}
+              </span>
+            </div>
+          )}
+          {bucketed && asOf && (
+            <p className="mt-0.5 text-[10px] text-muted-foreground/55 tabular-nums">
+              data through {fmtAsOf(asOf)}
+              {delta && delta.excluded > 0 ? ` · ${delta.excluded} in-progress bucket${delta.excluded > 1 ? "s" : ""} excluded` : ""}
             </p>
           )}
         </div>
@@ -167,7 +214,8 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
         </div>
       </header>
 
-      {windowed && (
+      {bucketed ? (
+        // Real time series: pick how to bucket time.
         <div className="flex items-center gap-1 border-b bg-muted/[0.04] px-3 py-2">
           {WINDOW_PILLS.map((p) => {
             const active = effectiveWindow === p.key;
@@ -187,7 +235,31 @@ export function MetricCard({ metric, globalWindow, onEdit, onDelete }: Props) {
             );
           })}
         </div>
-      )}
+      ) : windowed ? (
+        // Windowed snapshot (e.g. a category donut): no time buckets exist, so a
+        // granularity picker would be misleading. Offer the lookback range only.
+        <div className="flex items-center gap-2 border-b bg-muted/[0.04] px-3 py-2">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">Range</span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-medium text-foreground transition-colors hover:bg-accent"
+                title="How far back to look — this metric has no time buckets, so only the range matters"
+              >
+                {describeWindow(effectiveWindow).range}
+                <ChevronDownIcon className="size-3" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {LOOKBACK_OPTIONS.map((w) => (
+                <DropdownMenuItem key={w} onClick={() => setOverride(w)}>
+                  {describeWindow(w).range}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      ) : null}
 
       <div className="flex-1 min-h-[260px] p-3">
         {error ? (
