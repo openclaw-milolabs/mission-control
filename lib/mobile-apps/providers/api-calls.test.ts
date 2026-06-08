@@ -65,7 +65,10 @@ describe("GoogleProvider.fetchReviews (official Android Publisher API)", () => {
     const reviews = await new GoogleProvider().fetchReviews({ store: "google", storeAppId: "com.example.app", country: "us" });
 
     expect(list).toHaveBeenCalledTimes(1);
-    expect(list).toHaveBeenCalledWith(expect.objectContaining({ packageName: "com.example.app" }));
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ packageName: "com.example.app" }),
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
     expect(reply).not.toHaveBeenCalled();
     expect(reviews).toHaveLength(1);
   });

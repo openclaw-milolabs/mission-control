@@ -36,11 +36,32 @@ export function buildDigestPrompt(appName: string, reviews: ReviewForPrompt[]): 
   ].join("\n");
 }
 
+/**
+ * Build a STRICT allowlisted env for the digest agent. Review text is untrusted
+ * (public, attacker-controllable) and is fed straight into the agent prompt, so
+ * the child process must NOT inherit DB credentials, store/API keys, the gateway
+ * token, etc. Only the variables a CLI needs to run are passed through.
+ */
+const AGENT_ENV_ALLOWLIST = [
+  "PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+  "SystemRoot", "windir", "COMSPEC", "PATHEXT", "PROCESSOR_ARCHITECTURE",
+  "TEMP", "TMP", "TMPDIR", "APPDATA", "LOCALAPPDATA",
+  "NODE_ENV", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "SHELL", "TERM",
+];
+
+export function buildAgentEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const key of AGENT_ENV_ALLOWLIST) {
+    if (source[key] !== undefined) out[key] = source[key];
+  }
+  return out;
+}
+
 /** Run an agent turn locally and return its text output. */
 async function dispatchAgent(agentId: string, message: string, timeoutMs = 120_000): Promise<string> {
-  const cleanEnv = { ...process.env };
-  delete cleanEnv.OPENCLAW_GATEWAY_URL;
-  delete cleanEnv.OPENCLAW_GATEWAY_TOKEN;
+  const cleanEnv = buildAgentEnv() as NodeJS.ProcessEnv;
   const { stdout, stderr } = await execFileAsync(
     "openclaw",
     ["agent", "--agent", agentId, "--message", message, "--json", "--local"],

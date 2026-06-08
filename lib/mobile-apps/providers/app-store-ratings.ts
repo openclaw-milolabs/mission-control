@@ -1,4 +1,5 @@
 import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
+import { fetchWithRetry } from "@/lib/mobile-apps/http";
 
 export type TerritoryRating = {
   /** alpha-2 storefront, e.g. "nl" */
@@ -40,7 +41,11 @@ export async function fetchAppleTerritoryRatings(
   for (const cc of alpha2) {
     try {
       const url = `${ITUNES_LOOKUP}?id=${encodeURIComponent(appStoreAppId)}&country=${encodeURIComponent(cc)}`;
-      const res = await fetch(url, { headers: { "User-Agent": "MissionControl/1.0" } });
+      const res = await fetchWithRetry(
+        url,
+        { headers: { "User-Agent": "MissionControl/1.0" } },
+        { timeoutMs: 15_000, retries: 1 },
+      );
       if (!res.ok) continue;
       const { avg, count } = parseiTunesLookup(await res.json());
       if (avg != null || count != null) out.push({ territory: cc, avg, count });

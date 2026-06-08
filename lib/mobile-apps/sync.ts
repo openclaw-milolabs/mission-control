@@ -5,6 +5,7 @@ import { summarizeReviews } from "@/lib/mobile-apps/metrics";
 import { getProvider } from "@/lib/mobile-apps/providers";
 import { fetchAppleTerritoryRatings, type TerritoryRating } from "@/lib/mobile-apps/providers/app-store-ratings";
 import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
+import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 import type { Store } from "@/lib/mobile-apps/types";
 
 type Sql = ReturnType<typeof getSql>;
@@ -70,8 +71,18 @@ async function syncListing(
           ${r.device ?? null}, ${r.raw ? JSON.stringify(r.raw) : null}
         )
         on conflict (listing_id, store_review_id) do update
-          set store_response = excluded.store_response,
-              raw_json = excluded.raw_json
+          set author = excluded.author,
+              rating = excluded.rating,
+              title = excluded.title,
+              body = excluded.body,
+              app_version = excluded.app_version,
+              country = excluded.country,
+              submitted_at = excluded.submitted_at,
+              store_response = excluded.store_response,
+              language = excluded.language,
+              device = excluded.device,
+              raw_json = excluded.raw_json,
+              fetched_at = now()
         returning (xmax = 0) as inserted
       `;
       if ((res as unknown as Array<{ inserted: boolean }>)[0]?.inserted) inserted += 1;
@@ -152,6 +163,7 @@ export async function syncApp(
   opts: { force?: boolean; dedupeMs?: number; store?: Store } = {},
 ): Promise<SyncResult[]> {
   const sql: Sql = getSql();
+  await ensureMobileAppsSchema(sql); // safe if a cron/job syncs before any route inits the schema
   const cfg = loadMobileReviewsConfig();
   const dedupeMs = opts.dedupeMs ?? DEFAULT_DEDUPE_MS;
   const force = Boolean(opts.force);

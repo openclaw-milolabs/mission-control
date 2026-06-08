@@ -3,6 +3,7 @@ import {
   APPSTORE_CONNECT_BASE_URL,
   createAppStoreConnectToken,
 } from "@/lib/mobile-apps/providers/app-store-client";
+import { fetchWithRetry } from "@/lib/mobile-apps/http";
 import type { ListingRef, RawReview, ReviewProvider } from "@/lib/mobile-apps/types";
 
 type AppleReviewResource = {
@@ -15,10 +16,14 @@ type AppleReviewResource = {
     createdDate?: string | null;
     territory?: string | null;
   };
+  relationships?: { response?: { data?: { id?: string } | null } };
 };
+
+type AppleIncluded = { type?: string; id?: string; attributes?: { responseBody?: string | null } };
 
 type CustomerReviewsResponse = {
   data?: AppleReviewResource[];
+  included?: AppleIncluded[];
   links?: { next?: string | null };
 };
 
@@ -30,15 +35,20 @@ function toIso(value: string | null | undefined): string | null {
 
 /**
  * Pure: map official App Store Connect `customerReviews` resources to the
- * internal RawReview shape. Developer responses live in a separate relationship
- * we do not fetch (view-only), so storeResponse is always null.
+ * internal RawReview shape. Developer responses are READ (via the `response`
+ * relationship + the `included` payload) — reading is allowed; we still never
+ * create or modify responses.
  */
-export function mapAppleReviews(resources: AppleReviewResource[]): RawReview[] {
+export function mapAppleReviews(
+  resources: AppleReviewResource[],
+  responsesById: Map<string, string> = new Map(),
+): RawReview[] {
   if (!Array.isArray(resources)) return [];
   const out: RawReview[] = [];
   for (const r of resources) {
     if (!r || !r.id) continue;
     const a = r.attributes ?? {};
+    const responseId = r.relationships?.response?.data?.id ?? null;
     out.push({
       storeReviewId: String(r.id),
       author: a.reviewerNickname ?? null,
@@ -49,11 +59,22 @@ export function mapAppleReviews(resources: AppleReviewResource[]): RawReview[] {
       country: a.territory ?? null,
       language: null,
       submittedAt: toIso(a.createdDate),
-      storeResponse: null,
+      storeResponse: responseId ? responsesById.get(responseId) ?? null : null,
       raw: r,
     });
   }
   return out;
+}
+
+/** Build a responseId -> responseBody map from the `included` payload. */
+export function indexAppleResponses(included: AppleIncluded[] | undefined): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const inc of included ?? []) {
+    if (inc?.type === "customerReviewResponses" && inc.id && inc.attributes?.responseBody) {
+      m.set(inc.id, inc.attributes.responseBody);
+    }
+  }
+  return m;
 }
 
 function cleanAppleError(status: number, appId: string): Error {
@@ -75,15 +96,16 @@ export class AppleProvider implements ReviewProvider {
     const token = await createAppStoreConnectToken(cfg.apple);
 
     const all: RawReview[] = [];
+    // include=response pulls developer replies into the `included` payload (read-only).
     let url: string | null = `${APPSTORE_CONNECT_BASE_URL}/v1/apps/${encodeURIComponent(
       appId,
-    )}/customerReviews?limit=200&sort=-createdDate`;
+    )}/customerReviews?limit=200&sort=-createdDate&include=response`;
 
     for (let page = 0; page < cfg.sync.maxPages && url; page++) {
-      const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const res: Response = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw cleanAppleError(res.status, appId);
       const json = (await res.json()) as CustomerReviewsResponse;
-      all.push(...mapAppleReviews(json.data ?? []));
+      all.push(...mapAppleReviews(json.data ?? [], indexAppleResponses(json.included)));
       url = json.links?.next ?? null;
     }
     return all;

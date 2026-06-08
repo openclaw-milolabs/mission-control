@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { mapGoogleReviews } from "@/lib/mobile-apps/providers/google";
 
+// Realistic shape: comments[] is a union — one entry has userComment, a
+// SEPARATE entry has developerComment.
 const sample = {
   reviewId: "gp:AOqpTOabc123",
   authorName: "Jane Doe",
@@ -16,6 +18,8 @@ const sample = {
         appVersionCode: 1234,
         appVersionName: "2.1.0",
       },
+    },
+    {
       developerComment: {
         text: "Sorry to hear that, please email support.",
         lastModified: { seconds: "1700001000" },
@@ -52,5 +56,11 @@ describe("mapGoogleReviews", () => {
     const noReply = { ...sample, comments: [{ userComment: sample.comments[0].userComment }] };
     const [r] = mapGoogleReviews([noReply]);
     expect(r.storeResponse).toBeNull();
+  });
+
+  it("maps the developer reply even when it is a separate later comment entry", () => {
+    const [r] = mapGoogleReviews([sample]);
+    expect(r.storeResponse).toBe("Sorry to hear that, please email support.");
+    expect(r.body).toBe("Crashes on launch since the last update.");
   });
 });

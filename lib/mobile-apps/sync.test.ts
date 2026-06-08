@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/local-db", () => ({ getSql: vi.fn() }));
 vi.mock("@/lib/mobile-apps/config", () => ({ loadMobileReviewsConfig: vi.fn() }));
 vi.mock("@/lib/mobile-apps/providers", () => ({ getProvider: vi.fn() }));
+vi.mock("@/lib/mobile-apps/ensure-schema", () => ({ ensureMobileAppsSchema: vi.fn(async () => {}) }));
 
 import { getSql } from "@/lib/local-db";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
 import { getProvider } from "@/lib/mobile-apps/providers";
+import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 import type { RawReview } from "@/lib/mobile-apps/types";
 import { syncApp } from "@/lib/mobile-apps/sync";
 
@@ -16,9 +18,11 @@ type Listing = { id: string; store: string; store_app_id: string; country: strin
 function makeFakeSql(listings: Listing[]) {
   const seen = new Set<string>();
   const inserts: string[] = [];
+  const queries: string[] = [];
   let runs = 0;
   const sql = (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> => {
     const q = strings.join(" ");
+    queries.push(q);
     if (q.includes("from mobile_app_listings") && q.includes("store_app_id")) return Promise.resolve(listings);
     if (q.includes("insert into app_review_sync_runs")) return Promise.resolve([{ id: `run-${++runs}` }]);
     if (q.includes("insert into app_reviews")) {
@@ -31,7 +35,7 @@ function makeFakeSql(listings: Listing[]) {
     return Promise.resolve([]);
   };
   // syncApp calls `.catch` on pg_notify; Promise already has it.
-  return { sql, seen, inserts };
+  return { sql, seen, inserts, queries };
 }
 
 const review = (id: string): RawReview => ({
@@ -67,6 +71,22 @@ describe("syncApp upsert + dedupe", () => {
     const second = await syncApp("app1", { force: true });
     expect(second[0].fetched).toBe(2);
     expect(second[0].inserted).toBe(0); // duplicates -> no new rows
+  });
+
+  it("ensures the schema and refreshes mutable fields on conflict", async () => {
+    const fake = makeFakeSql([{ id: "L1", store: "google", store_app_id: "com.x", country: "us", last_synced_at: null }]);
+    vi.mocked(getSql).mockReturnValue(fake.sql as never);
+    vi.mocked(loadMobileReviewsConfig).mockReturnValue(baseConfig as never);
+    vi.mocked(getProvider).mockReturnValue({ fetchReviews: vi.fn(async () => [review("r1")]) } as never);
+
+    await syncApp("app1", { force: true });
+
+    expect(ensureMobileAppsSchema).toHaveBeenCalled();
+    const upsert = fake.queries.find((q) => q.includes("insert into app_reviews")) ?? "";
+    expect(upsert).toContain("rating = excluded.rating");
+    expect(upsert).toContain("body = excluded.body");
+    expect(upsert).toContain("submitted_at = excluded.submitted_at");
+    expect(upsert).toContain("fetched_at = now()");
   });
 });
 

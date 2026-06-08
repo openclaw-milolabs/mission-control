@@ -21,9 +21,12 @@ export function mapGoogleReviews(raw: GpReview[]): RawReview[] {
   const out: RawReview[] = [];
   for (const r of raw) {
     if (!r || !r.reviewId) continue;
-    const comment = r.comments?.[0];
-    const user = comment?.userComment;
-    const dev = comment?.developerComment;
+    // Google's `comments[]` is a union: each entry holds EITHER a userComment OR a
+    // developerComment (not both). Scan for the latest of each rather than assuming
+    // comments[0] carries both, otherwise developer replies get dropped.
+    const comments = r.comments ?? [];
+    const user = [...comments].reverse().find((c) => c.userComment)?.userComment;
+    const dev = [...comments].reverse().find((c) => c.developerComment)?.developerComment;
     out.push({
       storeReviewId: String(r.reviewId),
       author: r.authorName ?? null,
@@ -71,7 +74,7 @@ export class GoogleProvider implements ReviewProvider {
     let token: string | undefined;
     try {
       for (let page = 0; page < cfg.sync.maxPages; page++) {
-        const res = await client.reviews.list({ packageName, maxResults: 100, token });
+        const res = await client.reviews.list({ packageName, maxResults: 100, token }, { timeout: 30_000 });
         all.push(...mapGoogleReviews(res.data.reviews ?? []));
         token = res.data.tokenPagination?.nextPageToken ?? undefined;
         if (!token) break;

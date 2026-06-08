@@ -7,5 +7,7 @@ const google = new GoogleProvider();
 
 /** Returns the official-API provider for a store (Android Publisher / App Store Connect). */
 export function getProvider(store: Store): ReviewProvider {
-  return store === "apple" ? apple : google;
+  if (store === "apple") return apple;
+  if (store === "google") return google;
+  throw new Error(`Unsupported mobile app store: ${store}`);
 }

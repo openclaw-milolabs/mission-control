@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapAppleReviews } from "@/lib/mobile-apps/providers/apple";
+import { mapAppleReviews, indexAppleResponses } from "@/lib/mobile-apps/providers/apple";
 
 const resource = {
   type: "customerReviews",
@@ -34,5 +34,23 @@ describe("mapAppleReviews", () => {
 
   it("returns [] for non-array input", () => {
     expect(mapAppleReviews(null as never)).toEqual([]);
+  });
+
+  it("maps a developer response from the included payload (read-only)", () => {
+    const review = {
+      id: "rev-1",
+      attributes: { rating: 1, body: "broken" },
+      relationships: { response: { data: { id: "resp-1" } } },
+    };
+    const responses = indexAppleResponses([
+      { type: "customerReviewResponses", id: "resp-1", attributes: { responseBody: "We pushed a fix." } },
+    ]);
+    const [r] = mapAppleReviews([review], responses);
+    expect(r.storeResponse).toBe("We pushed a fix.");
+  });
+
+  it("leaves storeResponse null when there is no response relationship", () => {
+    const [r] = mapAppleReviews([resource], indexAppleResponses([]));
+    expect(r.storeResponse).toBeNull();
   });
 });

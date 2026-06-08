@@ -4,6 +4,9 @@ let _ensured = false;
 
 export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Promise<void> {
   if (_ensured) return;
+  // gen_random_uuid() is core in Postgres 13+; pgcrypto provides it on older
+  // servers. Best-effort — ignore if the role can't create extensions.
+  await sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`.catch(() => null);
   await sql`
     CREATE TABLE IF NOT EXISTS mobile_apps (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -20,7 +23,7 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     CREATE TABLE IF NOT EXISTS mobile_app_listings (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       mobile_app_id uuid NOT NULL REFERENCES mobile_apps(id) ON DELETE CASCADE,
-      store text NOT NULL,
+      store text NOT NULL CHECK (store IN ('apple','google')),
       store_app_id text NOT NULL,
       country text NOT NULL DEFAULT 'us',
       current_rating numeric(3,2),
@@ -33,6 +36,9 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
   await sql`CREATE INDEX IF NOT EXISTS mobile_app_listings_app_idx ON mobile_app_listings(mobile_app_id)`;
   // Official per-storefront ratings (Apple iTunes Lookup): [{territory, avg, count}].
   await sql`ALTER TABLE mobile_app_listings ADD COLUMN IF NOT EXISTS official_ratings jsonb`;
+  // Backfill the store CHECK on pre-existing tables (idempotent).
+  await sql`ALTER TABLE mobile_app_listings DROP CONSTRAINT IF EXISTS mobile_app_listings_store_check`.catch(() => null);
+  await sql`ALTER TABLE mobile_app_listings ADD CONSTRAINT mobile_app_listings_store_check CHECK (store IN ('apple','google'))`.catch(() => null);
   await sql`
     CREATE TABLE IF NOT EXISTS app_reviews (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
