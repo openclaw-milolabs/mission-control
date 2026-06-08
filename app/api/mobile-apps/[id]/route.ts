@@ -47,6 +47,19 @@ function territoryKey(v: unknown): string {
   return String(v ?? "").trim().toLowerCase();
 }
 
+type OfficialRatingRow = Record<string, unknown> & {
+  territory?: unknown;
+  avg?: unknown;
+  count?: unknown;
+  review_count?: number;
+};
+
+type ListingRow = Record<string, unknown> & {
+  id: string;
+  store: string;
+  official_ratings?: unknown;
+};
+
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const session = await getSession();
@@ -69,7 +82,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       select id::text, store, store_app_id, country, current_rating::float8 as current_rating, ratings_count,
              official_ratings, rating_source, rating_as_of, last_synced_at
       from mobile_app_listings where mobile_app_id = ${id}::uuid
-    `) as unknown as Array<{ id: string; store: string }>;
+    `) as unknown as ListingRow[];
     const listingIds = listings.map((l) => l.id);
 
     // Attach fetched/stored written-review counts per country to the official
@@ -89,9 +102,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         byCountry.set(row.territory, row.review_count);
         counts.set(row.listing_id, byCountry);
       }
-      for (const listing of listings as Array<Record<string, unknown> & { id: string; official_ratings?: unknown }>) {
+      for (const listing of listings) {
         const byCountry = counts.get(listing.id) ?? new Map<string, number>();
-        const ratings = asJsonArray(listing.official_ratings).map((r) => {
+        const ratings: OfficialRatingRow[] = asJsonArray(listing.official_ratings).map((r): OfficialRatingRow => {
           const key = territoryKey(r.territory);
           return { ...r, review_count: byCountry.get(key) ?? 0 };
         });
