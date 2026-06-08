@@ -42,6 +42,11 @@ function isTrue(v: string | undefined): boolean {
   return clean(v).toLowerCase() === "true";
 }
 
+function clampInt(v: string | undefined, fallback: number, min: number, max: number): number {
+  const n = Number.parseInt(clean(v), 10);
+  return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : fallback;
+}
+
 // ── Secrets file parsing (KEY=VALUE, # comments, optional quotes) ────────────
 
 function parseEnvFile(filePath: string): Record<string, string> {
@@ -113,12 +118,18 @@ export type GoogleConfig = StoreConfigStatus & {
   reportsLookbackMonths: number;
 };
 
+export type AppleStorefrontScan = "off" | "forced" | "always";
+
 export type AppleConfig = StoreConfigStatus & {
   appId: string | null;
   issuerId: string | null;
   keyId: string | null;
   privateKeyPath: string | null;
   privateKeyBase64: string | null;
+  /** Whether the full ~155-storefront iTunes Lookup scan runs: never / only on a forced sync / every sync. */
+  fullStorefrontScan: AppleStorefrontScan;
+  storefrontScanConcurrency: number;
+  storefrontScanDelayMs: number;
 };
 
 export type SyncConfig = {
@@ -194,6 +205,13 @@ export function parseMobileReviewsConfig(env: Record<string, string>): MobileRev
       missing.push("APPSTORE_CONNECT_PRIVATE_KEY_PATH (or APPSTORE_CONNECT_PRIVATE_KEY_BASE64)");
     if (missing.length) aError = `Missing required App Store Connect config: ${missing.join(", ")}`;
   }
+  const scanRaw = clean(env.APPLE_FULL_STOREFRONT_SCAN).toLowerCase();
+  const fullStorefrontScan: AppleStorefrontScan =
+    scanRaw === "always" || scanRaw === "true"
+      ? "always"
+      : scanRaw === "off" || scanRaw === "false" || scanRaw === "never"
+        ? "off"
+        : "forced"; // safe default: only on a manual/forced sync
   const apple: AppleConfig = {
     enabled: aEnabled,
     configured: aEnabled && aError === null,
@@ -203,6 +221,9 @@ export function parseMobileReviewsConfig(env: Record<string, string>): MobileRev
     keyId,
     privateKeyPath: pkPath,
     privateKeyBase64: pkB64,
+    fullStorefrontScan,
+    storefrontScanConcurrency: clampInt(env.APPLE_STOREFRONT_SCAN_CONCURRENCY, 2, 1, 6),
+    storefrontScanDelayMs: clampInt(env.APPLE_STOREFRONT_SCAN_DELAY_MS, 250, 0, 5000),
   };
 
   const sync = syncSchema.parse({

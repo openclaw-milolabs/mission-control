@@ -1,7 +1,8 @@
 /**
- * Pure metrics helpers. All ratings/averages are computed from the reviews we
- * actually fetched via the official APIs (the publisher APIs do not expose a
- * store-wide aggregate), which is exactly what the dashboard advertises.
+ * Pure metrics helpers for fetched written reviews. These are review-history
+ * metrics only. Headline store ratings can come from separate official sources
+ * such as Google Play Console reports or Apple App Store storefront lookup;
+ * those sources must be labelled separately in the UI.
  */
 
 export type RatedReview = { rating: number | null };

@@ -1,6 +1,14 @@
 import pLimit from "p-limit";
 import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
-import { fetchWithRetry } from "@/lib/mobile-apps/http";
+import { fetchWithRetry, sleep } from "@/lib/mobile-apps/http";
+
+export type StorefrontScanOptions = {
+  /** When true, probe the full storefront list; otherwise only the passed territories. */
+  fullScan: boolean;
+  concurrency: number;
+  /** Delay before each request, to pace iTunes Lookup. */
+  delayMs: number;
+};
 
 /**
  * The full set of App Store storefronts (ISO 3166-1 alpha-2), so countries that
@@ -55,21 +63,25 @@ const ITUNES_LOOKUP = "https://itunes.apple.com/lookup";
 export async function fetchAppleTerritoryRatings(
   appStoreAppId: string,
   territories: string[],
+  opts: StorefrontScanOptions = { fullScan: true, concurrency: 2, delayMs: 250 },
 ): Promise<TerritoryRating[]> {
-  const alpha2 = [
-    ...new Set([...territories, ...APPLE_STOREFRONTS].map(toAlpha2).filter((c): c is string => !!c)),
-  ];
+  // Full scan probes every storefront; otherwise just the territories we already
+  // know about (review territories + the listing country). No caching.
+  const seed = opts.fullScan ? [...territories, ...APPLE_STOREFRONTS] : territories;
+  const alpha2 = [...new Set(seed.map(toAlpha2).filter((c): c is string => !!c))];
 
-  const limit = pLimit(4); // throttle so we don't hammer iTunes Lookup
+  const limit = pLimit(Math.max(1, opts.concurrency)); // bounded concurrency
   const results = await Promise.all(
     alpha2.map((cc) =>
       limit(async (): Promise<TerritoryRating | null> => {
         try {
+          if (opts.delayMs > 0) await sleep(opts.delayMs); // pace requests
           const url = `${ITUNES_LOOKUP}?id=${encodeURIComponent(appStoreAppId)}&country=${encodeURIComponent(cc)}`;
+          // retries: 0 — a rate-limited storefront is simply skipped, never a retry storm.
           const res = await fetchWithRetry(
             url,
             { headers: { "User-Agent": "MissionControl/1.0" } },
-            { timeoutMs: 15_000, retries: 1 },
+            { timeoutMs: 15_000, retries: 0 },
           );
           if (!res.ok) return null;
           const { avg, count } = parseiTunesLookup(await res.json());

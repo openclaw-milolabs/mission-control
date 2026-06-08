@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import pLimit from "p-limit";
 import { getSql } from "@/lib/local-db";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
@@ -10,12 +11,19 @@ import {
   fetchCrashes,
   fetchStorePerformanceCountry,
   fetchStorePerformanceTrafficSource,
+  reportNotFoundWarning,
+  RATINGS_DIMENSIONS,
+  INSTALLS_DIMENSIONS,
+  CRASHES_DIMENSIONS,
+  STORE_PERFORMANCE_COUNTRY_DIMENSIONS,
+  STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS,
   ReportError,
   type ReportRecord,
   type ReportMultiRecord,
 } from "@/lib/mobile-apps/providers/google-play-reports";
 import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
+import { ratingSourceCopy, type RatingSource } from "@/lib/mobile-apps/rating-source";
 import type { Store } from "@/lib/mobile-apps/types";
 
 type Sql = ReturnType<typeof getSql>;
@@ -42,6 +50,14 @@ export type SyncResult = {
   error: string | null;
   reportsStatus: ReportsStatus;
   reportWarnings: string[];
+  /** Machine-readable source of the headline/current rating. */
+  ratingSource: RatingSource | null;
+  /** Freshness date when the source exposes one, e.g. Google Play Console report date. */
+  ratingAsOf: string | null;
+  /** Admin/UI-safe source label, e.g. Google Play · Play Console report. */
+  ratingSourceLabel: string;
+  ratingFreshnessLabel: string | null;
+  ratingSourceHelperText: string;
 };
 
 const DEFAULT_DEDUPE_MS = 60_000;
@@ -80,7 +96,11 @@ async function persistMultiReports(
 ): Promise<void> {
   for (const r of records) {
     if (!r.date) continue;
-    const dimValue = (Object.values(r.dimensions).join("|").toLowerCase().slice(0, 400)) || "all";
+    // Stable hash of the (canonically ordered) dimensions so distinct
+    // source/search-term/utm combinations never collide on the unique key. The
+    // full dimensions object is kept in the jsonb column for display/debugging.
+    const canonical = JSON.stringify(Object.keys(r.dimensions).sort().map((k) => [k, r.dimensions[k]]));
+    const dimValue = createHash("sha1").update(canonical).digest("hex");
     await sql`
       insert into mobile_app_report_metrics (listing_id, report, dimension, dimension_value, metric_date, metrics, dimensions, source)
       values (${listingId}, 'store_performance', 'traffic_source', ${dimValue}, ${r.date}, ${JSON.stringify(r.values)}, ${JSON.stringify(r.dimensions)}, ${source})
@@ -97,11 +117,12 @@ async function syncReport(
   report: string,
   source: string,
   fetcher: () => Promise<{ records: ReportRecord[]; dimension: string } | null>,
+  notFoundWarning: string,
 ): Promise<string | null> {
   const label = report.replace(/_/g, " ");
   try {
     const found = await fetcher();
-    if (!found) return `${label} report: file not found for the checked months`;
+    if (!found) return notFoundWarning;
     if (found.records.length === 0) return `${label} report: no rows after parsing`;
     await persistReports(sql, listingId, report, found.dimension, found.records, source);
     return null;
@@ -116,10 +137,11 @@ async function syncTrafficSource(
   listingId: string,
   source: string,
   fetcher: () => Promise<{ records: ReportMultiRecord[]; dimension: string } | null>,
+  notFoundWarning: string,
 ): Promise<string | null> {
   try {
     const found = await fetcher();
-    if (!found) return `store performance (traffic source) report: file not found for the checked months`;
+    if (!found) return notFoundWarning;
     if (found.records.length === 0) return `store performance (traffic source) report: no rows after parsing`;
     await persistMultiReports(sql, listingId, found.records, source);
     return null;
@@ -141,7 +163,22 @@ async function syncListing(
   const recentlySynced =
     listing.last_synced_at && Date.now() - new Date(listing.last_synced_at).getTime() < opts.dedupeMs;
   if (!opts.force && recentlySynced) {
-    return { ...base, inserted: 0, fetched: 0, ratingCaptured: false, skipped: true, status: "skipped", error: null, reportsStatus: "not_configured", reportWarnings: [] };
+    return {
+      ...base,
+      inserted: 0,
+      fetched: 0,
+      ratingCaptured: false,
+      skipped: true,
+      status: "skipped",
+      error: null,
+      reportsStatus: "not_configured",
+      reportWarnings: [],
+      ratingSource: null,
+      ratingAsOf: null,
+      ratingSourceLabel: "Rating not refreshed",
+      ratingFreshnessLabel: null,
+      ratingSourceHelperText: "This listing was skipped because it was synced recently.",
+    };
   }
 
   const runRows = (await sql`
@@ -200,17 +237,23 @@ async function syncListing(
     let officialRatings: TerritoryRating[] = [];
     let currentRating: number | null = null;
     let ratingsCount: number | null = null;
-    let ratingSource: string | null = null;
+    let ratingSource: RatingSource | null = null;
     let ratingAsOf: string | null = null;
     if (store === "apple") {
       // Apple exposes the official displayed per-storefront average via iTunes Lookup.
       const territories = [...reviews.map((r) => r.country ?? ""), listing.country];
-      officialRatings = await fetchAppleTerritoryRatings(appIdentifier, territories).catch(() => []);
+      const mode = cfg.apple.fullStorefrontScan;
+      const fullScan = mode === "always" || (mode === "forced" && opts.force);
+      officialRatings = await fetchAppleTerritoryRatings(appIdentifier, territories, {
+        fullScan,
+        concurrency: cfg.apple.storefrontScanConcurrency,
+        delayMs: cfg.apple.storefrontScanDelayMs,
+      }).catch(() => []);
       const primary =
         officialRatings.find((t) => t.territory === toAlpha2(listing.country)) ?? officialRatings[0] ?? null;
       currentRating = primary?.avg ?? null;
       ratingsCount = primary?.count ?? null;
-      ratingSource = "itunes_lookup";
+      ratingSource = "apple_app_store_lookup";
     } else {
       // Google: the official per-country averages come from the Play Console ratings
       // report (GCS). reviews.list excludes rating-only feedback, so it can't give the
@@ -230,7 +273,7 @@ async function syncListing(
             ratingAsOf = report.asOf;
             usedReport = true;
           } else {
-            reportWarnings.push("ratings report: no data yet");
+            reportWarnings.push(reportNotFoundWarning("ratings", cfg.google, appIdentifier, RATINGS_DIMENSIONS));
           }
         } catch (err) {
           reportWarnings.push(`ratings report: ${reportErrMessage(err)}`);
@@ -239,7 +282,7 @@ async function syncListing(
       if (!usedReport) {
         currentRating = summary.avgRating;
         ratingsCount = summary.ratingsCount;
-        ratingSource = "fetched_reviews";
+        ratingSource = "google_reviews_api_fetched_reviews";
       }
     }
     await sql`
@@ -259,15 +302,43 @@ async function syncListing(
       reportAttempts += 4;
       const sp = "google_play_console_store_performance_report";
       const warnings = await Promise.all([
-        syncReport(sql, listing.id, "installs", "google_play_console_stats_report", () => fetchInstalls(cfg.google, appIdentifier)),
-        syncReport(sql, listing.id, "crashes", "google_play_console_crashes_report", () => fetchCrashes(cfg.google, appIdentifier)),
-        syncReport(sql, listing.id, "store_performance", sp, () => fetchStorePerformanceCountry(cfg.google, appIdentifier)),
-        syncTrafficSource(sql, listing.id, sp, () => fetchStorePerformanceTrafficSource(cfg.google, appIdentifier)),
+        syncReport(
+          sql,
+          listing.id,
+          "installs",
+          "google_play_console_stats_report",
+          () => fetchInstalls(cfg.google, appIdentifier),
+          reportNotFoundWarning("installs", cfg.google, appIdentifier, INSTALLS_DIMENSIONS),
+        ),
+        syncReport(
+          sql,
+          listing.id,
+          "crashes",
+          "google_play_console_crashes_report",
+          () => fetchCrashes(cfg.google, appIdentifier),
+          reportNotFoundWarning("crashes", cfg.google, appIdentifier, CRASHES_DIMENSIONS),
+        ),
+        syncReport(
+          sql,
+          listing.id,
+          "store_performance",
+          sp,
+          () => fetchStorePerformanceCountry(cfg.google, appIdentifier),
+          reportNotFoundWarning("store performance country", cfg.google, appIdentifier, STORE_PERFORMANCE_COUNTRY_DIMENSIONS),
+        ),
+        syncTrafficSource(
+          sql,
+          listing.id,
+          sp,
+          () => fetchStorePerformanceTrafficSource(cfg.google, appIdentifier),
+          reportNotFoundWarning("store performance traffic source", cfg.google, appIdentifier, STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS),
+        ),
       ]);
       for (const w of warnings) if (w) reportWarnings.push(w);
     }
 
     const ratingCaptured = currentRating != null || officialRatings.length > 0;
+    const sourceCopy = ratingSourceCopy({ store, source: ratingSource, asOf: ratingAsOf });
     const reportsStatus: ReportsStatus =
       reportAttempts === 0
         ? "not_configured"
@@ -295,6 +366,11 @@ async function syncListing(
       error: null,
       reportsStatus,
       reportWarnings,
+      ratingSource,
+      ratingAsOf,
+      ratingSourceLabel: sourceCopy.sourceLabel,
+      ratingFreshnessLabel: sourceCopy.freshnessLabel,
+      ratingSourceHelperText: sourceCopy.helperText,
     };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -305,7 +381,22 @@ async function syncListing(
         where id = ${runId}::uuid
       `.catch(() => null);
     }
-    return { ...base, inserted: 0, fetched: 0, ratingCaptured: false, skipped: false, status: "failed", error, reportsStatus: "not_configured", reportWarnings: [] };
+    return {
+      ...base,
+      inserted: 0,
+      fetched: 0,
+      ratingCaptured: false,
+      skipped: false,
+      status: "failed",
+      error,
+      reportsStatus: "not_configured",
+      reportWarnings: [],
+      ratingSource: null,
+      ratingAsOf: null,
+      ratingSourceLabel: "Rating not refreshed",
+      ratingFreshnessLabel: null,
+      ratingSourceHelperText: "The sync failed before a rating source could be refreshed.",
+    };
   }
 }
 

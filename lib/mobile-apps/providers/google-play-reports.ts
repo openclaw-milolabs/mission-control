@@ -22,7 +22,13 @@ export type ReportKind = "installs" | "crashes" | "ratings" | "store_performance
  * `pubsite_prod_rev_...` bucket. It never uploads, creates buckets, copies report
  * files back, or touches BigQuery.
  */
-const STORAGE_READONLY_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only";
+export const STORAGE_READONLY_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only";
+
+export const RATINGS_DIMENSIONS = ["country"] as const;
+export const INSTALLS_DIMENSIONS = ["overview", "country", "app_version", "carrier", "device", "language", "os_version"] as const;
+export const CRASHES_DIMENSIONS = ["overview", "app_version", "device", "os_version"] as const;
+export const STORE_PERFORMANCE_COUNTRY_DIMENSIONS = ["country"] as const;
+export const STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS = ["traffic_source"] as const;
 
 // Header names that are breakdown dimensions (string), not numeric metrics.
 const DIMENSION_HEADERS = new Set([
@@ -42,6 +48,18 @@ function toNumber(raw: string | undefined): number | null {
   if (raw == null || raw === "") return null;
   const n = Number(raw.replace(/[%,\s]/g, ""));
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * UI/helper: Google Store Listing Conversion Rate is usually exported as a
+ * decimal (0.264 = 26.4%). Some CSVs/tools may include a percent-looking value
+ * already (4.00% parses to 4), so values > 1 are treated as already-percent.
+ */
+export function formatStoreListingConversionRate(raw: number | null | undefined): string {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return "—";
+  const pct = raw <= 1 ? raw * 100 : raw;
+  const rounded = Math.round(pct * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
 }
 
 /**
@@ -148,13 +166,34 @@ export function reportObjectPath(kind: ReportKind, packageName: string, yyyyMM: 
 }
 
 /** All candidate object paths for a report month, across the preferred dimensions. */
-export function reportCandidatePaths(kind: ReportKind, packageName: string, yyyyMM: string, dimensions: string[]): string[] {
+export function reportCandidatePaths(kind: ReportKind, packageName: string, yyyyMM: string, dimensions: readonly string[]): string[] {
   return dimensions.map((d) => reportObjectPath(kind, packageName, yyyyMM, d));
 }
 
 /** Accept a bucket id, a gs:// URI, or a full gs:// path; return just the bucket id. */
 export function normalizeBucketName(raw: string | null | undefined): string {
   return (raw ?? "").trim().replace(/^gs:\/\//i, "").split("/")[0].trim();
+}
+
+/** The exact report months checked, newest first. */
+export function checkedReportMonths(lookbackMonths: number, now = new Date()): string[] {
+  const count = Math.min(Math.max(Number.isFinite(lookbackMonths) ? lookbackMonths : 3, 1), 12);
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  });
+}
+
+/** Admin-safe warning for a missing report; no credentials/key material included. */
+export function reportNotFoundWarning(
+  label: string,
+  cfg: Pick<GoogleConfig, "reportsBucket" | "reportsLookbackMonths">,
+  packageName: string,
+  dimensions: readonly string[],
+): string {
+  const months = checkedReportMonths(cfg.reportsLookbackMonths);
+  const bucket = normalizeBucketName(cfg.reportsBucket) || "not configured";
+  return `No ${label} report found for current/previous ${months.length} month(s). Checked bucket ${bucket} for package ${packageName} across dimensions ${dimensions.join(",")}. Checked months: ${months.join(",")}.`;
 }
 
 /** Pure: the latest Total Average Rating per country from a ratings report. */
@@ -213,15 +252,13 @@ export async function downloadLatestReport(
   cfg: GoogleConfig,
   kind: ReportKind,
   packageName: string,
-  dimensions: string[],
+  dimensions: readonly string[],
 ): Promise<{ text: string; yyyyMM: string; dimension: string } | null> {
-  if (!normalizeBucketName(cfg.reportsBucket)) return null;
+  const bucketName = normalizeBucketName(cfg.reportsBucket);
+  if (!bucketName) return null;
   const bucket = reportsBucket(cfg);
-  const now = new Date();
   const attempted: string[] = [];
-  for (let i = 0; i < cfg.reportsLookbackMonths; i++) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-    const yyyyMM = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  for (const yyyyMM of checkedReportMonths(cfg.reportsLookbackMonths)) {
     for (const dimension of dimensions) {
       const path = reportObjectPath(kind, packageName, yyyyMM, dimension);
       attempted.push(path);
@@ -233,18 +270,20 @@ export async function downloadLatestReport(
         if (code === 404) continue;
         if (code === 403)
           throw new ReportError(
-            `permission denied for the reports bucket (grant the service account read access; tried ${path})`,
+            `permission denied for reports bucket ${bucketName} package ${packageName} (tried ${path})`,
             "permission",
           );
         throw new ReportError(
-          `could not read ${kind}: ${err instanceof Error ? err.message : String(err)}`,
+          `could not read ${kind} report from bucket ${bucketName} package ${packageName}: ${err instanceof Error ? err.message : String(err)}`,
           "unknown",
         );
       }
     }
   }
-  // Server-side log of the attempted object paths for debugging.
-  console.warn(`[mobile-apps] no ${kind} report found. Tried: ${attempted.join(", ")}`);
+  // Server-side log of the attempted object paths for debugging. No credentials included.
+  console.warn(
+    `[mobile-apps] no ${kind} report found in bucket ${bucketName} for package ${packageName}. Tried: ${attempted.join(", ")}`,
+  );
   return null;
 }
 
@@ -254,7 +293,7 @@ export async function fetchGooglePlayCountryRatings(
   packageName: string,
 ): Promise<{ territories: CountryRating[]; asOf: string | null } | null> {
   // Ratings averages are only meaningful in the country file.
-  const dl = await downloadLatestReport(cfg, "ratings", packageName, ["country"]);
+  const dl = await downloadLatestReport(cfg, "ratings", packageName, RATINGS_DIMENSIONS);
   if (!dl) return null;
   const territories = parseRatingsCsv(dl.text);
   if (territories.length === 0) return null;
@@ -262,15 +301,12 @@ export async function fetchGooglePlayCountryRatings(
   return { territories, asOf };
 }
 
-const INSTALLS_DIMENSIONS = ["overview", "country", "app_version", "carrier", "device", "language", "os_version"];
-const CRASHES_DIMENSIONS = ["overview", "app_version", "device", "os_version"];
-
 /** Single-dimension report fetch (installs / crashes / store_performance country). */
 export async function fetchSingleReport(
   cfg: GoogleConfig,
   kind: ReportKind,
   packageName: string,
-  dimensions: string[],
+  dimensions: readonly string[],
 ): Promise<{ records: ReportRecord[]; dimension: string } | null> {
   const dl = await downloadLatestReport(cfg, kind, packageName, dimensions);
   return dl ? { records: parseReportCsv(dl.text), dimension: dl.dimension } : null;
@@ -283,13 +319,13 @@ export const fetchCrashes = (cfg: GoogleConfig, packageName: string) =>
   fetchSingleReport(cfg, "crashes", packageName, CRASHES_DIMENSIONS);
 
 export const fetchStorePerformanceCountry = (cfg: GoogleConfig, packageName: string) =>
-  fetchSingleReport(cfg, "store_performance", packageName, ["country"]);
+  fetchSingleReport(cfg, "store_performance", packageName, STORE_PERFORMANCE_COUNTRY_DIMENSIONS);
 
 /** Multi-dimension Store Performance traffic-source fetch (source/search term/utm…). */
 export async function fetchStorePerformanceTrafficSource(
   cfg: GoogleConfig,
   packageName: string,
 ): Promise<{ records: ReportMultiRecord[]; dimension: string } | null> {
-  const dl = await downloadLatestReport(cfg, "store_performance", packageName, ["traffic_source"]);
+  const dl = await downloadLatestReport(cfg, "store_performance", packageName, STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS);
   return dl ? { records: parseReportRecordsMulti(dl.text), dimension: "traffic_source" } : null;
 }

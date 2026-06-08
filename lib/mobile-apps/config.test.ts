@@ -78,6 +78,21 @@ describe("parseMobileReviewsConfig - apple", () => {
     });
     expect(cfg.apple.configured).toBe(true);
     expect(cfg.apple.error).toBeNull();
+    expect(cfg.apple.fullStorefrontScan).toBe("forced");
+    expect(cfg.apple.storefrontScanConcurrency).toBe(2);
+    expect(cfg.apple.storefrontScanDelayMs).toBe(250);
+  });
+
+  it("parses no-cache storefront scan controls safely", () => {
+    const cfg = parseMobileReviewsConfig({
+      ...base,
+      APPLE_FULL_STOREFRONT_SCAN: "always",
+      APPLE_STOREFRONT_SCAN_CONCURRENCY: "99",
+      APPLE_STOREFRONT_SCAN_DELAY_MS: "25",
+    });
+    expect(cfg.apple.fullStorefrontScan).toBe("always");
+    expect(cfg.apple.storefrontScanConcurrency).toBe(6); // clamped
+    expect(cfg.apple.storefrontScanDelayMs).toBe(25);
   });
 });
 

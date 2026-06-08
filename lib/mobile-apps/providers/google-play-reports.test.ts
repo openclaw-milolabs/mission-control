@@ -7,6 +7,9 @@ import {
   reportObjectPath,
   reportCandidatePaths,
   normalizeBucketName,
+  checkedReportMonths,
+  reportNotFoundWarning,
+  formatStoreListingConversionRate,
   ReportError,
 } from "@/lib/mobile-apps/providers/google-play-reports";
 
@@ -114,6 +117,41 @@ describe("normalizeBucketName", () => {
     expect(normalizeBucketName("gs://pubsite_prod_rev_1")).toBe("pubsite_prod_rev_1");
     expect(normalizeBucketName("gs://pubsite_prod_rev_1/stats/ratings/")).toBe("pubsite_prod_rev_1");
     expect(normalizeBucketName(null)).toBe("");
+  });
+});
+
+
+
+describe("formatStoreListingConversionRate", () => {
+  it("formats Google decimal conversion rates as percentages", () => {
+    expect(formatStoreListingConversionRate(0.1)).toBe("10%");
+    expect(formatStoreListingConversionRate(0.264)).toBe("26.4%");
+  });
+
+  it("does not multiply values that are already percent-like", () => {
+    expect(formatStoreListingConversionRate(4)).toBe("4%");
+    expect(formatStoreListingConversionRate(null)).toBe("—");
+  });
+});
+
+describe("reportNotFoundWarning", () => {
+  it("includes admin-safe setup details without credentials", () => {
+    const warning = reportNotFoundWarning(
+      "installs",
+      { reportsBucket: "gs://pubsite_prod_rev_1/stats/ratings/", reportsLookbackMonths: 3 },
+      "com.example.app",
+      ["overview", "country"],
+    );
+    expect(warning).toContain("No installs report found");
+    expect(warning).toContain("pubsite_prod_rev_1");
+    expect(warning).toContain("com.example.app");
+    expect(warning).toContain("overview,country");
+    expect(warning).toContain("Checked months:");
+    expect(warning).not.toMatch(/private_key|client_email|BEGIN PRIVATE KEY/i);
+  });
+
+  it("calculates checked months newest first", () => {
+    expect(checkedReportMonths(3, new Date(Date.UTC(2026, 5, 8)))).toEqual(["202606", "202605", "202604"]);
   });
 });
 

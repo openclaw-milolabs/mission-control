@@ -135,3 +135,18 @@ describe("syncApp store isolation", () => {
     expect(apple?.error).toMatch(/authentication failed/);
   });
 });
+
+describe("syncApp rating source labels", () => {
+  it("labels Google fallback rating as written-reviews-only, not a Play Console report", async () => {
+    const fake = makeFakeSql([{ id: "L1", store: "google", store_app_id: "com.x", country: "us", last_synced_at: null }]);
+    vi.mocked(getSql).mockReturnValue(fake.sql as never);
+    vi.mocked(loadMobileReviewsConfig).mockReturnValue(baseConfig as never);
+    vi.mocked(getProvider).mockReturnValue({ fetchReviews: vi.fn(async () => [review("r1")]) } as never);
+
+    const [res] = await syncApp("app1", { force: true });
+    expect(res.ratingSource).toBe("google_reviews_api_fetched_reviews");
+    expect(res.ratingSourceLabel).toBe("Google Play · written reviews only");
+    expect(res.ratingFreshnessLabel).toBe("Not a store-wide aggregate");
+    expect(res.ratingSourceHelperText).toMatch(/excludes rating-only feedback/i);
+  });
+});
