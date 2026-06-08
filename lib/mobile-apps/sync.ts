@@ -6,13 +6,12 @@ import { summarizeReviews } from "@/lib/mobile-apps/metrics";
 import { getProvider } from "@/lib/mobile-apps/providers";
 import { fetchAppleTerritoryRatings, fetchAppleAppMetadata, type TerritoryRating, type AppleAppMetadata } from "@/lib/mobile-apps/providers/app-store-ratings";
 import {
-  downloadReportFile,
   listReportFiles,
   listReviewReportFiles,
-  parseGooglePlayReviewsCsv,
-  parseRatingsCsv,
-  parseReportCsv,
-  parseReportRecordsMulti,
+  streamCsvRows,
+  mapReportRecord,
+  mapReportMultiRecord,
+  mapReviewRecord,
   reportNotFoundWarning,
   RATINGS_DIMENSIONS,
   INSTALLS_DIMENSIONS,
@@ -161,6 +160,110 @@ async function persistMultiReports(
   }
 }
 
+const REPORT_BATCH = 500;
+
+/**
+ * Stream a single-dimension report file and persist in bounded batches, so a
+ * large monthly CSV never sits fully in memory. Ratings are aggregated to the
+ * latest value per country (bounded by the country count) while streaming.
+ */
+async function streamSingleDimFile(
+  sql: Sql,
+  listingId: string,
+  cfg: GoogleConfig,
+  file: ReportFile,
+  report: ReportKind,
+  source: string,
+): Promise<number> {
+  if (report === "ratings") {
+    const latest = new Map<string, { avg: number | null; asOf: string | null }>();
+    for await (const row of streamCsvRows(cfg, file.path)) {
+      const rec = mapReportRecord(row);
+      const country = rec.dimensionValue;
+      if (!country) continue;
+      const asOf = rec.date;
+      const prev = latest.get(country);
+      if (!prev || (asOf ?? "") >= (prev.asOf ?? "")) latest.set(country, { avg: rec.values.total_average_rating ?? null, asOf });
+    }
+    const records: ReportRecord[] = [...latest.entries()].map(([territory, v]) => ({
+      date: v.asOf,
+      dimensionValue: territory,
+      values: { total_average_rating: v.avg },
+    }));
+    if (records.length) await persistReports(sql, listingId, "ratings", file.dimension, file.yyyyMM, records, source);
+    return records.length;
+  }
+
+  let count = 0;
+  let batch: ReportRecord[] = [];
+  const flush = async () => {
+    if (!batch.length) return;
+    const rows = batch;
+    batch = [];
+    // One transaction per batch: pipelined inserts instead of thousands of autocommits.
+    await sql.begin(async (tx) => persistReports(tx as unknown as Sql, listingId, report, file.dimension, file.yyyyMM, rows, source));
+  };
+  for await (const row of streamCsvRows(cfg, file.path)) {
+    const rec = mapReportRecord(row);
+    if (!rec.date) continue;
+    batch.push(rec);
+    count++;
+    if (batch.length >= REPORT_BATCH) await flush();
+  }
+  await flush();
+  return count;
+}
+
+/** Stream + batch-persist the multi-dimension traffic-source file. */
+async function streamTrafficFile(sql: Sql, listingId: string, cfg: GoogleConfig, file: ReportFile): Promise<number> {
+  let count = 0;
+  let batch: ReportMultiRecord[] = [];
+  const flush = async () => {
+    if (!batch.length) return;
+    const rows = batch;
+    batch = [];
+    await sql.begin(async (tx) =>
+      persistMultiReports(tx as unknown as Sql, listingId, file.yyyyMM, rows, "google_play_console_store_performance_report"),
+    );
+  };
+  for await (const row of streamCsvRows(cfg, file.path)) {
+    const rec = mapReportMultiRecord(row);
+    if (!rec.date) continue;
+    batch.push(rec);
+    count++;
+    if (batch.length >= REPORT_BATCH) await flush();
+  }
+  await flush();
+  return count;
+}
+
+/** Stream + batch-upsert the historical reviews CSV (slim raw, flat memory). */
+async function streamReviewFile(
+  sql: Sql,
+  listingId: string,
+  cfg: GoogleConfig,
+  file: ReviewCsvFile,
+): Promise<{ parsed: number; inserted: number }> {
+  let parsed = 0;
+  let inserted = 0;
+  let batch: RawReview[] = [];
+  const flush = async () => {
+    if (!batch.length) return;
+    const rows = batch;
+    batch = [];
+    inserted += await sql.begin(async (tx) => upsertReviews(tx as unknown as Sql, listingId, rows));
+  };
+  for await (const row of streamCsvRows(cfg, file.path)) {
+    const rev = mapReviewRecord(row);
+    if (!rev) continue;
+    batch.push(rev);
+    parsed++;
+    if (batch.length >= REPORT_BATCH) await flush();
+  }
+  await flush();
+  return { parsed, inserted };
+}
+
 type CachedReportFile = { generation: string | null; status: string | null };
 type AnyCsvFile = ReportFile | ReviewCsvFile;
 
@@ -256,14 +359,8 @@ async function syncSingleDimensionReportFiles(
       continue;
     }
     try {
-      const text = await downloadReportFile(cfg, file);
-      const records = report === "ratings" ? parseRatingsCsv(text).map((r) => ({
-        date: r.asOf,
-        dimensionValue: r.territory,
-        values: { total_average_rating: r.avg },
-      } satisfies ReportRecord)) : parseReportCsv(text);
-      if (records.length > 0) await persistReports(sql, listingId, report, file.dimension, file.yyyyMM, records, source);
-      await markReportFile(sql, listingId, file, records.length > 0 ? "parsed" : "empty", records.length, null);
+      const rows = await streamSingleDimFile(sql, listingId, cfg, file, report, source);
+      await markReportFile(sql, listingId, file, rows > 0 ? "parsed" : "empty", rows, null);
       filesDownloaded++;
     } catch (err) {
       const msg = reportErrMessage(err);
@@ -299,10 +396,8 @@ async function syncTrafficSourceFiles(
       continue;
     }
     try {
-      const text = await downloadReportFile(cfg, file);
-      const records = parseReportRecordsMulti(text);
-      if (records.length > 0) await persistMultiReports(sql, listingId, file.yyyyMM, records, "google_play_console_store_performance_report");
-      await markReportFile(sql, listingId, file, records.length > 0 ? "parsed" : "empty", records.length, null);
+      const rows = await streamTrafficFile(sql, listingId, cfg, file);
+      await markReportFile(sql, listingId, file, rows > 0 ? "parsed" : "empty", rows, null);
       filesDownloaded++;
     } catch (err) {
       const msg = reportErrMessage(err);
@@ -350,11 +445,10 @@ async function syncGooglePlayReviewCsvFiles(
       continue;
     }
     try {
-      const text = await downloadReportFile(cfg, file);
-      const reviews = parseGooglePlayReviewsCsv(text);
-      reviewsParsed += reviews.length;
-      if (reviews.length > 0) reviewsInserted += await upsertReviews(sql, listingId, reviews);
-      await markReportFile(sql, listingId, file, reviews.length > 0 ? "parsed" : "empty", reviews.length, null);
+      const { parsed, inserted } = await streamReviewFile(sql, listingId, cfg, file);
+      reviewsParsed += parsed;
+      reviewsInserted += inserted;
+      await markReportFile(sql, listingId, file, parsed > 0 ? "parsed" : "empty", parsed, null);
       filesDownloaded++;
     } catch (err) {
       const msg = reportErrMessage(err);

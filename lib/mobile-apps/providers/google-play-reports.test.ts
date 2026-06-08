@@ -215,6 +215,53 @@ describe("report discovery candidates", () => {
   });
 });
 
+describe("row mappers (streaming ingestion)", () => {
+  it("mapReportRecord maps a header-keyed row to date/dimension/metrics", async () => {
+    const { mapReportRecord } = await import("@/lib/mobile-apps/providers/google-play-reports");
+    const rec = mapReportRecord({
+      Date: "2026-06-02",
+      "Package Name": "com.x",
+      Country: "TR",
+      "Daily Device Installs": "120",
+      "Active Device Installs": "5400",
+    });
+    expect(rec.date).toBe("2026-06-02");
+    expect(rec.dimensionValue).toBe("tr");
+    expect(rec.values).toEqual({ daily_device_installs: 120, active_device_installs: 5400 });
+  });
+
+  it("mapReportMultiRecord keeps traffic-source text dimensions + numeric metrics", async () => {
+    const { mapReportMultiRecord } = await import("@/lib/mobile-apps/providers/google-play-reports");
+    const rec = mapReportMultiRecord({
+      Date: "2026-06-02",
+      "Package Name": "com.x",
+      "Traffic Source": "Google (organic)",
+      "Search Term": "okey",
+      "Store Listing Visitors": "500",
+      "Store Listing Conversion Rate": "0.1",
+    });
+    expect(rec.dimensions).toEqual({ traffic_source: "Google (organic)", search_term: "okey" });
+    expect(rec.values).toEqual({ store_listing_visitors: 500, store_listing_conversion_rate: 0.1 });
+  });
+
+  it("mapReviewRecord keeps a SLIM raw (no full CSV row)", async () => {
+    const { mapReviewRecord } = await import("@/lib/mobile-apps/providers/google-play-reports");
+    const rev = mapReviewRecord({
+      "Review Link": "https://play.google.com/store/apps/details?id=com.x&reviewId=abc123",
+      "Star Rating": "5",
+      "Review Text": "Great app",
+      "Reviewer Language": "en",
+      "Developer Reply Text": "Thanks!",
+    });
+    expect(rev?.storeReviewId).toBe("abc123");
+    expect(rev?.rating).toBe(5);
+    expect(rev?.body).toBe("Great app");
+    expect(rev?.storeResponse).toBe("Thanks!");
+    // The memory fix: raw must NOT contain the whole row.
+    expect(rev?.raw).toEqual({ source: "google_play_console_reviews_csv", replyDate: null });
+  });
+});
+
 describe("ReportError distinguishes failure kinds", () => {
   it("carries a permission kind + a clear message, distinct from not-found wording", () => {
     const perm = new ReportError("permission denied for the reports bucket (grant read access)", "permission");

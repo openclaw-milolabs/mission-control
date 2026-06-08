@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { Transform } from "node:stream";
+import { parse } from "csv-parse";
 import { Storage } from "@google-cloud/storage";
 import type { GoogleConfig } from "@/lib/mobile-apps/config";
 import { loadServiceAccount } from "@/lib/mobile-apps/providers/google-play-client";
@@ -578,4 +580,148 @@ export async function fetchStorePerformanceTrafficSource(
 ): Promise<{ records: ReportMultiRecord[]; dimension: string } | null> {
   const dl = await downloadLatestReport(cfg, "store_performance", packageName, STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS);
   return dl ? { records: parseReportRecordsMulti(dl.text), dimension: "traffic_source" } : null;
+}
+
+// ── Streaming ingestion (bounded memory) ─────────────────────────────────────
+// Large monthly CSVs (esp. the reviews export) must never be fully buffered +
+// parsed into arrays — that is what OOM-kills the server. These helpers stream
+// rows incrementally so the caller can batch-insert and discard as it goes.
+
+/** Decode a byte stream as UTF-16LE (Google's report encoding) or UTF-8, incrementally. */
+function createDecodeTransform(): Transform {
+  let decoder: TextDecoder | null = null;
+  return new Transform({
+    decodeStrings: false,
+    transform(chunk: Buffer, _enc, cb) {
+      try {
+        if (!decoder) {
+          const utf16 = chunk.length >= 2 && chunk[0] === 0xff && chunk[1] === 0xfe;
+          decoder = new TextDecoder(utf16 ? "utf-16le" : "utf-8");
+        }
+        cb(null, decoder.decode(chunk, { stream: true }));
+      } catch (e) {
+        cb(e as Error);
+      }
+    },
+    flush(cb) {
+      try {
+        cb(null, decoder ? decoder.decode() : "");
+      } catch (e) {
+        cb(e as Error);
+      }
+    },
+  });
+}
+
+/**
+ * Stream a CSV object as header-keyed rows. READ-ONLY (createReadStream).
+ * Memory stays flat regardless of file size. Maps GCS errors to ReportError.
+ */
+export async function* streamCsvRows(cfg: GoogleConfig, objectPath: string): AsyncGenerator<Record<string, string>> {
+  const bucketName = normalizeBucketName(cfg.reportsBucket);
+  const read = reportsBucket(cfg).file(objectPath).createReadStream();
+  const parser = parse({ columns: true, skip_empty_lines: true, trim: true, relax_column_count: true, relax_quotes: true });
+  read.on("error", (e) => parser.destroy(e));
+  read.pipe(createDecodeTransform()).pipe(parser);
+  try {
+    for await (const rec of parser) yield rec as Record<string, string>;
+  } catch (err) {
+    const code = (err as { code?: number }).code;
+    if (code === 404) throw new ReportError(`report file not found: ${objectPath}`, "missing");
+    if (code === 403) throw new ReportError(`permission denied for reports bucket ${bucketName} (tried ${objectPath})`, "permission");
+    throw new ReportError(`could not stream report ${objectPath}: ${err instanceof Error ? err.message : String(err)}`, "unknown");
+  } finally {
+    read.destroy();
+  }
+}
+
+function rowKeysOrdered(row: Record<string, string>): string[] {
+  return Object.keys(row);
+}
+
+/** Pure: map one header-keyed row to a single-dimension ReportRecord. */
+export function mapReportRecord(row: Record<string, string>): ReportRecord {
+  const keys = rowKeysOrdered(row);
+  const iDate = keys.findIndex((k) => k.toLowerCase() === "date");
+  const iDim = keys.findIndex((k) => DIMENSION_HEADERS.has(k.toLowerCase()));
+  const values: Record<string, number | null> = {};
+  keys.forEach((k, c) => {
+    if (c === iDate || c === iDim || k.toLowerCase() === "package name") return;
+    values[normalizeKey(k)] = toNumber(row[k]);
+  });
+  return {
+    date: iDate >= 0 ? row[keys[iDate]] || null : null,
+    dimensionValue: (iDim >= 0 ? row[keys[iDim]] || "" : "").toLowerCase(),
+    values,
+  };
+}
+
+/** Pure: map one header-keyed row to a multi-dimension ReportMultiRecord. */
+export function mapReportMultiRecord(row: Record<string, string>): ReportMultiRecord {
+  const keys = rowKeysOrdered(row);
+  const iDate = keys.findIndex((k) => k.toLowerCase() === "date");
+  const dimensions: Record<string, string> = {};
+  const values: Record<string, number | null> = {};
+  keys.forEach((k, c) => {
+    const lc = k.toLowerCase();
+    if (c === iDate || lc === "package name") return;
+    if (DIMENSION_HEADERS.has(lc)) dimensions[normalizeKey(k)] = row[k] ?? "";
+    else values[normalizeKey(k)] = toNumber(row[k]);
+  });
+  return { date: iDate >= 0 ? row[keys[iDate]] || null : null, dimensions, values };
+}
+
+function caseInsensitiveGetter(row: Record<string, string>): (names: string[]) => string | null {
+  const lc = new Map<string, string>();
+  for (const k of Object.keys(row)) lc.set(k.toLowerCase(), k);
+  return (names) => {
+    for (const n of names) {
+      const k = lc.get(n.toLowerCase());
+      const v = k != null ? row[k]?.trim() : undefined;
+      if (v) return v;
+    }
+    return null;
+  };
+}
+
+/**
+ * Pure: map one reviews-CSV row to a RawReview. Keeps a SLIM `raw` (source +
+ * reply date) — never the whole CSV row, which is the memory killer.
+ */
+export function mapReviewRecord(row: Record<string, string>): RawReview | null {
+  const get = caseInsensitiveGetter(row);
+  const reviewLink = get(["Review Link", "Review URL", "Review Url"]);
+  const submitMillis = get(["Review Submit Millis Since Epoch", "Review Submit Millis"]);
+  const submitDate = get(["Review Submit Date and Time", "Review Submit Date", "Date"]);
+  const replyMillis = get(["Developer Reply Millis Since Epoch", "Developer Reply Millis"]);
+  const replyDate = get(["Developer Reply Date and Time", "Developer Reply Date"]);
+  const ratingRaw = get(["Star Rating", "Rating"]);
+  const rating = toNumber(ratingRaw ?? undefined);
+  const title = get(["Review Title", "Title"]);
+  const body = get(["Review Text", "Review", "Body"]);
+  const submittedAt = isoFromEpochMillis(submitMillis) ?? isoFromDateString(submitDate);
+  const review: RawReview = {
+    storeReviewId: stableGoogleReviewCsvId({
+      reviewLink,
+      submitMillis,
+      submitDate,
+      language: get(["Reviewer Language", "Language"]),
+      device: get(["Device"]),
+      rating: ratingRaw,
+      title,
+      body,
+    }),
+    author: get(["Author", "Reviewer", "Reviewer Name"]),
+    rating: typeof rating === "number" ? Math.round(rating) : null,
+    title,
+    body,
+    appVersion: get(["App Version Name", "App Version", "Version Name"]),
+    country: get(["Country", "Country/Region", "Region"]),
+    submittedAt,
+    storeResponse: get(["Developer Reply Text", "Developer Reply", "Reply Text"]),
+    language: get(["Reviewer Language", "Language"]),
+    device: get(["Device"]),
+    raw: { source: "google_play_console_reviews_csv", replyDate: isoFromEpochMillis(replyMillis) ?? isoFromDateString(replyDate) },
+  };
+  return review.rating != null || review.body || review.title ? review : null;
 }
