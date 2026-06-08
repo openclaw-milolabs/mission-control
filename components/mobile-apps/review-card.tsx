@@ -89,7 +89,7 @@ export function ReviewCard({ review, storeAppId }: { review: ReviewRow; storeApp
   }
 
   return (
-    <article className="py-4 first:pt-0">
+    <article className="py-6">
       <div className="flex items-center gap-2.5">
         <Stars n={review.rating} />
         {review.title ? (

@@ -30,7 +30,7 @@ function StoreRating({ listing }: { listing: AppListing }) {
       <Icon className="size-4 shrink-0 text-muted-foreground" />
       <div className="flex-1">
         <div className="flex items-baseline gap-1">
-          <span className="text-sm font-semibold tabular-nums">{rating != null ? rating.toFixed(2) : "—"}</span>
+          <span className="text-sm font-semibold tabular-nums">{rating != null ? rating.toFixed(1) : "—"}</span>
           <IconStarFilled className="size-3 text-amber-500" />
           <span className="text-[11px] text-muted-foreground tabular-nums">
             {listing.ratingsCount != null ? listing.ratingsCount.toLocaleString() : "—"}

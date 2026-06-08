@@ -92,12 +92,18 @@ async function syncListing(
     let currentRating: number | null = null;
     let ratingsCount: number | null = null;
     if (store === "apple") {
+      // Apple exposes the official displayed per-storefront average via iTunes Lookup.
       const territories = [...reviews.map((r) => r.country ?? ""), listing.country];
       officialRatings = await fetchAppleTerritoryRatings(appIdentifier, territories).catch(() => []);
       const primary =
         officialRatings.find((t) => t.territory === toAlpha2(listing.country)) ?? officialRatings[0] ?? null;
       currentRating = primary?.avg ?? null;
       ratingsCount = primary?.count ?? null;
+    } else {
+      // Google's Android Publisher reviews API returns per-review star ratings but
+      // no store-wide aggregate, so the headline is the average of those reviews.
+      currentRating = summary.avgRating;
+      ratingsCount = summary.ratingsCount;
     }
     await sql`
       update mobile_app_listings

@@ -9,7 +9,7 @@ import { ReviewsStream } from "@/components/mobile-apps/reviews-stream";
 import { RatingDistribution } from "@/components/mobile-apps/rating-distribution";
 import { RatingTrend, type TrendPoint } from "@/components/mobile-apps/rating-trend";
 import { SentimentDigest } from "@/components/mobile-apps/sentiment-digest";
-import { countryName, flagEmoji } from "@/lib/mobile-apps/country-codes";
+import { countryName, flagEmoji, toAlpha2 } from "@/lib/mobile-apps/country-codes";
 import { useModules } from "@/components/modules/modules-provider";
 import { toast } from "sonner";
 
@@ -94,9 +94,21 @@ function StoreScoreCard({
   ];
   const total = summary?.total ?? 0;
   const failed = run?.status === "failed";
-  const official = listing?.current_rating ?? null; // Apple: official storefront average; Google: null
-  const officialCount = listing?.ratings_count ?? null;
+  const isApple = store === "apple";
   const territories = (listing?.official_ratings ?? []).filter((t) => t.avg != null);
+
+  // Apple: the headline shows one storefront. Default to the listing's country,
+  // else the storefront with the most ratings. Tapping a row below switches it.
+  const defaultTerr =
+    territories.find((t) => t.territory === toAlpha2(listing?.country))?.territory ??
+    territories[0]?.territory ??
+    null;
+  const [picked, setPicked] = useState<string | null>(null);
+  const selected = picked ?? defaultTerr;
+  const selEntry = territories.find((t) => t.territory === selected) ?? null;
+
+  const headlineAvg = isApple ? selEntry?.avg ?? null : listing?.current_rating ?? null;
+  const headlineCount = isApple ? selEntry?.count ?? null : listing?.ratings_count ?? null;
 
   return (
     <div className="rounded-2xl border bg-card p-6">
@@ -115,41 +127,69 @@ function StoreScoreCard({
         </span>
       </div>
 
-      {/* Official headline rating */}
-      <div className="mt-5 flex items-end gap-4">
-        <span className="text-5xl font-semibold leading-none tracking-tight tabular-nums">
-          {official != null ? official.toFixed(1) : "—"}
-        </span>
-        <div className="pb-1">
-          <Stars n={official} size="size-4" />
-          <p className="mt-1.5 text-xs text-muted-foreground">
-            {store === "apple"
-              ? official != null
-                ? `official · ${officialCount?.toLocaleString() ?? "—"} ratings`
-                : "no rating from the App Store API yet"
-              : "Google's API has no aggregate rating"}
-          </p>
+      {/* Headline rating, labeled with the storefront it represents */}
+      <div className="mt-5">
+        <p className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+          {isApple && selEntry ? (
+            <>
+              <span className="text-base leading-none">{flagEmoji(selected)}</span>
+              <span>{countryName(selected)}</span>
+              <span className="text-muted-foreground">App Store rating</span>
+            </>
+          ) : isApple ? (
+            <span className="text-muted-foreground">App Store rating</span>
+          ) : (
+            <span className="text-muted-foreground">All reviews</span>
+          )}
+        </p>
+        <div className="flex items-end gap-4">
+          <span className="text-5xl font-semibold leading-none tracking-tight tabular-nums">
+            {headlineAvg != null ? headlineAvg.toFixed(1) : "—"}
+          </span>
+          <div className="pb-1">
+            <Stars n={headlineAvg} size="size-4" />
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              {isApple
+                ? headlineAvg != null
+                  ? `official · ${headlineCount?.toLocaleString() ?? "—"} ratings`
+                  : "no rating from the App Store API yet"
+                : headlineAvg != null
+                  ? `from ${headlineCount?.toLocaleString() ?? "—"} reviews · no store-wide aggregate via API`
+                  : "no reviews fetched yet"}
+            </p>
+          </div>
         </div>
       </div>
 
-      {/* Per-storefront official ratings (Apple) */}
+      {/* Per-storefront switcher (Apple): tap a country to make it the headline */}
       {territories.length > 0 ? (
         <div className="mt-5 border-t pt-4">
-          <p className="mb-2.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            By storefront
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            By country <span className="font-normal normal-case text-muted-foreground/60">· tap to switch</span>
           </p>
-          <ul className="space-y-2">
-            {territories.map((t) => (
-              <li key={t.territory} className="flex items-center gap-2.5 text-sm">
-                <span className="text-base leading-none">{flagEmoji(t.territory)}</span>
-                <span className="min-w-0 flex-1 truncate text-foreground/80">{countryName(t.territory)}</span>
-                <Stars n={t.avg} size="size-3" />
-                <span className="w-9 text-right font-semibold tabular-nums">{t.avg != null ? t.avg.toFixed(1) : "—"}</span>
-                <span className="w-12 text-right text-xs text-muted-foreground tabular-nums">
-                  {t.count != null ? t.count.toLocaleString() : "—"}
-                </span>
-              </li>
-            ))}
+          <ul className="space-y-0.5">
+            {territories.map((t) => {
+              const active = t.territory === selected;
+              return (
+                <li key={t.territory}>
+                  <button
+                    onClick={() => setPicked(t.territory)}
+                    aria-pressed={active}
+                    className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm transition-colors ${
+                      active ? "bg-accent" : "hover:bg-muted/50"
+                    }`}
+                  >
+                    <span className="text-base leading-none">{flagEmoji(t.territory)}</span>
+                    <span className="min-w-0 flex-1 truncate text-left text-foreground/80">{countryName(t.territory)}</span>
+                    <Stars n={t.avg} size="size-3" />
+                    <span className="w-9 text-right font-semibold tabular-nums">{t.avg != null ? t.avg.toFixed(1) : "—"}</span>
+                    <span className="w-12 text-right text-xs text-muted-foreground tabular-nums">
+                      {t.count != null ? t.count.toLocaleString() : "—"}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       ) : null}
