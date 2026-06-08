@@ -8,6 +8,8 @@ import { fetchAppleTerritoryRatings, type TerritoryRating } from "@/lib/mobile-a
 import {
   downloadReportFile,
   listReportFiles,
+  listReviewReportFiles,
+  parseGooglePlayReviewsCsv,
   parseRatingsCsv,
   parseReportCsv,
   parseReportRecordsMulti,
@@ -19,6 +21,7 @@ import {
   STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS,
   ReportError,
   type ReportFile,
+  type ReviewCsvFile,
   type ReportKind,
   type ReportRecord,
   type ReportMultiRecord,
@@ -26,7 +29,7 @@ import {
 import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 import { ratingSourceCopy, type RatingSource } from "@/lib/mobile-apps/rating-source";
-import type { Store } from "@/lib/mobile-apps/types";
+import type { RawReview, Store } from "@/lib/mobile-apps/types";
 
 type Sql = ReturnType<typeof getSql>;
 
@@ -67,6 +70,38 @@ const DEFAULT_DEDUPE_MS = 60_000;
 function reportErrMessage(err: unknown): string {
   if (err instanceof ReportError) return err.message;
   return err instanceof Error ? err.message : String(err);
+}
+
+async function upsertReviews(sql: Sql, listingId: string, reviews: RawReview[]): Promise<number> {
+  let inserted = 0;
+  for (const r of reviews) {
+    const res = await sql`
+      insert into app_reviews (
+        listing_id, store_review_id, author, rating, title, body,
+        app_version, country, submitted_at, store_response, language, device, raw_json
+      ) values (
+        ${listingId}, ${r.storeReviewId}, ${r.author}, ${r.rating}, ${r.title}, ${r.body},
+        ${r.appVersion}, ${r.country}, ${r.submittedAt}, ${r.storeResponse}, ${r.language ?? null},
+        ${r.device ?? null}, ${r.raw ? JSON.stringify(r.raw) : null}
+      )
+      on conflict (listing_id, store_review_id) do update
+        set author = excluded.author,
+            rating = excluded.rating,
+            title = excluded.title,
+            body = excluded.body,
+            app_version = excluded.app_version,
+            country = excluded.country,
+            submitted_at = excluded.submitted_at,
+            store_response = excluded.store_response,
+            language = excluded.language,
+            device = excluded.device,
+            raw_json = excluded.raw_json,
+            fetched_at = now()
+      returning (xmax = 0) as inserted
+    `;
+    if ((res as unknown as Array<{ inserted: boolean }>)[0]?.inserted) inserted += 1;
+  }
+  return inserted;
 }
 
 /** Upsert single-dimension daily report rows under the dimension from the CSV file. */
@@ -115,6 +150,7 @@ async function persistMultiReports(
 }
 
 type CachedReportFile = { generation: string | null; status: string | null };
+type AnyCsvFile = ReportFile | ReviewCsvFile;
 
 async function cachedReportFile(sql: Sql, listingId: string, objectPath: string): Promise<CachedReportFile | null> {
   const rows = (await sql`
@@ -125,7 +161,7 @@ async function cachedReportFile(sql: Sql, listingId: string, objectPath: string)
   return rows[0] ?? null;
 }
 
-function cacheMatches(file: ReportFile, cached: CachedReportFile | null): boolean {
+function cacheMatches(file: Pick<AnyCsvFile, "generation">, cached: CachedReportFile | null): boolean {
   if (!cached || cached.status !== "parsed") return false;
   // Generation is the best GCS cache key. Some test/mocked clients may not expose
   // it; in that case object_path + parsed status is still enough to avoid repeated downloads.
@@ -135,7 +171,7 @@ function cacheMatches(file: ReportFile, cached: CachedReportFile | null): boolea
 async function markReportFile(
   sql: Sql,
   listingId: string,
-  file: ReportFile,
+  file: AnyCsvFile,
   status: "parsed" | "empty" | "failed",
   rowsCount: number,
   errorMessage: string | null,
@@ -257,6 +293,54 @@ async function syncTrafficSourceFiles(
   return { warnings, groupsAttempted: 1, filesFound: files.length, filesDownloaded, filesSkipped };
 }
 
+
+async function syncGooglePlayReviewCsvFiles(
+  sql: Sql,
+  listingId: string,
+  cfg: GoogleConfig,
+  appIdentifier: string,
+  forceReports: boolean,
+): Promise<ReportSyncStats & { reviewsParsed: number; reviewsInserted: number }> {
+  const warnings: string[] = [];
+  const label = "reviews CSV";
+  let files: ReviewCsvFile[] = [];
+  try {
+    files = await listReviewReportFiles(cfg, appIdentifier);
+    if (files.length === 0) {
+      const bucket = cfg.reportsBucket || "not configured";
+      warnings.push(`No Google Play reviews CSV reports found in bucket ${bucket} for package ${appIdentifier}. Expected reviews/reviews_${appIdentifier}_YYYYMM.csv.`);
+    }
+  } catch (err) {
+    return { warnings: [`${label}: ${reportErrMessage(err)}`], groupsAttempted: 1, filesFound: 0, filesDownloaded: 0, filesSkipped: 0, reviewsParsed: 0, reviewsInserted: 0 };
+  }
+
+  let filesDownloaded = 0;
+  let filesSkipped = 0;
+  let reviewsParsed = 0;
+  let reviewsInserted = 0;
+
+  for (const file of files) {
+    const cached = await cachedReportFile(sql, listingId, file.path);
+    if (!forceReports && cacheMatches(file, cached)) {
+      filesSkipped++;
+      continue;
+    }
+    try {
+      const text = await downloadReportFile(cfg, file);
+      const reviews = parseGooglePlayReviewsCsv(text);
+      reviewsParsed += reviews.length;
+      if (reviews.length > 0) reviewsInserted += await upsertReviews(sql, listingId, reviews);
+      await markReportFile(sql, listingId, file, reviews.length > 0 ? "parsed" : "empty", reviews.length, null);
+      filesDownloaded++;
+    } catch (err) {
+      const msg = reportErrMessage(err);
+      await markReportFile(sql, listingId, file, "failed", 0, msg).catch(() => null);
+      warnings.push(`${label} ${file.yyyyMM}: ${msg}`);
+    }
+  }
+  return { warnings, groupsAttempted: 1, filesFound: files.length, filesDownloaded, filesSkipped, reviewsParsed, reviewsInserted };
+}
+
 async function loadGoogleRatingsFromDb(sql: Sql, listingId: string): Promise<{ territories: TerritoryRating[]; asOf: string | null }> {
   const rows = (await sql`
     select distinct on (dimension_value)
@@ -279,7 +363,7 @@ async function loadGoogleRatingsFromDb(sql: Sql, listingId: string): Promise<{ t
 async function syncListing(
   sql: Sql,
   listing: ListingRow,
-  opts: { force: boolean; dedupeMs: number; refreshReports: boolean; syncReports: boolean },
+  opts: { force: boolean; dedupeMs: number; refreshReports: boolean },
 ): Promise<SyncResult> {
   const store = listing.store as Store;
   const appIdentifier = listing.store_app_id;
@@ -317,34 +401,8 @@ async function syncListing(
     const provider = getProvider(store);
     const reviews = await provider.fetchReviews({ store, storeAppId: appIdentifier, country: listing.country });
 
-    let inserted = 0;
-    for (const r of reviews) {
-      const res = await sql`
-        insert into app_reviews (
-          listing_id, store_review_id, author, rating, title, body,
-          app_version, country, submitted_at, store_response, language, device, raw_json
-        ) values (
-          ${listing.id}, ${r.storeReviewId}, ${r.author}, ${r.rating}, ${r.title}, ${r.body},
-          ${r.appVersion}, ${r.country}, ${r.submittedAt}, ${r.storeResponse}, ${r.language ?? null},
-          ${r.device ?? null}, ${r.raw ? JSON.stringify(r.raw) : null}
-        )
-        on conflict (listing_id, store_review_id) do update
-          set author = excluded.author,
-              rating = excluded.rating,
-              title = excluded.title,
-              body = excluded.body,
-              app_version = excluded.app_version,
-              country = excluded.country,
-              submitted_at = excluded.submitted_at,
-              store_response = excluded.store_response,
-              language = excluded.language,
-              device = excluded.device,
-              raw_json = excluded.raw_json,
-              fetched_at = now()
-        returning (xmax = 0) as inserted
-      `;
-      if ((res as unknown as Array<{ inserted: boolean }>)[0]?.inserted) inserted += 1;
-    }
+    let fetchedReviewCount = reviews.length;
+    let inserted = await upsertReviews(sql, listing.id, reviews);
 
     // Star distribution snapshot from fetched reviews only (history; not headline store rating).
     const summary = summarizeReviews(reviews);
@@ -377,7 +435,7 @@ async function syncListing(
       ratingsCount = primary?.count ?? null;
       ratingSource = "apple_app_store_lookup";
     } else {
-      if (opts.syncReports && cfg.google.reportsBucket) {
+      if (cfg.google.reportsBucket) {
         const ratingsStats = await syncSingleDimensionReportFiles(
           sql,
           listing.id,
@@ -420,10 +478,9 @@ async function syncListing(
       where id = ${listing.id}
     `;
 
-    // Google Play Console bulk reports are intentionally optional per sync.
-    // Page/tab syncs pass syncReports=false so heavy all-year CSV scans do not block the UI.
-    // The reports refresh button passes syncReports=true and refreshReports=true.
-    if (opts.syncReports && store === "google" && cfg.google.reportsBucket) {
+    // Google Play Console bulk reports: cache/list/download ALL available year/month CSVs.
+    // Best-effort — never fail the review sync — but warnings are stored for the UI.
+    if (store === "google" && cfg.google.reportsBucket) {
       const stats = await Promise.all([
         syncSingleDimensionReportFiles(
           sql,
@@ -459,10 +516,15 @@ async function syncListing(
           opts.refreshReports,
         ),
         syncTrafficSourceFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports),
+        syncGooglePlayReviewCsvFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports),
       ]);
       for (const s of stats) {
         reportAttempts += s.groupsAttempted;
         reportWarnings.push(...s.warnings);
+        if ("reviewsParsed" in s) {
+          fetchedReviewCount += s.reviewsParsed;
+          inserted += s.reviewsInserted;
+        }
       }
     }
 
@@ -480,7 +542,7 @@ async function syncListing(
     if (runId) {
       await sql`
         update app_review_sync_runs
-        set status = 'success', finished_at = now(), fetched_count = ${reviews.length}, upserted_count = ${inserted},
+        set status = 'success', finished_at = now(), fetched_count = ${fetchedReviewCount}, upserted_count = ${inserted},
             report_status = ${reportsStatus}, report_warnings = ${JSON.stringify(reportWarnings)}
         where id = ${runId}::uuid
       `;
@@ -488,7 +550,7 @@ async function syncListing(
     return {
       ...base,
       inserted,
-      fetched: reviews.length,
+      fetched: fetchedReviewCount,
       ratingCaptured,
       skipped: false,
       status: "success",
@@ -536,7 +598,7 @@ async function syncListing(
  */
 export async function syncApp(
   appId: string,
-  opts: { force?: boolean; dedupeMs?: number; store?: Store; refreshReports?: boolean; syncReports?: boolean } = {},
+  opts: { force?: boolean; dedupeMs?: number; store?: Store; refreshReports?: boolean } = {},
 ): Promise<SyncResult[]> {
   const sql: Sql = getSql();
   await ensureMobileAppsSchema(sql); // safe if a cron/job syncs before any route inits the schema
@@ -544,7 +606,6 @@ export async function syncApp(
   const dedupeMs = opts.dedupeMs ?? DEFAULT_DEDUPE_MS;
   const force = Boolean(opts.force);
   const refreshReports = Boolean(opts.refreshReports);
-  const syncReports = opts.syncReports ?? true;
 
   const listings = (await sql`
     select id::text, store, store_app_id, country, last_synced_at
@@ -555,7 +616,7 @@ export async function syncApp(
 
   const limit = pLimit(Math.max(1, cfg.sync.concurrency));
   const results = await Promise.all(
-    listings.map((l) => limit(() => syncListing(sql, l, { force, dedupeMs, refreshReports, syncReports }))),
+    listings.map((l) => limit(() => syncListing(sql, l, { force, dedupeMs, refreshReports }))),
   );
 
   // Notify SSE listeners that this app changed.

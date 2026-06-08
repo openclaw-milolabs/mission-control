@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { Storage } from "@google-cloud/storage";
 import type { GoogleConfig } from "@/lib/mobile-apps/config";
 import { loadServiceAccount } from "@/lib/mobile-apps/providers/google-play-client";
+import type { RawReview } from "@/lib/mobile-apps/types";
 
 export type CountryRating = { territory: string; avg: number | null; asOf: string | null };
 
@@ -19,6 +21,16 @@ export type ReportKind = "installs" | "crashes" | "ratings" | "store_performance
 export type ReportFile = {
   kind: ReportKind;
   dimension: string;
+  yyyyMM: string;
+  path: string;
+  generation: string | null;
+  sizeBytes: number | null;
+  updated: string | null;
+};
+
+export type ReviewCsvFile = {
+  kind: "reviews";
+  dimension: "monthly";
   yyyyMM: string;
   path: string;
   generation: string | null;
@@ -176,6 +188,108 @@ export function parseReportRecordsMulti(text: string): ReportMultiRecord[] {
   return out;
 }
 
+function headerIndex(header: string[], names: string[]): number {
+  const normalized = header.map(normalizeKey);
+  const candidates = names.map(normalizeKey);
+  return normalized.findIndex((h) => candidates.includes(h));
+}
+
+function valueAt(cols: string[], header: string[], names: string[]): string | null {
+  const idx = headerIndex(header, names);
+  const value = idx >= 0 ? cols[idx] : null;
+  return value && value.trim() ? value.trim() : null;
+}
+
+function isoFromEpochMillis(raw: string | null): string | null {
+  if (!raw) return null;
+  const n = Number(raw.replace(/[^0-9]/g, ""));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const d = new Date(n);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function isoFromDateString(raw: string | null): string | null {
+  if (!raw) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function extractReviewIdFromLink(link: string | null): string | null {
+  if (!link) return null;
+  try {
+    const url = new URL(link);
+    const qp = url.searchParams.get("reviewId") ?? url.searchParams.get("reviewid") ?? url.searchParams.get("id");
+    if (qp) return qp;
+  } catch {
+    // Some exports can contain a non-URL token. Fall through to regex/hash.
+  }
+  const m = link.match(/reviewId=([^&\s]+)/i) ?? link.match(/reviewid[/:=]([^&\s]+)/i);
+  return m?.[1] ? decodeURIComponent(m[1]) : null;
+}
+
+function stableGoogleReviewCsvId(row: Record<string, string | null>): string {
+  const link = row.reviewLink ?? null;
+  const fromLink = extractReviewIdFromLink(link);
+  if (fromLink) return fromLink;
+  if (link) return `csv-link:${link}`;
+  const payload = JSON.stringify(row);
+  return `csv-hash:${createHash("sha1").update(payload).digest("hex")}`;
+}
+
+/**
+ * Pure: parse the official Google Play Console monthly reviews CSV export.
+ *
+ * This is different from androidpublisher.reviews.list: the API only returns a
+ * recent window, while these bucket files are historical monthly CSVs. The CSV
+ * format has changed slightly over the years, so this parser accepts the common
+ * header variants documented/observed by Play Console.
+ */
+export function parseGooglePlayReviewsCsv(text: string): RawReview[] {
+  const records = parseCsvRecords(text);
+  if (records.length < 2) return [];
+  const header = records[0];
+  const out: RawReview[] = [];
+
+  for (let r = 1; r < records.length; r++) {
+    const cols = records[r];
+    const reviewLink = valueAt(cols, header, ["Review Link", "Review URL", "Review Url"]);
+    const submitMillis = valueAt(cols, header, ["Review Submit Millis Since Epoch", "Review Submit Millis"]);
+    const submitDate = valueAt(cols, header, ["Review Submit Date and Time", "Review Submit Date", "Date"]);
+    const replyMillis = valueAt(cols, header, ["Developer Reply Millis Since Epoch", "Developer Reply Millis"]);
+    const replyDate = valueAt(cols, header, ["Developer Reply Date and Time", "Developer Reply Date"]);
+    const rowForId = {
+      reviewLink,
+      submitMillis,
+      submitDate,
+      language: valueAt(cols, header, ["Reviewer Language", "Language"]),
+      device: valueAt(cols, header, ["Device"]),
+      rating: valueAt(cols, header, ["Star Rating", "Rating"]),
+      title: valueAt(cols, header, ["Review Title", "Title"]),
+      body: valueAt(cols, header, ["Review Text", "Review", "Body"]),
+    };
+    const rating = toNumber(rowForId.rating ?? undefined);
+    const submittedAt = isoFromEpochMillis(submitMillis) ?? isoFromDateString(submitDate);
+    const rawRow: Record<string, string | null> = {};
+    for (let c = 0; c < header.length; c++) rawRow[normalizeKey(header[c])] = cols[c] ?? null;
+
+    out.push({
+      storeReviewId: stableGoogleReviewCsvId(rowForId),
+      author: valueAt(cols, header, ["Author", "Reviewer", "Reviewer Name"]),
+      rating: typeof rating === "number" ? Math.round(rating) : null,
+      title: rowForId.title,
+      body: rowForId.body,
+      appVersion: valueAt(cols, header, ["App Version Name", "App Version", "Version Name"]),
+      country: valueAt(cols, header, ["Country", "Country/Region", "Region"]),
+      submittedAt,
+      storeResponse: valueAt(cols, header, ["Developer Reply Text", "Developer Reply", "Reply Text"]),
+      language: rowForId.language,
+      device: rowForId.device,
+      raw: { source: "google_play_console_reviews_csv", replyDate: isoFromEpochMillis(replyMillis) ?? isoFromDateString(replyDate), row: rawRow },
+    });
+  }
+  return out.filter((r) => r.rating != null || r.body || r.title);
+}
+
 /** Object path of a monthly Play Console report inside the developer's GCS bucket. */
 export function reportObjectPath(kind: ReportKind, packageName: string, yyyyMM: string, dimension: string): string {
   return `stats/${kind}/${kind}_${packageName}_${yyyyMM}_${dimension}.csv`;
@@ -260,6 +374,16 @@ function reportPathMatch(kind: ReportKind, packageName: string, path: string): {
   return m ? { yyyyMM: m[1], dimension: m[2] } : null;
 }
 
+export function reviewsObjectPath(packageName: string, yyyyMM: string): string {
+  return `reviews/reviews_${packageName}_${yyyyMM}.csv`;
+}
+
+function reviewsPathMatch(packageName: string, path: string): { yyyyMM: string } | null {
+  const re = new RegExp(`^reviews/reviews_${escapeRegExp(packageName)}_(\\d{6})\\.csv$`);
+  const m = path.match(re);
+  return m ? { yyyyMM: m[1] } : null;
+}
+
 function fileMeta(file: { name?: string; metadata?: Record<string, unknown> }): Pick<ReportFile, "generation" | "sizeBytes" | "updated"> {
   const md = file.metadata ?? {};
   const sizeRaw = md.size;
@@ -307,8 +431,38 @@ export async function listReportFiles(
   }
 }
 
+/**
+ * List every Google Play Console monthly reviews CSV for this package.
+ * Path format: reviews/reviews_${packageName}_YYYYMM.csv
+ */
+export async function listReviewReportFiles(cfg: GoogleConfig, packageName: string): Promise<ReviewCsvFile[]> {
+  const bucketName = normalizeBucketName(cfg.reportsBucket);
+  if (!bucketName) return [];
+  const bucket = reportsBucket(cfg);
+  const prefix = `reviews/reviews_${packageName}_`;
+  try {
+    const [files] = await bucket.getFiles({ prefix });
+    return files
+      .map((file) => {
+        const path = file.name;
+        const hit = reviewsPathMatch(packageName, path);
+        if (!hit) return null;
+        return { kind: "reviews", dimension: "monthly", path, yyyyMM: hit.yyyyMM, ...fileMeta(file) } satisfies ReviewCsvFile;
+      })
+      .filter((f): f is ReviewCsvFile => Boolean(f))
+      .sort((a, b) => b.yyyyMM.localeCompare(a.yyyyMM));
+  } catch (err) {
+    const code = (err as { code?: number }).code;
+    if (code === 403) throw new ReportError(`permission denied for reviews reports bucket ${bucketName} package ${packageName}`, "permission");
+    throw new ReportError(
+      `could not list reviews reports from bucket ${bucketName} package ${packageName}: ${err instanceof Error ? err.message : String(err)}`,
+      "unknown",
+    );
+  }
+}
+
 /** Download one already-listed report object. Read-only. */
-export async function downloadReportFile(cfg: GoogleConfig, file: Pick<ReportFile, "path" | "kind">): Promise<string> {
+export async function downloadReportFile(cfg: GoogleConfig, file: Pick<ReportFile | ReviewCsvFile, "path" | "kind">): Promise<string> {
   const bucketName = normalizeBucketName(cfg.reportsBucket);
   if (!bucketName) throw new ReportError("reports bucket is not configured", "missing");
   try {

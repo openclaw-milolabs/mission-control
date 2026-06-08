@@ -30,6 +30,23 @@ function asMetricsObject(v: unknown): Record<string, number | null> {
   return {};
 }
 
+function asJsonArray(v: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(v)) return v.filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === "object" && !Array.isArray(x));
+  if (typeof v === "string") {
+    try {
+      const p = JSON.parse(v);
+      return Array.isArray(p) ? p.filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === "object" && !Array.isArray(x)) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function territoryKey(v: unknown): string {
+  return String(v ?? "").trim().toLowerCase();
+}
+
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const session = await getSession();
@@ -54,6 +71,38 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       from mobile_app_listings where mobile_app_id = ${id}::uuid
     `) as unknown as Array<{ id: string; store: string }>;
     const listingIds = listings.map((l) => l.id);
+
+    // Attach fetched/stored written-review counts per country to the official
+    // country rating rows. These are written reviews only, not total ratings.
+    if (listingIds.length > 0) {
+      const reviewCountryRows = (await sql`
+        select listing_id::text, lower(country) as territory, count(*)::int as review_count
+        from app_reviews
+        where listing_id = any(${sql.array(listingIds)}::uuid[])
+          and country is not null
+          and country <> ''
+        group by listing_id, lower(country)
+      `) as unknown as Array<{ listing_id: string; territory: string; review_count: number }>;
+      const counts = new Map<string, Map<string, number>>();
+      for (const row of reviewCountryRows) {
+        const byCountry = counts.get(row.listing_id) ?? new Map<string, number>();
+        byCountry.set(row.territory, row.review_count);
+        counts.set(row.listing_id, byCountry);
+      }
+      for (const listing of listings as Array<Record<string, unknown> & { id: string; official_ratings?: unknown }>) {
+        const byCountry = counts.get(listing.id) ?? new Map<string, number>();
+        const ratings = asJsonArray(listing.official_ratings).map((r) => {
+          const key = territoryKey(r.territory);
+          return { ...r, review_count: byCountry.get(key) ?? 0 };
+        });
+        for (const [territory, reviewCount] of byCountry.entries()) {
+          if (!ratings.some((r) => territoryKey(r.territory) === territory)) {
+            ratings.push({ territory, avg: null, count: null, review_count: reviewCount });
+          }
+        }
+        listing.official_ratings = ratings;
+      }
+    }
 
     // Review-based daily average rating per store (clean trend, no snapshot noise).
     const trend =
@@ -155,7 +204,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         }));
       }
 
-      // Top acquisition traffic sources (latest available date).
+      // Acquisition traffic sources from the latest available date. No UI cap here;
+      // the frontend can collapse sections but should receive all stored rows.
       const traffic = (await sql`
         select dimensions, metrics
         from mobile_app_report_metrics
@@ -171,7 +221,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       if (traffic.length > 0) reports.traffic_sources = traffic.map((r) => ({ dimensions: r.dimensions, metrics: r.metrics }));
 
       // Latest row for every downloaded report/dimension/value so the Google Play
-      // layout can show device/country/app-version/language/OS breakdowns.
+      // layout can show device/country/app-version/language/OS breakdowns. No cap.
       const breakdowns = (await sql`
         select * from (
           select distinct on (report, dimension, dimension_value)

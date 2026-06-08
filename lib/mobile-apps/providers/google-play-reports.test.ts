@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseGooglePlayReviewsCsv,
   parseRatingsCsv,
   parseReportCsv,
   parseReportRecordsMulti,
   parseCsvRecords,
   reportObjectPath,
+  reviewsObjectPath,
   reportCandidatePaths,
   normalizeBucketName,
   checkedReportMonths,
@@ -54,6 +56,37 @@ describe("reportObjectPath", () => {
     expect(reportObjectPath("crashes", "com.x", "202606", "app_version")).toBe(
       "stats/crashes/crashes_com.x_202606_app_version.csv",
     );
+    expect(reviewsObjectPath("com.x", "202606")).toBe("reviews/reviews_com.x_202606.csv");
+  });
+});
+
+describe("parseGooglePlayReviewsCsv", () => {
+  it("parses monthly Play Console reviews CSV rows into RawReview objects", () => {
+    const csv = [
+      "Package Name,App Version Name,Reviewer Language,Device,Review Submit Date and Time,Review Submit Millis Since Epoch,Star Rating,Review Title,Review Text,Developer Reply Text,Review Link",
+      'com.x,2.1.0,tr,Pixel 8,2026-06-02T12:00:00Z,1780401600000,5,"Great, fun","Line 1\nLine 2",Thanks,https://play.google.com/console/review?reviewId=abc123',
+    ].join("\r\n");
+    const [r] = parseGooglePlayReviewsCsv(csv);
+    expect(r.storeReviewId).toBe("abc123");
+    expect(r.rating).toBe(5);
+    expect(r.title).toBe("Great, fun");
+    expect(r.body).toBe("Line 1\nLine 2");
+    expect(r.appVersion).toBe("2.1.0");
+    expect(r.language).toBe("tr");
+    expect(r.device).toBe("Pixel 8");
+    expect(r.storeResponse).toBe("Thanks");
+    expect(r.raw).toMatchObject({ source: "google_play_console_reviews_csv" });
+  });
+
+  it("uses a stable csv fallback id when no review link id is present", () => {
+    const csv = [
+      "Package Name,Review Submit Millis Since Epoch,Star Rating,Review Text",
+      "com.x,1780401600000,1,Bad",
+    ].join("\n");
+    const [a] = parseGooglePlayReviewsCsv(csv);
+    const [b] = parseGooglePlayReviewsCsv(csv);
+    expect(a.storeReviewId).toMatch(/^csv-hash:/);
+    expect(a.storeReviewId).toBe(b.storeReviewId);
   });
 });
 
