@@ -4,7 +4,7 @@ import { getSql } from "@/lib/local-db";
 import { loadMobileReviewsConfig, type GoogleConfig } from "@/lib/mobile-apps/config";
 import { summarizeReviews } from "@/lib/mobile-apps/metrics";
 import { getProvider } from "@/lib/mobile-apps/providers";
-import { fetchAppleTerritoryRatings, type TerritoryRating } from "@/lib/mobile-apps/providers/app-store-ratings";
+import { fetchAppleTerritoryRatings, fetchAppleAppMetadata, type TerritoryRating, type AppleAppMetadata } from "@/lib/mobile-apps/providers/app-store-ratings";
 import {
   downloadReportFile,
   listReportFiles,
@@ -75,13 +75,18 @@ function reportErrMessage(err: unknown): string {
 async function upsertReviews(sql: Sql, listingId: string, reviews: RawReview[]): Promise<number> {
   let inserted = 0;
   for (const r of reviews) {
+    // Normalize the review territory to a canonical alpha-2 code at ingestion so
+    // every consumer (by-country merge, filters) compares like-for-like. Apple
+    // Connect returns alpha-3 (NLD); iTunes ratings use alpha-2 (nl). Unmappable
+    // values (e.g. a country name) are preserved lowercased rather than dropped.
+    const country = r.country ? toAlpha2(r.country) ?? r.country.trim().toLowerCase() : null;
     const res = await sql`
       insert into app_reviews (
         listing_id, store_review_id, author, rating, title, body,
         app_version, country, submitted_at, store_response, language, device, raw_json
       ) values (
         ${listingId}, ${r.storeReviewId}, ${r.author}, ${r.rating}, ${r.title}, ${r.body},
-        ${r.appVersion}, ${r.country}, ${r.submittedAt}, ${r.storeResponse}, ${r.language ?? null},
+        ${r.appVersion}, ${country}, ${r.submittedAt}, ${r.storeResponse}, ${r.language ?? null},
         ${r.device ?? null}, ${r.raw ? JSON.stringify(r.raw) : null}
       )
       on conflict (listing_id, store_review_id) do update
@@ -419,16 +424,23 @@ async function syncListing(
     let ratingsCount: number | null = null;
     let ratingSource: RatingSource | null = null;
     let ratingAsOf: string | null = null;
+    let storeMetadata: AppleAppMetadata | null = null;
 
     if (store === "apple") {
       const territories = [...reviews.map((r) => r.country ?? ""), listing.country];
       const mode = cfg.apple.fullStorefrontScan;
       const fullScan = mode === "always" || (mode === "forced" && opts.force);
-      officialRatings = await fetchAppleTerritoryRatings(appIdentifier, territories, {
-        fullScan,
-        concurrency: cfg.apple.storefrontScanConcurrency,
-        delayMs: cfg.apple.storefrontScanDelayMs,
-      }).catch(() => []);
+      // Ratings scan + one metadata lookup, in parallel. Metadata is best-effort.
+      const [territoryRatings, metadata] = await Promise.all([
+        fetchAppleTerritoryRatings(appIdentifier, territories, {
+          fullScan,
+          concurrency: cfg.apple.storefrontScanConcurrency,
+          delayMs: cfg.apple.storefrontScanDelayMs,
+        }).catch(() => []),
+        fetchAppleAppMetadata(appIdentifier, listing.country).catch(() => null),
+      ]);
+      officialRatings = territoryRatings;
+      storeMetadata = metadata;
       const primary =
         officialRatings.find((t) => t.territory === toAlpha2(listing.country)) ?? officialRatings[0] ?? null;
       currentRating = primary?.avg ?? null;
@@ -474,6 +486,7 @@ async function syncListing(
           official_ratings = ${officialRatings.length ? JSON.stringify(officialRatings) : null},
           rating_source = ${ratingSource},
           rating_as_of = ${ratingAsOf},
+          store_metadata = coalesce(${storeMetadata ? JSON.stringify(storeMetadata) : null}::jsonb, store_metadata),
           last_synced_at = now()
       where id = ${listing.id}
     `;

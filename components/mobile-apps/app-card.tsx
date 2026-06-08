@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { IconBrandApple, IconBrandGooglePlay, IconChevronRight, IconStarFilled } from "@tabler/icons-react";
+import { IconBrandApple, IconBrandGooglePlay, IconChevronRight } from "@tabler/icons-react";
 
 export type AppListing = {
   id: string;
@@ -21,26 +21,20 @@ export type AppSummary = {
   listings: AppListing[];
 };
 
-function StoreRating({ listing }: { listing: AppListing }) {
+/**
+ * Store presence badge for the list. Intentionally shows NO rating: a single
+ * headline rating per store is overloaded/ambiguous (Apple per-country vs Google
+ * report avg vs written-review avg) and misleads in a list. Ratings live on the
+ * app detail page where each number is labeled with its source.
+ */
+function StoreBadge({ listing }: { listing: AppListing }) {
   const Icon = listing.store === "apple" ? IconBrandApple : IconBrandGooglePlay;
-  const rating = listing.currentRating;
-  const pct = rating != null ? (rating / 5) * 100 : 0;
+  const label = listing.store === "apple" ? "App Store" : "Google Play";
   return (
-    <div className="flex min-w-[7rem] items-center gap-2">
-      <Icon className="size-4 shrink-0 text-muted-foreground" />
-      <div className="flex-1">
-        <div className="flex items-baseline gap-1">
-          <span className="text-sm font-semibold tabular-nums">{rating != null ? rating.toFixed(1) : "—"}</span>
-          <IconStarFilled className="size-3 text-amber-500" />
-          <span className="text-[11px] text-muted-foreground tabular-nums">
-            {listing.ratingsCount != null ? listing.ratingsCount.toLocaleString() : "—"}
-          </span>
-        </div>
-        <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">
-          <div className="h-full rounded-full bg-amber-500" style={{ width: `${pct}%` }} />
-        </div>
-      </div>
-    </div>
+    <span className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-[11px] font-medium text-muted-foreground">
+      <Icon className="size-3.5" />
+      {label}
+    </span>
   );
 }
 
@@ -62,15 +56,13 @@ export function AppCard({ app }: { app: AppSummary }) {
       <div className="min-w-0 flex-1">
         <div className="truncate font-semibold">{app.name}</div>
         <div className="mt-0.5 truncate text-xs text-muted-foreground">
-          {app.listings.length > 0
-            ? app.listings.map((l) => (l.store === "apple" ? "App Store" : "Google Play")).join(" · ")
-            : "No listings"}
+          {app.listings.length > 0 ? `${app.listings.length} store ${app.listings.length === 1 ? "listing" : "listings"}` : "No listings"}
         </div>
       </div>
 
-      <div className="hidden items-center gap-5 sm:flex">
+      <div className="hidden items-center gap-2 sm:flex">
         {app.listings.map((l) => (
-          <StoreRating key={l.id} listing={l} />
+          <StoreBadge key={l.id} listing={l} />
         ))}
       </div>
 

@@ -52,7 +52,91 @@ export function parseiTunesLookup(json: unknown): { avg: number | null; count: n
   };
 }
 
+/**
+ * Storefront-independent app metadata Apple returns from a single iTunes Lookup.
+ * All real, official, no-auth fields — currently discarded by the rating scan.
+ */
+export type AppleAppMetadata = {
+  version: string | null;
+  releaseDate: string | null;
+  currentVersionReleaseDate: string | null;
+  releaseNotes: string | null;
+  fileSizeBytes: number | null;
+  primaryGenre: string | null;
+  genres: string[];
+  contentRating: string | null;
+  formattedPrice: string | null;
+  currency: string | null;
+  sellerName: string | null;
+  minimumOsVersion: string | null;
+  languages: string[];
+  screenshotCount: number | null;
+  artworkUrl: string | null;
+  /** Apple's rating/count for the CURRENT version only (vs all-version avg). */
+  currentVersionAvg: number | null;
+  currentVersionCount: number | null;
+};
+
+function str(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+function num(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Pure: extract storefront-independent app metadata from an iTunes Lookup result. */
+export function parseiTunesMetadata(json: unknown): AppleAppMetadata | null {
+  const r = (json as { results?: Array<Record<string, unknown>> } | null)?.results?.[0];
+  if (!r) return null;
+  return {
+    version: str(r.version),
+    releaseDate: str(r.releaseDate),
+    currentVersionReleaseDate: str(r.currentVersionReleaseDate),
+    releaseNotes: str(r.releaseNotes),
+    fileSizeBytes: num(r.fileSizeBytes),
+    primaryGenre: str(r.primaryGenreName),
+    genres: Array.isArray(r.genres) ? r.genres.filter((g): g is string => typeof g === "string") : [],
+    contentRating: str(r.trackContentRating) ?? str(r.contentAdvisoryRating),
+    formattedPrice: str(r.formattedPrice),
+    currency: str(r.currency),
+    sellerName: str(r.sellerName) ?? str(r.artistName),
+    minimumOsVersion: str(r.minimumOsVersion),
+    languages: Array.isArray(r.languageCodesISO2A)
+      ? r.languageCodesISO2A.filter((l): l is string => typeof l === "string")
+      : [],
+    screenshotCount: Array.isArray(r.screenshotUrls) ? r.screenshotUrls.length : null,
+    artworkUrl: str(r.artworkUrl512) ?? str(r.artworkUrl100),
+    currentVersionAvg: num(r.averageUserRatingForCurrentVersion),
+    currentVersionCount: num(r.userRatingCountForCurrentVersion),
+  };
+}
+
 const ITUNES_LOOKUP = "https://itunes.apple.com/lookup";
+
+/**
+ * One iTunes Lookup against the listing's primary storefront to capture official
+ * app metadata (version, size, genre, age rating, price, languages, current-version
+ * rating). Returns null on any failure — metadata is best-effort, never fatal.
+ */
+export async function fetchAppleAppMetadata(
+  appStoreAppId: string,
+  country: string | null | undefined,
+): Promise<AppleAppMetadata | null> {
+  const cc = toAlpha2(country) ?? "us";
+  try {
+    const url = `${ITUNES_LOOKUP}?id=${encodeURIComponent(appStoreAppId)}&country=${encodeURIComponent(cc)}`;
+    const res = await fetchWithRetry(
+      url,
+      { headers: { "User-Agent": "MissionControl/1.0" } },
+      { timeoutMs: 15_000, retries: 1 },
+    );
+    if (!res.ok) return null;
+    return parseiTunesMetadata(await res.json());
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Fetch the official per-storefront rating for an App Store app from Apple's

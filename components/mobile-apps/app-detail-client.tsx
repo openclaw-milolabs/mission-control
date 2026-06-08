@@ -28,10 +28,45 @@ type Listing = {
   official_ratings: TerritoryRating[] | null;
   rating_source: string | null;
   rating_as_of: string | null;
+  store_metadata: AppMetadata | null;
   last_synced_at: string | null;
 };
 
 type TerritoryRating = { territory: string; avg: number | null; count: number | null; review_count?: number | null };
+
+type AppMetadata = {
+  version: string | null;
+  releaseDate: string | null;
+  currentVersionReleaseDate: string | null;
+  releaseNotes: string | null;
+  fileSizeBytes: number | null;
+  primaryGenre: string | null;
+  genres: string[];
+  contentRating: string | null;
+  formattedPrice: string | null;
+  currency: string | null;
+  sellerName: string | null;
+  minimumOsVersion: string | null;
+  languages: string[];
+  screenshotCount: number | null;
+  artworkUrl: string | null;
+  currentVersionAvg: number | null;
+  currentVersionCount: number | null;
+};
+
+/** jsonb can arrive as an object, a JSON string, or null depending on the driver. */
+function asMetadata(v: unknown): AppMetadata | null {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as AppMetadata;
+  if (typeof v === "string") {
+    try {
+      const p = JSON.parse(v);
+      return p && typeof p === "object" && !Array.isArray(p) ? (p as AppMetadata) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 /** jsonb can arrive as an array, a JSON string, or null depending on the driver. */
 function asTerritoryRatings(v: unknown): TerritoryRating[] {
@@ -53,6 +88,7 @@ type Summary = {
   avg_rating: number | null;
   r1: number; r2: number; r3: number; r4: number; r5: number;
   negative: number;
+  responded: number;
   latest_review_at: string | null;
 };
 
@@ -129,43 +165,38 @@ function StoreScoreCard({
   const failed = run?.status === "failed";
   const isApple = store === "apple";
   const territories = (listing?.official_ratings ?? []).filter((t) => t.avg != null || t.review_count != null);
+  const fromReport = listing?.rating_source === "google_play_console_ratings_report";
 
-  // Apple: the headline shows one storefront. Default to the listing's country,
-  // else the storefront with the most ratings. Tapping a row below switches it.
+  // Google with no ratings report: the only number available is the average of
+  // stored written reviews — explicitly NOT a store-wide rating. Every other case
+  // (Apple, or Google with a Play Console ratings report) has a real, official
+  // per-country rating we can show and switch between.
+  const writtenOnly = !isApple && !fromReport;
+
+  // The headline shows ONE country's official rating. Default to the listing's
+  // country, else the first country that actually has a rating. Tapping a row
+  // below switches it. We never synthesize a cross-country average — averaging
+  // per-country averages is statistically meaningless and not an official number.
+  const ratingTerritories = territories.filter((t) => t.avg != null);
   const defaultTerr =
-    territories.find((t) => t.territory === toAlpha2(listing?.country))?.territory ??
-    territories[0]?.territory ??
+    ratingTerritories.find((t) => t.territory === toAlpha2(listing?.country))?.territory ??
+    ratingTerritories[0]?.territory ??
     null;
   const [picked, setPicked] = useState<string | null>(null);
   const selected = picked ?? defaultTerr;
   const selEntry = territories.find((t) => t.territory === selected) ?? null;
-  const fromReport = listing?.rating_source === "google_play_console_ratings_report";
-  const googleReportRatings = !isApple && fromReport
-    ? territories.map((t) => t.avg).filter((avg): avg is number => typeof avg === "number")
-    : [];
-  const googleReportAverage = googleReportRatings.length > 0
-    ? googleReportRatings.reduce((sum, avg) => sum + avg, 0) / googleReportRatings.length
-    : null;
 
-  // Apple uses the selected storefront as the headline. Google Play reports do
-  // not expose an Apple-style global public rating/count; for Google we show an
-  // explicit unweighted average across downloaded country rating rows.
-  const headlineAvg = !isApple && googleReportAverage != null
-    ? googleReportAverage
+  const headlineAvg = writtenOnly
+    ? listing?.current_rating ?? null
+    : selEntry?.avg ?? listing?.current_rating ?? null;
+  // Apple exposes a per-country ratings count; the Google ratings report does not.
+  const headlineCount = writtenOnly ? listing?.ratings_count ?? null : selEntry?.count ?? null;
+  const storeLabel = isApple ? "App Store" : "Google Play";
+  const headlineLabel = writtenOnly
+    ? "Google Play written-review average"
     : selEntry
-      ? selEntry.avg
-      : listing?.current_rating ?? null;
-  const headlineCount = selEntry ? selEntry.count : listing?.ratings_count ?? null;
-  const storeRatingLabel = isApple
-    ? "App Store rating"
-    : fromReport
-      ? "Google Play country report average"
-      : "Google Play written-review average";
-  const headlineLabel = !isApple && fromReport
-    ? storeRatingLabel
-    : selEntry
-      ? `${countryName(selected)} ${storeRatingLabel}`
-      : storeRatingLabel;
+      ? `${countryName(selected)} · ${storeLabel} rating`
+      : `${storeLabel} rating`;
   return (
     <div className="w-full rounded-2xl border bg-card p-6">
       {/* Header */}
@@ -190,10 +221,10 @@ function StoreScoreCard({
         </div>
       ) : null}
 
-      {/* Headline rating, labeled with the storefront it represents */}
+      {/* Headline rating — one country's official, store-provided rating */}
       <div className="mt-5">
         <p className="mb-2 flex items-center gap-1.5 text-sm font-medium">
-          {selEntry && (isApple || !fromReport) ? <span className="text-base leading-none">{flagEmoji(selected)}</span> : null}
+          {selEntry && !writtenOnly ? <span className="text-base leading-none">{flagEmoji(selected)}</span> : null}
           <span className="text-muted-foreground">{headlineLabel}</span>
         </p>
         <div className="flex items-end gap-4">
@@ -207,18 +238,19 @@ function StoreScoreCard({
                 ? headlineAvg != null
                   ? `official · ${headlineCount?.toLocaleString() ?? "—"} ratings`
                   : "no rating from the App Store API yet"
-                : fromReport
-                  ? `unweighted avg from ${googleReportRatings.length.toLocaleString()} downloaded country rating rows · not Google’s official public global rating${listing?.rating_as_of ? ` · as of ${formatDate(listing.rating_as_of)}` : ""}`
-                  : headlineAvg != null
+                : writtenOnly
+                  ? headlineAvg != null
                     ? `from ${headlineCount?.toLocaleString() ?? "—"} written reviews only · not a store-wide rating`
-                    : "no stored written reviews yet"}
+                    : "no stored written reviews yet"
+                  : headlineAvg != null
+                    ? `official per-country average · Play Console ratings report${listing?.rating_as_of ? ` · as of ${formatDate(listing.rating_as_of)}` : ""}`
+                    : "no rating rows in the Play Console report yet"}
             </p>
           </div>
         </div>
         {!isApple && fromReport ? (
           <p className="mt-3 text-xs leading-relaxed text-muted-foreground/70">
-            Google does not expose an Apple-style live global rating/count through the Reviews API. This average is calculated from the latest downloaded Play Console country rating rows.
-            {selEntry ? ` Selected country: ${flagEmoji(selected)} ${countryName(selected)} ${selEntry.avg != null ? selEntry.avg.toFixed(1) : "—"}.` : ""}
+            Google’s API does not expose an Apple-style global rating or total ratings count. This is the official per-country average from your latest Play Console ratings report — tap a country below to switch.
           </p>
         ) : null}
       </div>
@@ -227,7 +259,7 @@ function StoreScoreCard({
       {territories.length > 0 ? (
         <div className="mt-5 border-t pt-4">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            By country <span className="font-normal normal-case text-muted-foreground/60">{isApple ? "· tap to switch · ratings + written reviews" : "· rating rows + written reviews"}</span>
+            By country <span className="font-normal normal-case text-muted-foreground/60">{writtenOnly ? "· written reviews by country" : "· tap to switch · official rating + written reviews"}</span>
           </p>
           <ul className="space-y-0.5">
             {territories.map((t) => {
@@ -278,6 +310,65 @@ function StoreScoreCard({
   );
 }
 
+function formatBytes(bytes: number | null): string | null {
+  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return null;
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`;
+}
+
+function MetaFact({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <div className="flex flex-col gap-0.5" title={title}>
+      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">{label}</span>
+      <span className="truncate text-sm font-medium text-foreground/90">{value}</span>
+    </div>
+  );
+}
+
+/** Official app metadata from the store (Apple iTunes Lookup). Real, no-auth facts. */
+function AppMetaCard({ store, meta }: { store: StoreKey; meta: AppMetadata }) {
+  const size = formatBytes(meta.fileSizeBytes);
+  const facts: Array<{ label: string; value: string; title?: string }> = [];
+  if (meta.version) facts.push({ label: "Version", value: meta.version });
+  if (meta.currentVersionReleaseDate)
+    facts.push({ label: "Updated", value: formatDate(meta.currentVersionReleaseDate), title: meta.releaseNotes ?? undefined });
+  if (meta.releaseDate) facts.push({ label: "First released", value: formatDate(meta.releaseDate) });
+  if (size) facts.push({ label: "Size", value: size });
+  if (meta.primaryGenre) facts.push({ label: "Category", value: meta.primaryGenre });
+  if (meta.contentRating) facts.push({ label: "Age rating", value: meta.contentRating });
+  if (meta.formattedPrice) facts.push({ label: "Price", value: meta.formattedPrice });
+  if (meta.minimumOsVersion) facts.push({ label: "Min OS", value: meta.minimumOsVersion });
+  if (meta.languages.length > 0)
+    facts.push({ label: "Languages", value: String(meta.languages.length), title: meta.languages.join(", ") });
+  if (meta.sellerName) facts.push({ label: "Seller", value: meta.sellerName });
+  if (facts.length === 0) return null;
+
+  const storeLabel = STORE_META[store].label;
+  return (
+    <div className="w-full rounded-2xl border bg-card p-6">
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">App details</p>
+        <span className="text-[11px] text-muted-foreground/60">{storeLabel} · official store metadata</span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-5">
+        {facts.map((f) => (
+          <MetaFact key={f.label} label={f.label} value={f.value} title={f.title} />
+        ))}
+      </div>
+      {meta.currentVersionAvg != null ? (
+        <div className="mt-4 flex items-center gap-2 border-t pt-4 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground/80">This version:</span>
+          <Stars n={meta.currentVersionAvg} size="size-3" />
+          <span className="font-semibold tabular-nums">{meta.currentVersionAvg.toFixed(1)}</span>
+          {meta.currentVersionCount != null ? <span>· {meta.currentVersionCount.toLocaleString()} ratings</span> : null}
+          {meta.releaseNotes ? <span className="ml-auto max-w-[60%] truncate" title={meta.releaseNotes}>“{meta.releaseNotes}”</span> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function AppDetailClient({ appId }: { appId: string }) {
   const router = useRouter();
   const { ready, isEnabled } = useModules();
@@ -305,7 +396,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
       if (json.ok) {
         setApp(json.app ?? null);
         const rawListings = (Array.isArray(json.listings) ? json.listings : []) as Listing[];
-        setListings(rawListings.map((l) => ({ ...l, official_ratings: asTerritoryRatings(l.official_ratings) })));
+        setListings(rawListings.map((l) => ({ ...l, official_ratings: asTerritoryRatings(l.official_ratings), store_metadata: asMetadata(l.store_metadata) })));
         setSummary(Array.isArray(json.summary) ? json.summary : []);
         setTrend(Array.isArray(json.trend) ? json.trend : []);
         setSyncRuns(Array.isArray(json.syncRuns) ? json.syncRuns : []);
@@ -415,7 +506,8 @@ export function AppDetailClient({ appId }: { appId: string }) {
     const rows = summary.filter((s) => s.store === store);
     const total = rows.reduce((a, r) => a + r.total, 0);
     const negative = rows.reduce((a, r) => a + r.negative, 0);
-    return { total, negative };
+    const responded = rows.reduce((a, r) => a + (r.responded ?? 0), 0);
+    return { total, negative, responded };
   }, [summary, store]);
 
   const trendData: TrendPoint[] = useMemo(() => {
@@ -510,24 +602,34 @@ export function AppDetailClient({ appId }: { appId: string }) {
                 label={`Negative ≤${negativeThreshold}★`}
                 danger={combined.negative > 0}
               />
+              <div className="h-9 w-px bg-border" />
+              <Metric
+                value={combined.total > 0 ? `${Math.round((combined.responded / combined.total) * 100)}%` : "—"}
+                label="Developer replies"
+              />
             </div>
           </div>
 
           <StoreConfigBanner />
 
-          {/* Store score cards */}
+          {/* Store score cards + official app metadata */}
           {shownStores.length > 0 ? (
             <div className="grid w-full gap-5">
-              {shownStores.map((s) => (
-                <StoreScoreCard
-                  key={s}
-                  store={s}
-                  summary={summary.find((x) => x.store === s)}
-                  listing={listings.find((x) => x.store === s)}
-                  run={syncRuns.find((x) => x.store === s)}
-                  negativeThreshold={negativeThreshold}
-                />
-              ))}
+              {shownStores.map((s) => {
+                const listing = listings.find((x) => x.store === s);
+                return (
+                  <div key={s} className="flex flex-col gap-5">
+                    <StoreScoreCard
+                      store={s}
+                      summary={summary.find((x) => x.store === s)}
+                      listing={listing}
+                      run={syncRuns.find((x) => x.store === s)}
+                      negativeThreshold={negativeThreshold}
+                    />
+                    {listing?.store_metadata ? <AppMetaCard store={s} meta={listing.store_metadata} /> : null}
+                  </div>
+                );
+              })}
             </div>
           ) : null}
 

@@ -39,6 +39,9 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
   // Where current_rating came from + how fresh it is (e.g. google_play_console_ratings_report).
   await sql`ALTER TABLE mobile_app_listings ADD COLUMN IF NOT EXISTS rating_source text`;
   await sql`ALTER TABLE mobile_app_listings ADD COLUMN IF NOT EXISTS rating_as_of timestamptz`;
+  // Official store metadata (Apple iTunes Lookup: version, size, genre, age rating,
+  // price, languages, current-version rating). jsonb so it grows without migrations.
+  await sql`ALTER TABLE mobile_app_listings ADD COLUMN IF NOT EXISTS store_metadata jsonb`;
   // Backfill the store CHECK on pre-existing tables — add ONLY if missing, never
   // drop (so a sync can't briefly run against a table with no constraint, and a
   // failed add leaves any existing constraint intact).

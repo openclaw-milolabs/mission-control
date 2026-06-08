@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
+import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
 
 export const dynamic = "force-dynamic";
 
@@ -43,8 +44,16 @@ function asJsonArray(v: unknown): Array<Record<string, unknown>> {
   return [];
 }
 
+/**
+ * Canonical alpha-2 key for a territory, regardless of the source format.
+ * App Store ratings arrive as alpha-2 (`nl`) while App Store Connect review
+ * territories arrive as alpha-3 (`NLD`); without this normalization the same
+ * country shows up as two separate rows. Unmappable codes fall back to a
+ * lowercased string so they still group consistently.
+ */
 function territoryKey(v: unknown): string {
-  return String(v ?? "").trim().toLowerCase();
+  const raw = String(v ?? "").trim();
+  return toAlpha2(raw) ?? raw.toLowerCase();
 }
 
 type OfficialRatingRow = Record<string, unknown> & {
@@ -80,7 +89,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 
     const listings = (await sql`
       select id::text, store, store_app_id, country, current_rating::float8 as current_rating, ratings_count,
-             official_ratings, rating_source, rating_as_of, last_synced_at
+             official_ratings, rating_source, rating_as_of, store_metadata, last_synced_at
       from mobile_app_listings where mobile_app_id = ${id}::uuid
     `) as unknown as ListingRow[];
     const listingIds = listings.map((l) => l.id);
@@ -99,7 +108,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       const counts = new Map<string, Map<string, number>>();
       for (const row of reviewCountryRows) {
         const byCountry = counts.get(row.listing_id) ?? new Map<string, number>();
-        byCountry.set(row.territory, row.review_count);
+        // Normalize to the canonical alpha-2 key so alpha-3 review territories
+        // (NLD) merge into the matching alpha-2 rating row (nl). Sum in case two
+        // raw codes collapse to the same country.
+        const key = territoryKey(row.territory);
+        byCountry.set(key, (byCountry.get(key) ?? 0) + row.review_count);
         counts.set(row.listing_id, byCountry);
       }
       for (const listing of listings) {
@@ -165,6 +178,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
               count(*) filter (where r.rating = 4)::int as r4,
               count(*) filter (where r.rating = 5)::int as r5,
               count(*) filter (where r.rating is not null and r.rating <= ${negativeThreshold})::int as negative,
+              count(*) filter (where r.store_response is not null and r.store_response <> '')::int as responded,
               max(r.submitted_at) as latest_review_at
             from app_reviews r
             join mobile_app_listings l on l.id = r.listing_id

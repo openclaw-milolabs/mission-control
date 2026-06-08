@@ -15,6 +15,17 @@ describe("toAlpha2", () => {
     expect(toAlpha2("TR")).toBe("tr");
   });
 
+  // Regression: these App Store Connect alpha-3 territories used to fall through
+  // the partial map and render as raw "POL"/"BEL"/… rows duplicating the alpha-2
+  // rating rows. The full ISO 3166-1 map must cover every real territory.
+  it("maps every territory that previously duplicated in the by-country list", () => {
+    expect(toAlpha2("POL")).toBe("pl");
+    expect(toAlpha2("BEL")).toBe("be");
+    expect(toAlpha2("ROU")).toBe("ro");
+    expect(toAlpha2("RUS")).toBe("ru");
+    expect(toAlpha2("SWE")).toBe("se");
+  });
+
   it("returns null for unknown codes", () => {
     expect(toAlpha2("")).toBeNull();
     expect(toAlpha2("ZZZ")).toBeNull();
