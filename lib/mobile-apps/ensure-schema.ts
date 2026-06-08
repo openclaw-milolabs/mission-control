@@ -31,6 +31,8 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS mobile_app_listings_app_idx ON mobile_app_listings(mobile_app_id)`;
+  // Official per-storefront ratings (Apple iTunes Lookup): [{territory, avg, count}].
+  await sql`ALTER TABLE mobile_app_listings ADD COLUMN IF NOT EXISTS official_ratings jsonb`;
   await sql`
     CREATE TABLE IF NOT EXISTS app_reviews (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

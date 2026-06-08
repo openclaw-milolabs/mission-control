@@ -3,6 +3,8 @@ import { getSql } from "@/lib/local-db";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
 import { summarizeReviews } from "@/lib/mobile-apps/metrics";
 import { getProvider } from "@/lib/mobile-apps/providers";
+import { fetchAppleTerritoryRatings, type TerritoryRating } from "@/lib/mobile-apps/providers/app-store-ratings";
+import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
 import type { Store } from "@/lib/mobile-apps/types";
 
 type Sql = ReturnType<typeof getSql>;
@@ -75,16 +77,33 @@ async function syncListing(
       if ((res as unknown as Array<{ inserted: boolean }>)[0]?.inserted) inserted += 1;
     }
 
-    // Ratings are derived from the reviews we fetched (official APIs expose no aggregate).
+    // Star distribution snapshot from the fetched reviews (history only — this is
+    // NOT presented as the store rating).
     const summary = summarizeReviews(reviews);
     await sql`
       insert into app_rating_snapshots (listing_id, avg_rating, ratings_count, histogram)
       values (${listing.id}, ${summary.avgRating}, ${summary.ratingsCount}, ${JSON.stringify(summary.histogram)})
     `;
+
+    // The headline rating is the OFFICIAL value the store API returns, never one
+    // we compute. Apple exposes per-storefront averages via iTunes Lookup; Google
+    // has no official aggregate API, so it stays blank (reviews/distribution only).
+    let officialRatings: TerritoryRating[] = [];
+    let currentRating: number | null = null;
+    let ratingsCount: number | null = null;
+    if (store === "apple") {
+      const territories = [...reviews.map((r) => r.country ?? ""), listing.country];
+      officialRatings = await fetchAppleTerritoryRatings(appIdentifier, territories).catch(() => []);
+      const primary =
+        officialRatings.find((t) => t.territory === toAlpha2(listing.country)) ?? officialRatings[0] ?? null;
+      currentRating = primary?.avg ?? null;
+      ratingsCount = primary?.count ?? null;
+    }
     await sql`
       update mobile_app_listings
-      set current_rating = ${summary.avgRating},
-          ratings_count = ${summary.ratingsCount},
+      set current_rating = ${currentRating},
+          ratings_count = ${ratingsCount},
+          official_ratings = ${officialRatings.length ? JSON.stringify(officialRatings) : null},
           last_synced_at = now()
       where id = ${listing.id}
     `;

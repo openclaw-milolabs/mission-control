@@ -124,10 +124,18 @@ export type SyncConfig = {
   negativeThreshold: number;
 };
 
+export type TranslateConfig = {
+  /** Translation uses the free, key-less MyMemory public API, so it is always on. */
+  configured: boolean;
+  /** Optional contact email — raises MyMemory's free daily quota when set. */
+  email: string | null;
+};
+
 export type MobileReviewsConfig = {
   google: GoogleConfig;
   apple: AppleConfig;
   sync: SyncConfig;
+  translate: TranslateConfig;
 };
 
 const syncSchema = z.object({
@@ -197,7 +205,9 @@ export function parseMobileReviewsConfig(env: Record<string, string>): MobileRev
     negativeThreshold: env.MOBILE_REVIEWS_NEGATIVE_THRESHOLD,
   });
 
-  return { google, apple, sync };
+  const translate: TranslateConfig = { configured: true, email: clean(env.MYMEMORY_EMAIL) || null };
+
+  return { google, apple, sync, translate };
 }
 
 /** Load + parse config from the real secrets file(s) and process.env. */
@@ -212,9 +222,11 @@ export function loadMobileReviewsConfig(): MobileReviewsConfig {
 export function publicConfigStatus(config: MobileReviewsConfig): {
   google: StoreConfigStatus;
   apple: StoreConfigStatus;
+  translate: { configured: boolean };
 } {
   return {
     google: { enabled: config.google.enabled, configured: config.google.configured, error: config.google.error },
     apple: { enabled: config.apple.enabled, configured: config.apple.configured, error: config.apple.error },
+    translate: { configured: config.translate.configured },
   };
 }

@@ -9,6 +9,7 @@ import { ReviewsStream } from "@/components/mobile-apps/reviews-stream";
 import { RatingDistribution } from "@/components/mobile-apps/rating-distribution";
 import { RatingTrend, type TrendPoint } from "@/components/mobile-apps/rating-trend";
 import { SentimentDigest } from "@/components/mobile-apps/sentiment-digest";
+import { countryName, flagEmoji } from "@/lib/mobile-apps/country-codes";
 import { useModules } from "@/components/modules/modules-provider";
 import { toast } from "sonner";
 
@@ -22,8 +23,11 @@ type Listing = {
   country: string;
   current_rating: number | null;
   ratings_count: number | null;
+  official_ratings: TerritoryRating[] | null;
   last_synced_at: string | null;
 };
+
+type TerritoryRating = { territory: string; avg: number | null; count: number | null };
 
 type Summary = {
   store: string;
@@ -88,12 +92,15 @@ function StoreScoreCard({
   const counts: [number, number, number, number, number] = [
     summary?.r1 ?? 0, summary?.r2 ?? 0, summary?.r3 ?? 0, summary?.r4 ?? 0, summary?.r5 ?? 0,
   ];
-  const avg = summary?.avg_rating ?? null;
   const total = summary?.total ?? 0;
   const failed = run?.status === "failed";
+  const official = listing?.current_rating ?? null; // Apple: official storefront average; Google: null
+  const officialCount = listing?.ratings_count ?? null;
+  const territories = (listing?.official_ratings ?? []).filter((t) => t.avg != null);
 
   return (
-    <div className="rounded-xl border bg-card p-4">
+    <div className="rounded-2xl border bg-card p-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium">
           <Icon className="size-4" />
@@ -108,20 +115,54 @@ function StoreScoreCard({
         </span>
       </div>
 
-      <div className="mt-3 flex items-end gap-3">
-        <span className="text-4xl font-semibold leading-none tabular-nums">{avg != null ? avg.toFixed(2) : "—"}</span>
-        <div className="pb-0.5">
-          <Stars n={avg} />
-          <p className="mt-1 text-xs text-muted-foreground tabular-nums">
-            {total.toLocaleString()} reviews
-            {summary && summary.negative > 0 ? (
-              <span className="text-red-600/90 dark:text-red-400/90"> · {summary.negative} ≤{negativeThreshold}★</span>
-            ) : null}
+      {/* Official headline rating */}
+      <div className="mt-5 flex items-end gap-4">
+        <span className="text-5xl font-semibold leading-none tracking-tight tabular-nums">
+          {official != null ? official.toFixed(1) : "—"}
+        </span>
+        <div className="pb-1">
+          <Stars n={official} size="size-4" />
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            {store === "apple"
+              ? official != null
+                ? `official · ${officialCount?.toLocaleString() ?? "—"} ratings`
+                : "no rating from the App Store API yet"
+              : "Google's API has no aggregate rating"}
           </p>
         </div>
       </div>
 
-      <div className="mt-4">
+      {/* Per-storefront official ratings (Apple) */}
+      {territories.length > 0 ? (
+        <div className="mt-5 border-t pt-4">
+          <p className="mb-2.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            By storefront
+          </p>
+          <ul className="space-y-2">
+            {territories.map((t) => (
+              <li key={t.territory} className="flex items-center gap-2.5 text-sm">
+                <span className="text-base leading-none">{flagEmoji(t.territory)}</span>
+                <span className="min-w-0 flex-1 truncate text-foreground/80">{countryName(t.territory)}</span>
+                <Stars n={t.avg} size="size-3" />
+                <span className="w-9 text-right font-semibold tabular-nums">{t.avg != null ? t.avg.toFixed(1) : "—"}</span>
+                <span className="w-12 text-right text-xs text-muted-foreground tabular-nums">
+                  {t.count != null ? t.count.toLocaleString() : "—"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* Distribution of the reviews we fetched (not the official rating) */}
+      <div className="mt-5 border-t pt-4">
+        <div className="mb-2.5 flex items-center justify-between">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Review breakdown</p>
+          <p className="text-[11px] text-muted-foreground/70">
+            {total.toLocaleString()} fetched
+            {summary && summary.negative > 0 ? ` · ${summary.negative} ≤${negativeThreshold}★` : ""}
+          </p>
+        </div>
         <RatingDistribution counts={counts} />
       </div>
     </div>
@@ -243,12 +284,13 @@ export function AppDetailClient({ appId }: { appId: string }) {
   );
   const shownStores = store ? [store] : availableStores;
 
+  // Facts only (counts), never a computed average — the rating shown is the
+  // official per-store value in each card.
   const combined = useMemo(() => {
     const rows = store ? summary.filter((s) => s.store === store) : summary;
     const total = rows.reduce((a, r) => a + r.total, 0);
     const negative = rows.reduce((a, r) => a + r.negative, 0);
-    const weighted = rows.reduce((a, r) => a + (r.avg_rating ?? 0) * r.total, 0);
-    return { total, negative, avg: total > 0 ? weighted / total : null };
+    return { total, negative };
   }, [summary, store]);
 
   const trendData: TrendPoint[] = useMemo(() => {
@@ -270,6 +312,12 @@ export function AppDetailClient({ appId }: { appId: string }) {
     () => listings.map((l) => l.last_synced_at).filter(Boolean).sort().at(-1) ?? null,
     [listings],
   );
+
+  const storeAppIds = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const l of listings) m[l.store] = l.store_app_id;
+    return m;
+  }, [listings]);
 
   const headerActions = (
     <div className="flex items-center gap-0.5 rounded-lg bg-muted/60 p-0.5">
@@ -320,9 +368,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
             </div>
 
             <div className="flex items-center gap-6">
-              <Metric value={combined.avg != null ? combined.avg.toFixed(2) : "—"} label="Avg rating" accent />
-              <div className="h-9 w-px bg-border" />
-              <Metric value={combined.total.toLocaleString()} label="Reviews" />
+              <Metric value={combined.total.toLocaleString()} label="Reviews fetched" />
               <div className="h-9 w-px bg-border" />
               <Metric
                 value={combined.negative.toLocaleString()}
@@ -336,7 +382,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
 
           {/* Store score cards */}
           {shownStores.length > 0 ? (
-            <div className={`grid gap-4 ${shownStores.length > 1 ? "sm:grid-cols-2" : "max-w-md"}`}>
+            <div className={`grid gap-5 ${shownStores.length > 1 ? "sm:grid-cols-2" : "max-w-lg"}`}>
               {shownStores.map((s) => (
                 <StoreScoreCard
                   key={s}
@@ -353,11 +399,14 @@ export function AppDetailClient({ appId }: { appId: string }) {
           {/* Main: reviews + rail */}
           <div className="grid gap-5 lg:grid-cols-3">
             <div className="lg:col-span-2">
-              <ReviewsStream appId={appId} store={store} refreshKey={refreshKey} />
+              <ReviewsStream appId={appId} store={store} refreshKey={refreshKey} storeAppIds={storeAppIds} />
             </div>
             <div className="flex flex-col gap-5">
               <section className="rounded-xl border bg-card p-4">
-                <h2 className="mb-3 text-sm font-semibold">Rating trend</h2>
+                <div className="mb-3">
+                  <h2 className="text-sm font-semibold">Review ratings over time</h2>
+                  <p className="text-[11px] text-muted-foreground/70">Average of fetched reviews, not the store rating</p>
+                </div>
                 <RatingTrend data={trendData} />
               </section>
               <SentimentDigest

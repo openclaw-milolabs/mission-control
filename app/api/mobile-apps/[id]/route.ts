@@ -35,7 +35,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     if (!appRows[0]) return fail("App not found", 404);
 
     const listings = (await sql`
-      select id::text, store, store_app_id, country, current_rating::float8 as current_rating, ratings_count, last_synced_at
+      select id::text, store, store_app_id, country, current_rating::float8 as current_rating, ratings_count, official_ratings, last_synced_at
       from mobile_app_listings where mobile_app_id = ${id}::uuid
     `) as unknown as Array<{ id: string; store: string }>;
     const listingIds = listings.map((l) => l.id);

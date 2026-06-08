@@ -59,6 +59,7 @@ describe("config-status never leaks secrets to the frontend", () => {
         privateKeyBase64: "U0VDUkVU",
       },
       sync: { maxPages: 10, concurrency: 2, negativeThreshold: 3 },
+      translate: { configured: true, email: null },
     });
 
     const res = await configStatusGET();

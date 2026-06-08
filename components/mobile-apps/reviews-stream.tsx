@@ -19,10 +19,12 @@ export function ReviewsStream({
   appId,
   store,
   refreshKey,
+  storeAppIds = {},
 }: {
   appId: string;
   store: "" | "apple" | "google";
   refreshKey: number;
+  storeAppIds?: Partial<Record<string, string>>;
 }) {
   const [rating, setRating] = useState<number | null>(null);
   const [sort, setSort] = useState<Sort>("newest");
@@ -161,7 +163,7 @@ export function ReviewsStream({
           <ul className="divide-y">
             {reviews.map((r) => (
               <li key={r.id}>
-                <ReviewCard review={r} />
+                <ReviewCard review={r} storeAppId={storeAppIds[r.store] ?? null} />
               </li>
             ))}
           </ul>

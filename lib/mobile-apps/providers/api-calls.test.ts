@@ -41,6 +41,7 @@ function cfg(overrides: Partial<MobileReviewsConfig> = {}): MobileReviewsConfig 
       privateKeyBase64: null,
     },
     sync: { maxPages: 10, concurrency: 2, negativeThreshold: 3 },
+    translate: { configured: true, email: null },
     ...overrides,
   };
 }
