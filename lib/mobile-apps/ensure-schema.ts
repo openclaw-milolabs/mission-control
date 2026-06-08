@@ -145,6 +145,7 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
       dimension text NOT NULL DEFAULT 'overview',
       dimension_value text NOT NULL DEFAULT '',
       metric_date date NOT NULL,
+      report_month text,
       metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
       source text,
       captured_at timestamptz NOT NULL DEFAULT now(),
@@ -152,8 +153,33 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_metrics_idx ON mobile_app_report_metrics(listing_id, report, metric_date)`;
+  await sql`ALTER TABLE mobile_app_report_metrics ADD COLUMN IF NOT EXISTS report_month text`;
   // Structured text dimensions for multi-dimension reports (traffic source / search term / utm…).
   await sql`ALTER TABLE mobile_app_report_metrics ADD COLUMN IF NOT EXISTS dimensions jsonb`;
+
+  // Cache/index of Google Play Console CSV files we have already downloaded and parsed.
+  // The raw CSV is not stored; this only prevents re-downloading unchanged reports.
+  await sql`
+    CREATE TABLE IF NOT EXISTS mobile_app_report_files (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+      report text NOT NULL,
+      dimension text NOT NULL,
+      object_path text NOT NULL,
+      yyyy_mm text,
+      generation text,
+      size_bytes bigint,
+      downloaded_at timestamptz,
+      parsed_at timestamptz,
+      rows_count integer NOT NULL DEFAULT 0,
+      status text NOT NULL DEFAULT 'parsed',
+      error_message text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (listing_id, object_path)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_files_listing_idx ON mobile_app_report_files(listing_id, report, yyyy_mm desc)`;
   // Backfill the store CHECK on pre-existing sync_runs tables — add only if missing.
   await sql`
     DO $$

@@ -110,14 +110,16 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
             group by l.store
           `;
 
-    // Play Console bulk-report time series, rolled up by date so any breakdown
-    // dimension (overview / country / app_version / …) works.
+    // Play Console bulk-report data is Google-only. It is intentionally not
+    // mixed into the App Store view because Google reports are monthly CSV exports
+    // with dimensions, while Apple uses storefront lookup/reviews APIs.
     const reports: Record<string, Array<Record<string, unknown>>> = {};
-    if (listingIds.length > 0) {
+    const googleListingIds = listings.filter((l) => l.store === "google").map((l) => l.id);
+    if (googleListingIds.length > 0) {
       const seriesRows = (await sql`
         select report, to_char(metric_date, 'YYYY-MM-DD') as date, metrics
         from mobile_app_report_metrics
-        where listing_id = any(${sql.array(listingIds)}::uuid[])
+        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
           and report in ('installs','crashes')
         order by metric_date asc
       `) as unknown as Array<{ report: string; date: string; metrics: unknown }>;
@@ -141,7 +143,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
                sum((metrics->>'store_listing_visitors')::numeric)::float8 as visitors,
                sum((metrics->>'store_listing_acquisitions')::numeric)::float8 as acquisitions
         from mobile_app_report_metrics
-        where listing_id = any(${sql.array(listingIds)}::uuid[]) and report = 'store_performance' and dimension = 'country'
+        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
+          and report = 'store_performance'
+          and dimension = 'country'
         group by metric_date order by metric_date asc
       `) as unknown as Array<{ date: string; visitors: number | null; acquisitions: number | null }>;
       if (storePerf.length > 0) {
@@ -155,17 +159,45 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       const traffic = (await sql`
         select dimensions, metrics
         from mobile_app_report_metrics
-        where listing_id = any(${sql.array(listingIds)}::uuid[])
+        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
           and report = 'store_performance' and dimension = 'traffic_source'
           and metric_date = (
             select max(metric_date) from mobile_app_report_metrics
-            where listing_id = any(${sql.array(listingIds)}::uuid[])
+            where listing_id = any(${sql.array(googleListingIds)}::uuid[])
               and report = 'store_performance' and dimension = 'traffic_source'
           )
         order by (metrics->>'store_listing_acquisitions')::numeric desc nulls last
-        limit 8
+        limit 12
       `) as unknown as Array<{ dimensions: unknown; metrics: unknown }>;
       if (traffic.length > 0) reports.traffic_sources = traffic.map((r) => ({ dimensions: r.dimensions, metrics: r.metrics }));
+
+      // Latest row for every downloaded report/dimension/value so the Google Play
+      // layout can show device/country/app-version/language/OS breakdowns.
+      const breakdowns = (await sql`
+        select * from (
+          select distinct on (report, dimension, dimension_value)
+            report, dimension, dimension_value, to_char(metric_date, 'YYYY-MM-DD') as date, metrics, dimensions
+          from mobile_app_report_metrics
+          where listing_id = any(${sql.array(googleListingIds)}::uuid[])
+          order by report, dimension, dimension_value, metric_date desc
+        ) latest
+        order by report, dimension, dimension_value
+        limit 1000
+      `) as unknown as Array<Record<string, unknown>>;
+      if (breakdowns.length > 0) reports.breakdowns = breakdowns;
+
+      // CSV cache index grouped in the UI by year/month. No raw CSV/key material is returned.
+      const files = (await sql`
+        select report, dimension, object_path, yyyy_mm, generation, size_bytes,
+               to_char(downloaded_at, 'YYYY-MM-DD HH24:MI') as downloaded_at,
+               to_char(parsed_at, 'YYYY-MM-DD HH24:MI') as parsed_at,
+               rows_count, status, error_message
+        from mobile_app_report_files
+        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
+        order by yyyy_mm desc nulls last, report asc, dimension asc, object_path asc
+        limit 2000
+      `) as unknown as Array<Record<string, unknown>>;
+      if (files.length > 0) reports.files = files;
     }
 
     return ok({ app: appRows[0], listings, trend, syncRuns, summary, negativeThreshold, reports });

@@ -1,16 +1,16 @@
 import { createHash } from "node:crypto";
 import pLimit from "p-limit";
 import { getSql } from "@/lib/local-db";
-import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
+import { loadMobileReviewsConfig, type GoogleConfig } from "@/lib/mobile-apps/config";
 import { summarizeReviews } from "@/lib/mobile-apps/metrics";
 import { getProvider } from "@/lib/mobile-apps/providers";
 import { fetchAppleTerritoryRatings, type TerritoryRating } from "@/lib/mobile-apps/providers/app-store-ratings";
 import {
-  fetchGooglePlayCountryRatings,
-  fetchInstalls,
-  fetchCrashes,
-  fetchStorePerformanceCountry,
-  fetchStorePerformanceTrafficSource,
+  downloadReportFile,
+  listReportFiles,
+  parseRatingsCsv,
+  parseReportCsv,
+  parseReportRecordsMulti,
   reportNotFoundWarning,
   RATINGS_DIMENSIONS,
   INSTALLS_DIMENSIONS,
@@ -18,6 +18,8 @@ import {
   STORE_PERFORMANCE_COUNTRY_DIMENSIONS,
   STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS,
   ReportError,
+  type ReportFile,
+  type ReportKind,
   type ReportRecord,
   type ReportMultiRecord,
 } from "@/lib/mobile-apps/providers/google-play-reports";
@@ -67,22 +69,23 @@ function reportErrMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Upsert single-dimension daily report rows under the dimension that was found. */
+/** Upsert single-dimension daily report rows under the dimension from the CSV file. */
 async function persistReports(
   sql: Sql,
   listingId: string,
   report: string,
   dimension: string,
+  reportMonth: string | null,
   records: ReportRecord[],
   source: string,
 ): Promise<void> {
   for (const r of records) {
     if (!r.date) continue;
     await sql`
-      insert into mobile_app_report_metrics (listing_id, report, dimension, dimension_value, metric_date, metrics, source)
-      values (${listingId}, ${report}, ${dimension}, ${r.dimensionValue}, ${r.date}, ${JSON.stringify(r.values)}, ${source})
+      insert into mobile_app_report_metrics (listing_id, report, dimension, dimension_value, metric_date, report_month, metrics, source)
+      values (${listingId}, ${report}, ${dimension}, ${r.dimensionValue}, ${r.date}, ${reportMonth}, ${JSON.stringify(r.values)}, ${source})
       on conflict (listing_id, report, dimension, dimension_value, metric_date) do update
-        set metrics = excluded.metrics, source = excluded.source, captured_at = now()
+        set metrics = excluded.metrics, report_month = excluded.report_month, source = excluded.source, captured_at = now()
     `;
   }
 }
@@ -91,6 +94,7 @@ async function persistReports(
 async function persistMultiReports(
   sql: Sql,
   listingId: string,
+  reportMonth: string | null,
   records: ReportMultiRecord[],
   source: string,
 ): Promise<void> {
@@ -102,59 +106,180 @@ async function persistMultiReports(
     const canonical = JSON.stringify(Object.keys(r.dimensions).sort().map((k) => [k, r.dimensions[k]]));
     const dimValue = createHash("sha1").update(canonical).digest("hex");
     await sql`
-      insert into mobile_app_report_metrics (listing_id, report, dimension, dimension_value, metric_date, metrics, dimensions, source)
-      values (${listingId}, 'store_performance', 'traffic_source', ${dimValue}, ${r.date}, ${JSON.stringify(r.values)}, ${JSON.stringify(r.dimensions)}, ${source})
+      insert into mobile_app_report_metrics (listing_id, report, dimension, dimension_value, metric_date, report_month, metrics, dimensions, source)
+      values (${listingId}, 'store_performance', 'traffic_source', ${dimValue}, ${r.date}, ${reportMonth}, ${JSON.stringify(r.values)}, ${JSON.stringify(r.dimensions)}, ${source})
       on conflict (listing_id, report, dimension, dimension_value, metric_date) do update
-        set metrics = excluded.metrics, dimensions = excluded.dimensions, source = excluded.source, captured_at = now()
+        set metrics = excluded.metrics, dimensions = excluded.dimensions, report_month = excluded.report_month, source = excluded.source, captured_at = now()
     `;
   }
 }
 
-/** Fetch + persist one single-dimension report; returns a clean warning, else null. */
-async function syncReport(
+type CachedReportFile = { generation: string | null; status: string | null };
+
+async function cachedReportFile(sql: Sql, listingId: string, objectPath: string): Promise<CachedReportFile | null> {
+  const rows = (await sql`
+    select generation, status from mobile_app_report_files
+    where listing_id = ${listingId}::uuid and object_path = ${objectPath}
+    limit 1
+  `) as unknown as CachedReportFile[];
+  return rows[0] ?? null;
+}
+
+function cacheMatches(file: ReportFile, cached: CachedReportFile | null): boolean {
+  if (!cached || cached.status !== "parsed") return false;
+  // Generation is the best GCS cache key. Some test/mocked clients may not expose
+  // it; in that case object_path + parsed status is still enough to avoid repeated downloads.
+  return !file.generation || cached.generation === file.generation;
+}
+
+async function markReportFile(
   sql: Sql,
   listingId: string,
-  report: string,
-  source: string,
-  fetcher: () => Promise<{ records: ReportRecord[]; dimension: string } | null>,
-  notFoundWarning: string,
-): Promise<string | null> {
-  const label = report.replace(/_/g, " ");
+  file: ReportFile,
+  status: "parsed" | "empty" | "failed",
+  rowsCount: number,
+  errorMessage: string | null,
+): Promise<void> {
+  await sql`
+    insert into mobile_app_report_files (
+      listing_id, report, dimension, object_path, yyyy_mm, generation, size_bytes,
+      downloaded_at, parsed_at, rows_count, status, error_message, updated_at
+    ) values (
+      ${listingId}::uuid, ${file.kind}, ${file.dimension}, ${file.path}, ${file.yyyyMM}, ${file.generation}, ${file.sizeBytes},
+      now(), now(), ${rowsCount}, ${status}, ${errorMessage}, now()
+    )
+    on conflict (listing_id, object_path) do update
+      set report = excluded.report,
+          dimension = excluded.dimension,
+          yyyy_mm = excluded.yyyy_mm,
+          generation = excluded.generation,
+          size_bytes = excluded.size_bytes,
+          downloaded_at = excluded.downloaded_at,
+          parsed_at = excluded.parsed_at,
+          rows_count = excluded.rows_count,
+          status = excluded.status,
+          error_message = excluded.error_message,
+          updated_at = now()
+  `;
+}
+
+type ReportSyncStats = { warnings: string[]; groupsAttempted: number; filesFound: number; filesDownloaded: number; filesSkipped: number };
+
+async function listFilesOrWarning(
+  cfg: GoogleConfig,
+  kind: ReportKind,
+  appIdentifier: string,
+  dimensions: readonly string[],
+  label: string,
+): Promise<{ files: ReportFile[]; warning: string | null }> {
   try {
-    const found = await fetcher();
-    if (!found) return notFoundWarning;
-    if (found.records.length === 0) return `${label} report: no rows after parsing`;
-    await persistReports(sql, listingId, report, found.dimension, found.records, source);
-    return null;
+    const files = await listReportFiles(cfg, kind, appIdentifier, dimensions);
+    return { files, warning: files.length ? null : reportNotFoundWarning(label, cfg, appIdentifier, dimensions) };
   } catch (err) {
-    return `${label} report: ${reportErrMessage(err)}`;
+    return { files: [], warning: `${label} report: ${reportErrMessage(err)}` };
   }
 }
 
-/** Fetch + persist the multi-dimension traffic-source report; returns a clean warning, else null. */
-async function syncTrafficSource(
+async function syncSingleDimensionReportFiles(
   sql: Sql,
   listingId: string,
+  cfg: GoogleConfig,
+  appIdentifier: string,
+  report: ReportKind,
+  label: string,
+  dimensions: readonly string[],
   source: string,
-  fetcher: () => Promise<{ records: ReportMultiRecord[]; dimension: string } | null>,
-  notFoundWarning: string,
-): Promise<string | null> {
-  try {
-    const found = await fetcher();
-    if (!found) return notFoundWarning;
-    if (found.records.length === 0) return `store performance (traffic source) report: no rows after parsing`;
-    await persistMultiReports(sql, listingId, found.records, source);
-    return null;
-  } catch (err) {
-    return `store performance (traffic source) report: ${reportErrMessage(err)}`;
+  forceReports: boolean,
+): Promise<ReportSyncStats> {
+  const warnings: string[] = [];
+  const { files, warning } = await listFilesOrWarning(cfg, report, appIdentifier, dimensions, label);
+  if (warning) warnings.push(warning);
+  let filesDownloaded = 0;
+  let filesSkipped = 0;
+
+  for (const file of files) {
+    const cached = await cachedReportFile(sql, listingId, file.path);
+    if (!forceReports && cacheMatches(file, cached)) {
+      filesSkipped++;
+      continue;
+    }
+    try {
+      const text = await downloadReportFile(cfg, file);
+      const records = report === "ratings" ? parseRatingsCsv(text).map((r) => ({
+        date: r.asOf,
+        dimensionValue: r.territory,
+        values: { total_average_rating: r.avg },
+      } satisfies ReportRecord)) : parseReportCsv(text);
+      if (records.length > 0) await persistReports(sql, listingId, report, file.dimension, file.yyyyMM, records, source);
+      await markReportFile(sql, listingId, file, records.length > 0 ? "parsed" : "empty", records.length, null);
+      filesDownloaded++;
+    } catch (err) {
+      const msg = reportErrMessage(err);
+      await markReportFile(sql, listingId, file, "failed", 0, msg).catch(() => null);
+      warnings.push(`${label} ${file.yyyyMM} ${file.dimension}: ${msg}`);
+    }
   }
+  return { warnings, groupsAttempted: 1, filesFound: files.length, filesDownloaded, filesSkipped };
+}
+
+async function syncTrafficSourceFiles(
+  sql: Sql,
+  listingId: string,
+  cfg: GoogleConfig,
+  appIdentifier: string,
+  forceReports: boolean,
+): Promise<ReportSyncStats> {
+  const warnings: string[] = [];
+  const label = "store performance traffic source";
+  const { files, warning } = await listFilesOrWarning(cfg, "store_performance", appIdentifier, STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS, label);
+  if (warning) warnings.push(warning);
+  let filesDownloaded = 0;
+  let filesSkipped = 0;
+
+  for (const file of files) {
+    const cached = await cachedReportFile(sql, listingId, file.path);
+    if (!forceReports && cacheMatches(file, cached)) {
+      filesSkipped++;
+      continue;
+    }
+    try {
+      const text = await downloadReportFile(cfg, file);
+      const records = parseReportRecordsMulti(text);
+      if (records.length > 0) await persistMultiReports(sql, listingId, file.yyyyMM, records, "google_play_console_store_performance_report");
+      await markReportFile(sql, listingId, file, records.length > 0 ? "parsed" : "empty", records.length, null);
+      filesDownloaded++;
+    } catch (err) {
+      const msg = reportErrMessage(err);
+      await markReportFile(sql, listingId, file, "failed", 0, msg).catch(() => null);
+      warnings.push(`${label} ${file.yyyyMM}: ${msg}`);
+    }
+  }
+  return { warnings, groupsAttempted: 1, filesFound: files.length, filesDownloaded, filesSkipped };
+}
+
+async function loadGoogleRatingsFromDb(sql: Sql, listingId: string): Promise<{ territories: TerritoryRating[]; asOf: string | null }> {
+  const rows = (await sql`
+    select distinct on (dimension_value)
+      dimension_value as territory,
+      (metrics->>'total_average_rating')::float8 as avg,
+      to_char(metric_date, 'YYYY-MM-DD') as as_of
+    from mobile_app_report_metrics
+    where listing_id = ${listingId}::uuid
+      and report = 'ratings'
+      and dimension = 'country'
+      and metrics ? 'total_average_rating'
+    order by dimension_value, metric_date desc
+  `) as unknown as Array<{ territory: string; avg: number | null; as_of: string | null }>;
+  const territories = rows.map((r) => ({ territory: r.territory, avg: r.avg, count: null }));
+  const asOf = rows.map((r) => r.as_of).filter(Boolean).sort().at(-1) ?? null;
+  return { territories, asOf };
 }
 
 /** Sync a single listing: fetch official reviews, upsert, snapshot, record the run. */
 async function syncListing(
   sql: Sql,
   listing: ListingRow,
-  opts: { force: boolean; dedupeMs: number },
+  opts: { force: boolean; dedupeMs: number; refreshReports: boolean },
 ): Promise<SyncResult> {
   const store = listing.store as Store;
   const appIdentifier = listing.store_app_id;
@@ -221,16 +346,13 @@ async function syncListing(
       if ((res as unknown as Array<{ inserted: boolean }>)[0]?.inserted) inserted += 1;
     }
 
-    // Star distribution snapshot from the fetched reviews (history only — this is
-    // NOT presented as the store rating).
+    // Star distribution snapshot from fetched reviews only (history; not headline store rating).
     const summary = summarizeReviews(reviews);
     await sql`
       insert into app_rating_snapshots (listing_id, avg_rating, ratings_count, histogram)
       values (${listing.id}, ${summary.avgRating}, ${summary.ratingsCount}, ${JSON.stringify(summary.histogram)})
     `;
 
-    // The headline rating is the OFFICIAL value the store returns, never one we
-    // compute (except the explicit Google review-average fallback below).
     const cfg = loadMobileReviewsConfig();
     const reportWarnings: string[] = [];
     let reportAttempts = 0;
@@ -239,8 +361,8 @@ async function syncListing(
     let ratingsCount: number | null = null;
     let ratingSource: RatingSource | null = null;
     let ratingAsOf: string | null = null;
+
     if (store === "apple") {
-      // Apple exposes the official displayed per-storefront average via iTunes Lookup.
       const territories = [...reviews.map((r) => r.country ?? ""), listing.country];
       const mode = cfg.apple.fullStorefrontScan;
       const fullScan = mode === "always" || (mode === "forced" && opts.force);
@@ -255,36 +377,38 @@ async function syncListing(
       ratingsCount = primary?.count ?? null;
       ratingSource = "apple_app_store_lookup";
     } else {
-      // Google: the official per-country averages come from the Play Console ratings
-      // report (GCS). reviews.list excludes rating-only feedback, so it can't give the
-      // aggregate. Fall back to the fetched-review average only if no report bucket.
-      let usedReport = false;
       if (cfg.google.reportsBucket) {
-        reportAttempts++;
-        try {
-          const report = await fetchGooglePlayCountryRatings(cfg.google, appIdentifier);
-          if (report && report.territories.length > 0) {
-            officialRatings = report.territories.map((t) => ({ territory: t.territory, avg: t.avg, count: null }));
-            const primary =
-              officialRatings.find((t) => t.territory === toAlpha2(listing.country)) ?? officialRatings[0] ?? null;
-            currentRating = primary?.avg ?? null;
-            ratingsCount = null; // the report has no per-country count
-            ratingSource = "google_play_console_ratings_report";
-            ratingAsOf = report.asOf;
-            usedReport = true;
-          } else {
-            reportWarnings.push(reportNotFoundWarning("ratings", cfg.google, appIdentifier, RATINGS_DIMENSIONS));
-          }
-        } catch (err) {
-          reportWarnings.push(`ratings report: ${reportErrMessage(err)}`);
+        const ratingsStats = await syncSingleDimensionReportFiles(
+          sql,
+          listing.id,
+          cfg.google,
+          appIdentifier,
+          "ratings",
+          "ratings",
+          RATINGS_DIMENSIONS,
+          "google_play_console_ratings_report",
+          opts.refreshReports,
+        );
+        reportAttempts += ratingsStats.groupsAttempted;
+        reportWarnings.push(...ratingsStats.warnings);
+        const ratingReport = await loadGoogleRatingsFromDb(sql, listing.id);
+        if (ratingReport.territories.length > 0) {
+          officialRatings = ratingReport.territories;
+          const primary =
+            officialRatings.find((t) => t.territory === toAlpha2(listing.country)) ?? officialRatings[0] ?? null;
+          currentRating = primary?.avg ?? null;
+          ratingsCount = null; // Play Console ratings report does not expose per-country rating count.
+          ratingSource = "google_play_console_ratings_report";
+          ratingAsOf = ratingReport.asOf;
         }
       }
-      if (!usedReport) {
+      if (!ratingSource) {
         currentRating = summary.avgRating;
         ratingsCount = summary.ratingsCount;
         ratingSource = "google_reviews_api_fetched_reviews";
       }
     }
+
     await sql`
       update mobile_app_listings
       set current_rating = ${currentRating},
@@ -295,46 +419,50 @@ async function syncListing(
           last_synced_at = now()
       where id = ${listing.id}
     `;
-    // Play Console bulk reports: installs, crashes, store-performance time series.
-    // Best-effort — never fail the review sync — but surface warnings instead of
-    // swallowing them, so a bad bucket / permission shows up in the UI.
+
+    // Google Play Console bulk reports: cache/list/download ALL available year/month CSVs.
+    // Best-effort — never fail the review sync — but warnings are stored for the UI.
     if (store === "google" && cfg.google.reportsBucket) {
-      reportAttempts += 4;
-      const sp = "google_play_console_store_performance_report";
-      const warnings = await Promise.all([
-        syncReport(
+      const stats = await Promise.all([
+        syncSingleDimensionReportFiles(
           sql,
           listing.id,
+          cfg.google,
+          appIdentifier,
           "installs",
+          "installs",
+          INSTALLS_DIMENSIONS,
           "google_play_console_stats_report",
-          () => fetchInstalls(cfg.google, appIdentifier),
-          reportNotFoundWarning("installs", cfg.google, appIdentifier, INSTALLS_DIMENSIONS),
+          opts.refreshReports,
         ),
-        syncReport(
+        syncSingleDimensionReportFiles(
           sql,
           listing.id,
+          cfg.google,
+          appIdentifier,
           "crashes",
+          "crashes",
+          CRASHES_DIMENSIONS,
           "google_play_console_crashes_report",
-          () => fetchCrashes(cfg.google, appIdentifier),
-          reportNotFoundWarning("crashes", cfg.google, appIdentifier, CRASHES_DIMENSIONS),
+          opts.refreshReports,
         ),
-        syncReport(
+        syncSingleDimensionReportFiles(
           sql,
           listing.id,
+          cfg.google,
+          appIdentifier,
           "store_performance",
-          sp,
-          () => fetchStorePerformanceCountry(cfg.google, appIdentifier),
-          reportNotFoundWarning("store performance country", cfg.google, appIdentifier, STORE_PERFORMANCE_COUNTRY_DIMENSIONS),
+          "store performance country",
+          STORE_PERFORMANCE_COUNTRY_DIMENSIONS,
+          "google_play_console_store_performance_report",
+          opts.refreshReports,
         ),
-        syncTrafficSource(
-          sql,
-          listing.id,
-          sp,
-          () => fetchStorePerformanceTrafficSource(cfg.google, appIdentifier),
-          reportNotFoundWarning("store performance traffic source", cfg.google, appIdentifier, STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS),
-        ),
+        syncTrafficSourceFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports),
       ]);
-      for (const w of warnings) if (w) reportWarnings.push(w);
+      for (const s of stats) {
+        reportAttempts += s.groupsAttempted;
+        reportWarnings.push(...s.warnings);
+      }
     }
 
     const ratingCaptured = currentRating != null || officialRatings.length > 0;
@@ -407,13 +535,14 @@ async function syncListing(
  */
 export async function syncApp(
   appId: string,
-  opts: { force?: boolean; dedupeMs?: number; store?: Store } = {},
+  opts: { force?: boolean; dedupeMs?: number; store?: Store; refreshReports?: boolean } = {},
 ): Promise<SyncResult[]> {
   const sql: Sql = getSql();
   await ensureMobileAppsSchema(sql); // safe if a cron/job syncs before any route inits the schema
   const cfg = loadMobileReviewsConfig();
   const dedupeMs = opts.dedupeMs ?? DEFAULT_DEDUPE_MS;
   const force = Boolean(opts.force);
+  const refreshReports = Boolean(opts.refreshReports || opts.force);
 
   const listings = (await sql`
     select id::text, store, store_app_id, country, last_synced_at
@@ -423,7 +552,9 @@ export async function syncApp(
   `) as unknown as ListingRow[];
 
   const limit = pLimit(Math.max(1, cfg.sync.concurrency));
-  const results = await Promise.all(listings.map((l) => limit(() => syncListing(sql, l, { force, dedupeMs }))));
+  const results = await Promise.all(
+    listings.map((l) => limit(() => syncListing(sql, l, { force, dedupeMs, refreshReports }))),
+  );
 
   // Notify SSE listeners that this app changed.
   await sql`select pg_notify('mobile_apps_change', ${JSON.stringify({ appId })})`.catch(() => null);

@@ -14,6 +14,8 @@ const fail = (message: string, status = 400) =>
 const bodySchema = z.object({
   appId: z.string().uuid().optional(),
   force: z.boolean().optional(),
+  // Force re-download of Google Play Console report CSVs instead of using the DB cache.
+  refreshReports: z.boolean().optional(),
   // "all" (default) syncs every store; otherwise restrict to one store.
   store: z.enum(["google", "apple", "all"]).optional(),
 });
@@ -27,7 +29,7 @@ export async function POST(request: Request) {
 
     const parsed = bodySchema.safeParse(await request.json().catch(() => ({})));
     if (!parsed.success) return fail("Invalid sync request.", 422);
-    const { appId, force } = parsed.data;
+    const { appId, force, refreshReports } = parsed.data;
     const storeFilter = parsed.data.store && parsed.data.store !== "all" ? parsed.data.store : undefined;
 
     const sql = getSql();
@@ -41,7 +43,7 @@ export async function POST(request: Request) {
 
     const results = [];
     for (const id of appIds) {
-      results.push({ appId: id, listings: await syncApp(id, { force: Boolean(force), store: storeFilter }) });
+      results.push({ appId: id, listings: await syncApp(id, { force: Boolean(force), refreshReports: Boolean(refreshReports), store: storeFilter }) });
     }
 
     // Roll the per-listing results up by store so the client can show

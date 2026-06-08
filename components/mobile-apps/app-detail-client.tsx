@@ -9,14 +9,14 @@ import { ReviewsStream } from "@/components/mobile-apps/reviews-stream";
 import { RatingDistribution } from "@/components/mobile-apps/rating-distribution";
 import { RatingTrend, type TrendPoint } from "@/components/mobile-apps/rating-trend";
 import { SentimentDigest } from "@/components/mobile-apps/sentiment-digest";
-import { PlayReportsCard, type ReportPoint, type TrafficSource } from "@/components/mobile-apps/play-reports-card";
+import { PlayReportsCard, type ReportPoint, type TrafficSource, type ReportFileRow, type ReportBreakdown } from "@/components/mobile-apps/play-reports-card";
 import { countryName, flagEmoji, toAlpha2 } from "@/lib/mobile-apps/country-codes";
 import { formatDate } from "@/lib/format-date";
 import { useModules } from "@/components/modules/modules-provider";
 import { toast } from "sonner";
 
 type StoreKey = "apple" | "google";
-type Filter = "" | StoreKey;
+type Filter = StoreKey;
 
 type Listing = {
   id: string;
@@ -267,11 +267,12 @@ export function AppDetailClient({ appId }: { appId: string }) {
   const [trend, setTrend] = useState<TrendRow[]>([]);
   const [syncRuns, setSyncRuns] = useState<SyncRun[]>([]);
   const [negativeThreshold, setNegativeThreshold] = useState(3);
-  const [store, setStore] = useState<Filter>("");
+  const [store, setStore] = useState<Filter>("google");
   const [refreshKey, setRefreshKey] = useState(0);
   const [digest, setDigest] = useState<{ summary_md: string; created_at: string } | null>(null);
   const [genBusy, setGenBusy] = useState(false);
-  const [reports, setReports] = useState<{ installs: ReportPoint[]; crashes: ReportPoint[]; storePerformance: ReportPoint[]; trafficSources: TrafficSource[] }>({ installs: [], crashes: [], storePerformance: [], trafficSources: [] });
+  const [refreshingReports, setRefreshingReports] = useState(false);
+  const [reports, setReports] = useState<{ installs: ReportPoint[]; crashes: ReportPoint[]; storePerformance: ReportPoint[]; trafficSources: TrafficSource[]; files: ReportFileRow[]; breakdowns: ReportBreakdown[] }>({ installs: [], crashes: [], storePerformance: [], trafficSources: [], files: [], breakdowns: [] });
 
   useEffect(() => {
     if (ready && !isEnabled("mobile-apps")) router.replace("/settings#modules");
@@ -294,6 +295,8 @@ export function AppDetailClient({ appId }: { appId: string }) {
           crashes: Array.isArray(json.reports?.crashes) ? json.reports.crashes : [],
           storePerformance: Array.isArray(json.reports?.store_performance) ? json.reports.store_performance : [],
           trafficSources: Array.isArray(json.reports?.traffic_sources) ? json.reports.traffic_sources : [],
+          files: Array.isArray(json.reports?.files) ? json.reports.files : [],
+          breakdowns: Array.isArray(json.reports?.breakdowns) ? json.reports.breakdowns : [],
         });
       } else {
         toast.error(json.error ?? "Failed to load app");
@@ -379,30 +382,25 @@ export function AppDetailClient({ appId }: { appId: string }) {
     () => listings.map((l) => l.store).filter((s): s is StoreKey => s === "apple" || s === "google"),
     [listings],
   );
-  const shownStores = store ? [store] : availableStores;
+  useEffect(() => {
+    if (availableStores.length > 0 && !availableStores.includes(store)) {
+      setStore(availableStores[0]);
+    }
+  }, [availableStores, store]);
+  const shownStores = availableStores.includes(store) ? [store] : [];
 
   // Facts only (counts), never a computed average — the rating shown is the
   // official per-store value in each card.
   const combined = useMemo(() => {
-    const rows = store ? summary.filter((s) => s.store === store) : summary;
+    const rows = summary.filter((s) => s.store === store);
     const total = rows.reduce((a, r) => a + r.total, 0);
     const negative = rows.reduce((a, r) => a + r.negative, 0);
     return { total, negative };
   }, [summary, store]);
 
   const trendData: TrendPoint[] = useMemo(() => {
-    const rows = store ? trend.filter((t) => t.store === store) : trend;
-    if (store) return rows.map((t) => ({ day: t.day, avg: t.avg, count: t.count }));
-    const byDay = new Map<string, { sum: number; count: number }>();
-    for (const r of rows) {
-      const b = byDay.get(r.day) ?? { sum: 0, count: 0 };
-      b.sum += r.avg * r.count;
-      b.count += r.count;
-      byDay.set(r.day, b);
-    }
-    return [...byDay.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([day, b]) => ({ day, avg: Math.round((b.sum / b.count) * 100) / 100, count: b.count }));
+    const rows = trend.filter((t) => t.store === store);
+    return rows.map((t) => ({ day: t.day, avg: t.avg, count: t.count }));
   }, [trend, store]);
 
   const lastSyncedAt = useMemo(
@@ -416,9 +414,29 @@ export function AppDetailClient({ appId }: { appId: string }) {
     return m;
   }, [listings]);
 
+  async function refreshGoogleReports() {
+    setRefreshingReports(true);
+    try {
+      const res = await fetch("/api/mobile-apps/sync", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ appId, store: "google", force: true, refreshReports: true }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "Failed");
+      await loadRef.current();
+      setRefreshKey((k) => k + 1);
+      toast.success("Google Play reports refreshed");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to refresh reports");
+    } finally {
+      setRefreshingReports(false);
+    }
+  }
+
   const headerActions = (
     <div className="flex items-center gap-0.5 rounded-lg bg-muted/60 p-0.5">
-      {([["", "All"], ["apple", "App Store"], ["google", "Google Play"]] as const).map(([val, label]) => (
+      {availableStores.map((val) => (
         <button
           key={val}
           onClick={() => setStore(val)}
@@ -426,7 +444,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
             store === val ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"
           }`}
         >
-          {label}
+          {STORE_META[val].label}
         </button>
       ))}
     </div>
@@ -493,13 +511,17 @@ export function AppDetailClient({ appId }: { appId: string }) {
             </div>
           ) : null}
 
-          {/* Play Console bulk reports (installs + stability) — Google only */}
-          {store !== "apple" ? (
+          {/* Google Play Console reports are shown only in the Google Play tab. */}
+          {store === "google" ? (
             <PlayReportsCard
               installs={reports.installs}
               crashes={reports.crashes}
               storePerformance={reports.storePerformance}
               trafficSources={reports.trafficSources}
+              files={reports.files}
+              breakdowns={reports.breakdowns}
+              onRefresh={() => void refreshGoogleReports()}
+              refreshing={refreshingReports}
             />
           ) : null}
 

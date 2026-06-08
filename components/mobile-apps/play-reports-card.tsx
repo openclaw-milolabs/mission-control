@@ -2,10 +2,38 @@
 
 import { useMemo } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
-import { IconBrandGooglePlay, IconDownload, IconBug, IconTrendingUp } from "@tabler/icons-react";
+import {
+  IconBrandGooglePlay,
+  IconDownload,
+  IconBug,
+  IconTrendingUp,
+  IconRefresh,
+  IconDatabase,
+  IconDeviceMobile,
+  IconWorld,
+} from "@tabler/icons-react";
 
 export type ReportPoint = { date: string; metrics: unknown; source?: string | null };
 export type TrafficSource = { dimensions: unknown; metrics: unknown };
+export type ReportFileRow = {
+  report: string;
+  dimension: string;
+  object_path: string;
+  yyyy_mm: string | null;
+  size_bytes: number | string | null;
+  downloaded_at: string | null;
+  rows_count: number | string | null;
+  status: string | null;
+  error_message?: string | null;
+};
+export type ReportBreakdown = {
+  report: string;
+  dimension: string;
+  dimension_value: string;
+  date: string;
+  metrics: unknown;
+  dimensions?: unknown;
+};
 
 type Metrics = Record<string, number | null>;
 type Dims = Record<string, string>;
@@ -54,6 +82,18 @@ function fmtDay(day: string): string {
   return Number.isNaN(d.getTime()) ? day : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function formatBytes(raw: number | string | null): string {
+  const n = typeof raw === "string" ? Number(raw) : raw;
+  if (!n || !Number.isFinite(n)) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 102.4) / 10} KB`;
+  return `${Math.round(n / 1024 / 102.4) / 10} MB`;
+}
+
+function nice(s: string): string {
+  return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function MiniArea({
   data,
   series,
@@ -82,16 +122,61 @@ function MiniArea({
   );
 }
 
+function metricSummary(report: string, metrics: Metrics): string {
+  if (report === "ratings") {
+    const rating = pick(metrics, "total_average_rating", "daily_average_rating");
+    return rating != null ? rating.toFixed(2) : "—";
+  }
+  if (report === "installs") {
+    const active = pick(metrics, "active_device_installs", "current_device_installs", "total_user_installs");
+    const daily = pick(metrics, "daily_device_installs", "daily_user_installs");
+    return `${active != null ? active.toLocaleString() : "—"} active · ${daily != null ? daily.toLocaleString() : "—"} daily`;
+  }
+  if (report === "crashes") {
+    return `${pick(metrics, "daily_crashes")?.toLocaleString() ?? "—"} crashes · ${pick(metrics, "daily_anrs")?.toLocaleString() ?? "—"} ANRs`;
+  }
+  const acq = pick(metrics, "store_listing_acquisitions");
+  const visitors = pick(metrics, "store_listing_visitors");
+  const conv = pick(metrics, "store_listing_conversion_rate");
+  return `${acq?.toLocaleString() ?? "—"} acq · ${visitors?.toLocaleString() ?? "—"} visitors · ${formatConversion(conv)}`;
+}
+
+function labelForBreakdown(row: ReportBreakdown): string {
+  const dims = asDims(row.dimensions);
+  return dims.traffic_source || dims.search_term || dims.utm_source || dims.utm_campaign || row.dimension_value || "overview";
+}
+
+function groupFiles(files: ReportFileRow[]) {
+  const out = new Map<string, Map<string, ReportFileRow[]>>();
+  for (const f of files) {
+    const ym = f.yyyy_mm ?? "unknown";
+    const year = ym.length >= 4 ? ym.slice(0, 4) : "unknown";
+    const month = ym.length >= 6 ? ym.slice(4, 6) : "unknown";
+    const months = out.get(year) ?? new Map<string, ReportFileRow[]>();
+    months.set(month, [...(months.get(month) ?? []), f]);
+    out.set(year, months);
+  }
+  return [...out.entries()].sort(([a], [b]) => b.localeCompare(a));
+}
+
 export function PlayReportsCard({
   installs = [],
   crashes = [],
   storePerformance = [],
   trafficSources = [],
+  files = [],
+  breakdowns = [],
+  onRefresh,
+  refreshing = false,
 }: {
   installs?: ReportPoint[];
   crashes?: ReportPoint[];
   storePerformance?: ReportPoint[];
   trafficSources?: TrafficSource[];
+  files?: ReportFileRow[];
+  breakdowns?: ReportBreakdown[];
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }) {
   const installData = useMemo(
     () =>
@@ -135,21 +220,42 @@ export function PlayReportsCard({
   const spAcq = pick(lastSp, "store_listing_acquisitions");
   const conversion = spVisitors && spAcq != null ? (spAcq / spVisitors) * 100 : null;
 
-  if (installs.length === 0 && crashes.length === 0 && storePerformance.length === 0 && trafficSources.length === 0)
+  const groupedBreakdowns = useMemo(() => {
+    const map = new Map<string, ReportBreakdown[]>();
+    for (const b of breakdowns) map.set(`${b.report}:${b.dimension}`, [...(map.get(`${b.report}:${b.dimension}`) ?? []), b]);
+    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [breakdowns]);
+
+  const groupedFiles = useMemo(() => groupFiles(files), [files]);
+
+  if (installs.length === 0 && crashes.length === 0 && storePerformance.length === 0 && trafficSources.length === 0 && files.length === 0)
     return null;
 
   return (
-    <section className="rounded-xl border bg-card p-5">
-      <div className="mb-4 flex items-center justify-between gap-2">
-        <h2 className="flex items-center gap-2 text-sm font-semibold">
-          <IconBrandGooglePlay className="size-4" />
-          Play Console reports
-        </h2>
-        <span className="text-[11px] text-muted-foreground/70">Google Play Console report · delayed 3–7 days</span>
+    <section className="rounded-2xl border bg-card p-5">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <IconBrandGooglePlay className="size-4" />
+            Google Play Console reports
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Cached from official Play Console CSV exports. Refresh re-lists the bucket and re-downloads changed/missing files.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={!onRefresh || refreshing}
+          className="inline-flex items-center gap-1.5 rounded-lg border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <IconRefresh className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
+          {refreshing ? "Refreshing…" : "Refresh reports"}
+        </button>
       </div>
 
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        <div>
+        <div className="rounded-xl border bg-background/40 p-4">
           <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <IconDownload className="size-3.5" /> Installs
           </div>
@@ -157,17 +263,11 @@ export function PlayReportsCard({
             {activeInstalls != null ? activeInstalls.toLocaleString() : "—"}
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">active</span>
           </div>
-          <MiniArea
-            data={installData}
-            series={[
-              { key: "installs", color: "var(--chart-3)" },
-              { key: "uninstalls", color: "var(--destructive)" },
-            ]}
-          />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily installs vs uninstalls</p>
+          <MiniArea data={installData} series={[{ key: "installs", color: "var(--chart-3)" }, { key: "uninstalls", color: "var(--destructive)" }]} />
+          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily installs vs uninstalls · all cached months</p>
         </div>
 
-        <div>
+        <div className="rounded-xl border bg-background/40 p-4">
           <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <IconBug className="size-3.5" /> Stability
           </div>
@@ -176,56 +276,110 @@ export function PlayReportsCard({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">crashes/day</span>
             {dailyAnrs != null ? <span className="ml-2 text-sm text-muted-foreground">· {dailyAnrs.toLocaleString()} ANRs</span> : null}
           </div>
-          <MiniArea
-            data={crashData}
-            series={[
-              { key: "crashes", color: "var(--destructive)" },
-              { key: "anrs", color: "var(--chart-4)" },
-            ]}
-          />
-          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily crashes &amp; ANRs</p>
+          <MiniArea data={crashData} series={[{ key: "crashes", color: "var(--destructive)" }, { key: "anrs", color: "var(--chart-4)" }]} />
+          <p className="mt-1 text-[10px] text-muted-foreground/60">Daily crashes &amp; ANRs · all cached months</p>
         </div>
 
-        {storePerformance.length > 0 ? (
-          <div>
-            <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              <IconTrendingUp className="size-3.5" /> Store performance
-            </div>
-            <div className="mb-1 text-2xl font-semibold tabular-nums">
-              {conversion != null ? `${conversion.toFixed(1)}%` : "—"}
-              <span className="ml-1.5 text-xs font-normal text-muted-foreground">conversion</span>
-            </div>
-            <MiniArea data={spData} series={[{ key: "visitors", color: "var(--chart-2)" }]} />
-            <p className="mt-1 text-[10px] text-muted-foreground/60">
-              Store listing visitors · acquisitions ÷ visitors
-            </p>
+        <div className="rounded-xl border bg-background/40 p-4">
+          <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <IconTrendingUp className="size-3.5" /> Store performance
           </div>
-        ) : null}
+          <div className="mb-1 text-2xl font-semibold tabular-nums">
+            {conversion != null ? `${conversion.toFixed(1)}%` : "—"}
+            <span className="ml-1.5 text-xs font-normal text-muted-foreground">conversion</span>
+          </div>
+          <MiniArea data={spData} series={[{ key: "visitors", color: "var(--chart-2)" }]} />
+          <p className="mt-1 text-[10px] text-muted-foreground/60">Store listing visitors · acquisitions ÷ visitors</p>
+        </div>
       </div>
 
       {trafficSources.length > 0 ? (
-        <div className="mt-4 border-t pt-3">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Top acquisition sources
-          </p>
-          <ul className="space-y-1">
+        <div className="mt-5 rounded-xl border bg-background/40 p-4">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Top acquisition sources</p>
+          <ul className="grid gap-1 sm:grid-cols-2">
             {trafficSources.map((t, i) => {
               const d = asDims(t.dimensions);
               const m = asMetrics(t.metrics);
               const name = d.traffic_source || d.search_term || d.utm_source || d.utm_campaign || "—";
               return (
-                <li key={i} className="flex items-center gap-2 text-xs">
+                <li key={i} className="flex items-center gap-2 rounded-lg bg-muted/30 px-2 py-1.5 text-xs">
                   <span className="min-w-0 flex-1 truncate text-foreground/80">{name}</span>
-                  <span className="w-16 text-right tabular-nums text-muted-foreground">
-                    {pick(m, "store_listing_acquisitions")?.toLocaleString() ?? "—"} acq
-                  </span>
-                  <span className="w-12 text-right tabular-nums text-muted-foreground">
-                    {formatConversion(pick(m, "store_listing_conversion_rate"))}
-                  </span>
+                  <span className="w-16 text-right tabular-nums text-muted-foreground">{pick(m, "store_listing_acquisitions")?.toLocaleString() ?? "—"} acq</span>
+                  <span className="w-14 text-right tabular-nums text-muted-foreground">{formatConversion(pick(m, "store_listing_conversion_rate"))}</span>
                 </li>
               );
             })}
           </ul>
+        </div>
+      ) : null}
+
+      {groupedBreakdowns.length > 0 ? (
+        <div className="mt-5 rounded-xl border bg-background/40 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <IconDeviceMobile className="size-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">Breakdowns from downloaded CSVs</h3>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            {groupedBreakdowns.map(([key, rows]) => {
+              const [report, dimension] = key.split(":");
+              const sample = rows.slice(0, 8);
+              return (
+                <div key={key} className="rounded-lg border bg-card p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold">{nice(report)} · {nice(dimension)}</p>
+                    <span className="text-[10px] text-muted-foreground">{rows.length.toLocaleString()} rows</span>
+                  </div>
+                  <ul className="space-y-1">
+                    {sample.map((r, i) => (
+                      <li key={`${r.report}-${r.dimension}-${r.dimension_value}-${i}`} className="flex items-center gap-2 text-xs">
+                        <span className="min-w-0 flex-1 truncate text-foreground/80">{labelForBreakdown(r)}</span>
+                        <span className="w-20 shrink-0 text-right text-muted-foreground tabular-nums">{r.date}</span>
+                        <span className="w-32 shrink-0 truncate text-right text-muted-foreground tabular-nums">{metricSummary(r.report, asMetrics(r.metrics))}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {groupedFiles.length > 0 ? (
+        <div className="mt-5 rounded-xl border bg-background/40 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <IconDatabase className="size-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">Downloaded CSV cache by year/month</h3>
+          </div>
+          <div className="space-y-3">
+            {groupedFiles.map(([year, months]) => (
+              <div key={year}>
+                <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold"><IconWorld className="size-3.5" /> {year}</p>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {[...months.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([month, rows]) => (
+                    <div key={`${year}-${month}`} className="rounded-lg border bg-card p-2.5">
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="text-xs font-medium">{year}-{month}</span>
+                        <span className="text-[10px] text-muted-foreground">{rows.length} CSVs</span>
+                      </div>
+                      <ul className="space-y-1">
+                        {rows.map((f) => (
+                          <li key={f.object_path} className="flex items-center gap-2 text-[11px]">
+                            <span className="min-w-0 flex-1 truncate" title={f.object_path}>{nice(f.report)} · {nice(f.dimension)}</span>
+                            <span className="text-muted-foreground tabular-nums">{Number(f.rows_count ?? 0).toLocaleString()} rows</span>
+                            <span className="text-muted-foreground">{formatBytes(f.size_bytes)}</span>
+                            <span className={`rounded-full px-1.5 py-0.5 ${f.status === "failed" ? "bg-red-500/10 text-red-600" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"}`}>
+                              {f.status ?? "parsed"}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
     </section>

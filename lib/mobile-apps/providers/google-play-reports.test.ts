@@ -142,11 +142,11 @@ describe("reportNotFoundWarning", () => {
       "com.example.app",
       ["overview", "country"],
     );
-    expect(warning).toContain("No installs report found");
+    expect(warning).toContain("No installs CSV reports found");
     expect(warning).toContain("pubsite_prod_rev_1");
     expect(warning).toContain("com.example.app");
     expect(warning).toContain("overview,country");
-    expect(warning).toContain("Checked months:");
+    expect(warning).toContain("all available years/months");
     expect(warning).not.toMatch(/private_key|client_email|BEGIN PRIVATE KEY/i);
   });
 

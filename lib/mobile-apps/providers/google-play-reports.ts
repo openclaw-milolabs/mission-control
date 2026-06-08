@@ -16,6 +16,16 @@ export type ReportMultiRecord = {
 
 export type ReportKind = "installs" | "crashes" | "ratings" | "store_performance";
 
+export type ReportFile = {
+  kind: ReportKind;
+  dimension: string;
+  yyyyMM: string;
+  path: string;
+  generation: string | null;
+  sizeBytes: number | null;
+  updated: string | null;
+};
+
 /**
  * READ-ONLY scope so the Storage client can never mutate the bucket. This module
  * only ever LISTS/DOWNLOADS CSVs from Google Play Console's existing
@@ -29,6 +39,12 @@ export const INSTALLS_DIMENSIONS = ["overview", "country", "app_version", "carri
 export const CRASHES_DIMENSIONS = ["overview", "app_version", "device", "os_version"] as const;
 export const STORE_PERFORMANCE_COUNTRY_DIMENSIONS = ["country"] as const;
 export const STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS = ["traffic_source"] as const;
+export const ALL_REPORT_DIMENSIONS = {
+  installs: INSTALLS_DIMENSIONS,
+  crashes: CRASHES_DIMENSIONS,
+  ratings: RATINGS_DIMENSIONS,
+  store_performance: [...STORE_PERFORMANCE_COUNTRY_DIMENSIONS, ...STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS],
+} as const;
 
 // Header names that are breakdown dimensions (string), not numeric metrics.
 const DIMENSION_HEADERS = new Set([
@@ -191,9 +207,8 @@ export function reportNotFoundWarning(
   packageName: string,
   dimensions: readonly string[],
 ): string {
-  const months = checkedReportMonths(cfg.reportsLookbackMonths);
   const bucket = normalizeBucketName(cfg.reportsBucket) || "not configured";
-  return `No ${label} report found for current/previous ${months.length} month(s). Checked bucket ${bucket} for package ${packageName} across dimensions ${dimensions.join(",")}. Checked months: ${months.join(",")}.`;
+  return `No ${label} CSV reports found in bucket ${bucket} for package ${packageName} across dimensions ${dimensions.join(",")}. The sync scans all available years/months returned by Google Play Console.`;
 }
 
 /** Pure: the latest Total Average Rating per country from a ratings report. */
@@ -232,6 +247,82 @@ function reportsBucket(cfg: GoogleConfig) {
     scopes: [STORAGE_READONLY_SCOPE],
   });
   return storage.bucket(normalizeBucketName(cfg.reportsBucket));
+}
+
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function reportPathMatch(kind: ReportKind, packageName: string, path: string): { yyyyMM: string; dimension: string } | null {
+  const re = new RegExp(`^stats/${kind}/${kind}_${escapeRegExp(packageName)}_(\\d{6})_(.+)\\.csv$`);
+  const m = path.match(re);
+  return m ? { yyyyMM: m[1], dimension: m[2] } : null;
+}
+
+function fileMeta(file: { name?: string; metadata?: Record<string, unknown> }): Pick<ReportFile, "generation" | "sizeBytes" | "updated"> {
+  const md = file.metadata ?? {};
+  const sizeRaw = md.size;
+  const sizeBytes = typeof sizeRaw === "number" ? sizeRaw : typeof sizeRaw === "string" ? Number(sizeRaw) : null;
+  return {
+    generation: typeof md.generation === "string" ? md.generation : null,
+    sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : null,
+    updated: typeof md.updated === "string" ? md.updated : null,
+  };
+}
+
+/**
+ * List every Play Console CSV for a package/report across all available years.
+ * This is read-only: it only uses GCS list metadata, never upload/write APIs.
+ */
+export async function listReportFiles(
+  cfg: GoogleConfig,
+  kind: ReportKind,
+  packageName: string,
+  dimensions: readonly string[],
+): Promise<ReportFile[]> {
+  const bucketName = normalizeBucketName(cfg.reportsBucket);
+  if (!bucketName) return [];
+  const bucket = reportsBucket(cfg);
+  const prefix = `stats/${kind}/${kind}_${packageName}_`;
+  try {
+    const [files] = await bucket.getFiles({ prefix });
+    const allowed = new Set(dimensions);
+    return files
+      .map((file) => {
+        const path = file.name;
+        const hit = reportPathMatch(kind, packageName, path);
+        if (!hit || !allowed.has(hit.dimension)) return null;
+        return { kind, path, yyyyMM: hit.yyyyMM, dimension: hit.dimension, ...fileMeta(file) } satisfies ReportFile;
+      })
+      .filter((f): f is ReportFile => Boolean(f))
+      .sort((a, b) => (a.yyyyMM === b.yyyyMM ? a.dimension.localeCompare(b.dimension) : b.yyyyMM.localeCompare(a.yyyyMM)));
+  } catch (err) {
+    const code = (err as { code?: number }).code;
+    if (code === 403) throw new ReportError(`permission denied for reports bucket ${bucketName} package ${packageName}`, "permission");
+    throw new ReportError(
+      `could not list ${kind} reports from bucket ${bucketName} package ${packageName}: ${err instanceof Error ? err.message : String(err)}`,
+      "unknown",
+    );
+  }
+}
+
+/** Download one already-listed report object. Read-only. */
+export async function downloadReportFile(cfg: GoogleConfig, file: Pick<ReportFile, "path" | "kind">): Promise<string> {
+  const bucketName = normalizeBucketName(cfg.reportsBucket);
+  if (!bucketName) throw new ReportError("reports bucket is not configured", "missing");
+  try {
+    const [buf] = await reportsBucket(cfg).file(file.path).download();
+    return decodeReportBuffer(buf);
+  } catch (err) {
+    const code = (err as { code?: number }).code;
+    if (code === 404) throw new ReportError(`report file not found: ${file.path}`, "missing");
+    if (code === 403) throw new ReportError(`permission denied for reports bucket ${bucketName} (tried ${file.path})`, "permission");
+    throw new ReportError(
+      `could not download ${file.kind} report ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+      "unknown",
+    );
+  }
 }
 
 /** Raised when a report can't be read (vs simply not existing yet). */
