@@ -412,11 +412,14 @@ export async function listReportFiles(
   try {
     const [files] = await bucket.getFiles({ prefix });
     const allowed = new Set(dimensions);
+    // Bound the scan to the configured lookback window. The bucket can hold YEARS
+    // of CSVs; downloading + parsing them all at once is what OOM-kills the server.
+    const allowedMonths = new Set(checkedReportMonths(cfg.reportsLookbackMonths));
     return files
       .map((file) => {
         const path = file.name;
         const hit = reportPathMatch(kind, packageName, path);
-        if (!hit || !allowed.has(hit.dimension)) return null;
+        if (!hit || !allowed.has(hit.dimension) || !allowedMonths.has(hit.yyyyMM)) return null;
         return { kind, path, yyyyMM: hit.yyyyMM, dimension: hit.dimension, ...fileMeta(file) } satisfies ReportFile;
       })
       .filter((f): f is ReportFile => Boolean(f))
@@ -442,11 +445,13 @@ export async function listReviewReportFiles(cfg: GoogleConfig, packageName: stri
   const prefix = `reviews/reviews_${packageName}_`;
   try {
     const [files] = await bucket.getFiles({ prefix });
+    // Same lookback bound as the stats reports — never parse the whole history.
+    const allowedMonths = new Set(checkedReportMonths(cfg.reportsLookbackMonths));
     return files
       .map((file) => {
         const path = file.name;
         const hit = reviewsPathMatch(packageName, path);
-        if (!hit) return null;
+        if (!hit || !allowedMonths.has(hit.yyyyMM)) return null;
         return { kind: "reviews", dimension: "monthly", path, yyyyMM: hit.yyyyMM, ...fileMeta(file) } satisfies ReviewCsvFile;
       })
       .filter((f): f is ReviewCsvFile => Boolean(f))

@@ -496,51 +496,52 @@ async function syncListing(
     // The reports refresh button passes syncReports=true and refreshReports=true.
     // Best-effort — never fail the review sync — but warnings are stored for the UI.
     if (opts.syncReports && store === "google" && cfg.google.reportsBucket) {
-      const stats = await Promise.all([
-        syncSingleDimensionReportFiles(
-          sql,
-          listing.id,
-          cfg.google,
-          appIdentifier,
-          "installs",
-          "installs",
-          INSTALLS_DIMENSIONS,
-          "google_play_console_stats_report",
-          opts.refreshReports,
-        ),
-        syncSingleDimensionReportFiles(
-          sql,
-          listing.id,
-          cfg.google,
-          appIdentifier,
-          "crashes",
-          "crashes",
-          CRASHES_DIMENSIONS,
-          "google_play_console_crashes_report",
-          opts.refreshReports,
-        ),
-        syncSingleDimensionReportFiles(
-          sql,
-          listing.id,
-          cfg.google,
-          appIdentifier,
-          "store_performance",
-          "store performance country",
-          STORE_PERFORMANCE_COUNTRY_DIMENSIONS,
-          "google_play_console_store_performance_report",
-          opts.refreshReports,
-        ),
-        syncTrafficSourceFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports),
-        syncGooglePlayReviewCsvFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports),
-      ]);
+      // Process report types ONE AT A TIME (not Promise.all): each downloads and
+      // parses CSVs into memory, so running them concurrently multiplies peak heap
+      // and OOM-kills the server. Sequential keeps only one report's data resident.
+      const installsStats = await syncSingleDimensionReportFiles(
+        sql,
+        listing.id,
+        cfg.google,
+        appIdentifier,
+        "installs",
+        "installs",
+        INSTALLS_DIMENSIONS,
+        "google_play_console_stats_report",
+        opts.refreshReports,
+      );
+      const crashesStats = await syncSingleDimensionReportFiles(
+        sql,
+        listing.id,
+        cfg.google,
+        appIdentifier,
+        "crashes",
+        "crashes",
+        CRASHES_DIMENSIONS,
+        "google_play_console_crashes_report",
+        opts.refreshReports,
+      );
+      const storePerfStats = await syncSingleDimensionReportFiles(
+        sql,
+        listing.id,
+        cfg.google,
+        appIdentifier,
+        "store_performance",
+        "store performance country",
+        STORE_PERFORMANCE_COUNTRY_DIMENSIONS,
+        "google_play_console_store_performance_report",
+        opts.refreshReports,
+      );
+      const trafficStats = await syncTrafficSourceFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports);
+      const reviewCsvStats = await syncGooglePlayReviewCsvFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports);
+      const stats = [installsStats, crashesStats, storePerfStats, trafficStats, reviewCsvStats];
       for (const s of stats) {
         reportAttempts += s.groupsAttempted;
         reportWarnings.push(...s.warnings);
-        if ("reviewsParsed" in s) {
-          fetchedReviewCount += s.reviewsParsed;
-          inserted += s.reviewsInserted;
-        }
       }
+      // reviewCsvStats keeps its precise type, so the review counts are typed.
+      fetchedReviewCount += reviewCsvStats.reviewsParsed;
+      inserted += reviewCsvStats.reviewsInserted;
     }
 
     const ratingCaptured = currentRating != null || officialRatings.length > 0;
