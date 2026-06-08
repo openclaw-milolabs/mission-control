@@ -116,6 +116,9 @@ export type GoogleConfig = StoreConfigStatus & {
   /** Play Console reporting GCS bucket (e.g. pubsite_prod_rev_xxxxx) for official ratings. */
   reportsBucket: string | null;
   reportsLookbackMonths: number;
+  /** Skip any single report CSV larger than this (bytes). Guards against a giant
+   *  file OOM-killing the server when its buffer is decoded to a string. */
+  reportsMaxFileBytes: number;
 };
 
 export type AppleStorefrontScan = "off" | "forced" | "always";
@@ -177,6 +180,8 @@ export function parseMobileReviewsConfig(env: Record<string, string>): MobileRev
     if (missing.length) gError = `Missing required Google Play config: ${missing.join(", ")}`;
   }
   const lookbackRaw = Number.parseInt(clean(env.GOOGLE_PLAY_REPORTS_LOOKBACK_MONTHS), 10);
+  const maxFileMbRaw = Number.parseInt(clean(env.GOOGLE_PLAY_REPORTS_MAX_FILE_MB), 10);
+  const maxFileMb = Number.isFinite(maxFileMbRaw) ? Math.min(Math.max(maxFileMbRaw, 1), 512) : 48;
   const google: GoogleConfig = {
     enabled: gEnabled,
     configured: gEnabled && gError === null,
@@ -186,6 +191,7 @@ export function parseMobileReviewsConfig(env: Record<string, string>): MobileRev
     serviceAccountJsonBase64: saB64,
     reportsBucket: clean(env.GOOGLE_PLAY_REPORTS_BUCKET) || null,
     reportsLookbackMonths: Number.isFinite(lookbackRaw) ? Math.min(Math.max(lookbackRaw, 1), 12) : 3,
+    reportsMaxFileBytes: maxFileMb * 1024 * 1024,
   };
 
   // Apple

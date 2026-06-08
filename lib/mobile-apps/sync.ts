@@ -72,6 +72,13 @@ function reportErrMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
+
+/** Warning for a report CSV skipped because decoding it would risk an OOM. */
+function oversizeWarning(label: string, file: AnyCsvFile, cap: number): string {
+  return `${label} ${file.yyyyMM} ${file.dimension}: skipped — ${file.sizeBytes != null ? `${mb(file.sizeBytes)}MB` : "size unknown"} exceeds the ${mb(cap)}MB per-file cap (raise GOOGLE_PLAY_REPORTS_MAX_FILE_MB if this file is expected).`;
+}
+
 async function upsertReviews(sql: Sql, listingId: string, reviews: RawReview[]): Promise<number> {
   let inserted = 0;
   for (const r of reviews) {
@@ -239,6 +246,10 @@ async function syncSingleDimensionReportFiles(
   let filesSkipped = 0;
 
   for (const file of files) {
+    if (file.sizeBytes != null && file.sizeBytes > cfg.reportsMaxFileBytes) {
+      warnings.push(oversizeWarning(label, file, cfg.reportsMaxFileBytes));
+      continue;
+    }
     const cached = await cachedReportFile(sql, listingId, file.path);
     if (!forceReports && cacheMatches(file, cached)) {
       filesSkipped++;
@@ -278,6 +289,10 @@ async function syncTrafficSourceFiles(
   let filesSkipped = 0;
 
   for (const file of files) {
+    if (file.sizeBytes != null && file.sizeBytes > cfg.reportsMaxFileBytes) {
+      warnings.push(oversizeWarning(label, file, cfg.reportsMaxFileBytes));
+      continue;
+    }
     const cached = await cachedReportFile(sql, listingId, file.path);
     if (!forceReports && cacheMatches(file, cached)) {
       filesSkipped++;
@@ -325,6 +340,10 @@ async function syncGooglePlayReviewCsvFiles(
   let reviewsInserted = 0;
 
   for (const file of files) {
+    if (file.sizeBytes != null && file.sizeBytes > cfg.reportsMaxFileBytes) {
+      warnings.push(oversizeWarning(label, file, cfg.reportsMaxFileBytes));
+      continue;
+    }
     const cached = await cachedReportFile(sql, listingId, file.path);
     if (!forceReports && cacheMatches(file, cached)) {
       filesSkipped++;

@@ -31,6 +31,7 @@ function cfg(overrides: Partial<MobileReviewsConfig> = {}): MobileReviewsConfig 
       serviceAccountJsonBase64: null,
       reportsBucket: null,
       reportsLookbackMonths: 3,
+      reportsMaxFileBytes: 48 * 1024 * 1024,
     },
     apple: {
       enabled: true,

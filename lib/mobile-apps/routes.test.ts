@@ -49,6 +49,7 @@ describe("config-status never leaks secrets to the frontend", () => {
         serviceAccountJsonBase64: "U0VDUkVU",
         reportsBucket: "pubsite_prod_rev_secret",
         reportsLookbackMonths: 3,
+        reportsMaxFileBytes: 48 * 1024 * 1024,
       },
       apple: {
         enabled: true,
