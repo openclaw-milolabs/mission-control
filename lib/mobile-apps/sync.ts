@@ -363,7 +363,7 @@ async function loadGoogleRatingsFromDb(sql: Sql, listingId: string): Promise<{ t
 async function syncListing(
   sql: Sql,
   listing: ListingRow,
-  opts: { force: boolean; dedupeMs: number; refreshReports: boolean },
+  opts: { force: boolean; dedupeMs: number; refreshReports: boolean; syncReports: boolean },
 ): Promise<SyncResult> {
   const store = listing.store as Store;
   const appIdentifier = listing.store_app_id;
@@ -435,7 +435,7 @@ async function syncListing(
       ratingsCount = primary?.count ?? null;
       ratingSource = "apple_app_store_lookup";
     } else {
-      if (cfg.google.reportsBucket) {
+      if (opts.syncReports && cfg.google.reportsBucket) {
         const ratingsStats = await syncSingleDimensionReportFiles(
           sql,
           listing.id,
@@ -478,9 +478,11 @@ async function syncListing(
       where id = ${listing.id}
     `;
 
-    // Google Play Console bulk reports: cache/list/download ALL available year/month CSVs.
+    // Google Play Console bulk reports: list/download ALL available year/month CSVs.
+    // Page/tab syncs pass syncReports=false so heavy all-year CSV scans do not block the UI.
+    // The reports refresh button passes syncReports=true and refreshReports=true.
     // Best-effort — never fail the review sync — but warnings are stored for the UI.
-    if (store === "google" && cfg.google.reportsBucket) {
+    if (opts.syncReports && store === "google" && cfg.google.reportsBucket) {
       const stats = await Promise.all([
         syncSingleDimensionReportFiles(
           sql,
@@ -598,14 +600,15 @@ async function syncListing(
  */
 export async function syncApp(
   appId: string,
-  opts: { force?: boolean; dedupeMs?: number; store?: Store; refreshReports?: boolean } = {},
+  opts: { force?: boolean; dedupeMs?: number; store?: Store; refreshReports?: boolean; syncReports?: boolean } = {},
 ): Promise<SyncResult[]> {
   const sql: Sql = getSql();
   await ensureMobileAppsSchema(sql); // safe if a cron/job syncs before any route inits the schema
   const cfg = loadMobileReviewsConfig();
   const dedupeMs = opts.dedupeMs ?? DEFAULT_DEDUPE_MS;
   const force = Boolean(opts.force);
-  const refreshReports = Boolean(opts.refreshReports);
+  const refreshReports = Boolean(opts.refreshReports || opts.force);
+  const syncReports = opts.syncReports ?? true;
 
   const listings = (await sql`
     select id::text, store, store_app_id, country, last_synced_at
@@ -616,7 +619,7 @@ export async function syncApp(
 
   const limit = pLimit(Math.max(1, cfg.sync.concurrency));
   const results = await Promise.all(
-    listings.map((l) => limit(() => syncListing(sql, l, { force, dedupeMs, refreshReports }))),
+    listings.map((l) => limit(() => syncListing(sql, l, { force, dedupeMs, refreshReports, syncReports }))),
   );
 
   // Notify SSE listeners that this app changed.
