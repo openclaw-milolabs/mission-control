@@ -106,6 +106,7 @@ export type AgendaEventSummary = {
   modelOverride?: string;
   executionWindowMinutes?: number;
   sessionTarget?: "isolated" | "main";
+  notifyChatId?: string | null;
   createdAt?: string | null;
   dependsOnEventId?: string | null;
   dependsOnEventTitle?: string | null;

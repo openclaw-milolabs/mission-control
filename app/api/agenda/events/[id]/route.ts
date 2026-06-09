@@ -357,6 +357,9 @@ export async function PATCH(
       // Persist the override for both session targets so it survives mode changes,
       // but it is only applied when the event runs as an isolated agentTurn.
       const modelOverrideFuture = rawModelOverrideFuture;
+      const notifyChatIdFuture = body.notifyChatId !== undefined
+        ? (String(body.notifyChatId ?? "").trim() || null)
+        : (existing.notify_chat_id ?? null);
       const executionWindowMinutesFuture = body.executionWindowMinutes !== undefined
         ? Math.max(1, Number(body.executionWindowMinutes) || 30)
         : Number(existing.execution_window_minutes ?? 30);
@@ -373,11 +376,11 @@ export async function PATCH(
         insert into agenda_events (
           workspace_id, title, free_prompt, default_agent_id,
           timezone, starts_at, ends_at, recurrence_rule, recurrence_until, status,
-          model_override, execution_window_minutes, session_target, created_by
+          model_override, execution_window_minutes, session_target, notify_chat_id, created_by
         ) values (
           ${wid}, ${title}, ${freePrompt}, ${agentId},
           ${timezone}, ${startsAt}, ${endsAt}, ${recurrenceRule}, ${recurrenceUntil}, ${status},
-          ${modelOverrideFuture}, ${executionWindowMinutesFuture}, ${sessionTargetFuture}, ${existing.created_by}
+          ${modelOverrideFuture}, ${executionWindowMinutesFuture}, ${sessionTargetFuture}, ${notifyChatIdFuture}, ${existing.created_by}
         )
         returning *
       `;
@@ -414,6 +417,10 @@ export async function PATCH(
     // Persist the override for both session targets so it survives mode changes,
     // but it is only applied when the event runs as an isolated agentTurn.
     const modelOverrideStd = rawModelOverrideStd;
+    // notify_chat_id: where completion/failure reports go. Empty string = owner's private DM.
+    const notifyChatIdStd = body.notifyChatId !== undefined
+      ? (String(body.notifyChatId ?? "").trim() || null)
+      : (existing.notify_chat_id ?? null);
     const executionWindowMinutesStd = body.executionWindowMinutes !== undefined
       ? Math.max(1, Number(body.executionWindowMinutes) || 30)
       : Number(existing.execution_window_minutes ?? 30);
@@ -490,6 +497,7 @@ export async function PATCH(
         model_override = ${modelOverrideStd},
         execution_window_minutes = ${executionWindowMinutesStd},
         session_target = ${sessionTarget},
+        notify_chat_id = ${notifyChatIdStd},
         updated_at = now()
       where id = ${id}
     `;

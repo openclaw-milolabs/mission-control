@@ -15,7 +15,7 @@ import {
 import { IconCalendarEvent, IconGitBranch } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { AgendaPageClient } from "@/components/agenda/agenda-page-client";
-import { AgendaEventModal, type AgendaEventFormData } from "@/components/agenda/agenda-event-modal";
+import { AgendaEventModal, type AgendaEventFormData, type ChatOption } from "@/components/agenda/agenda-event-modal";
 import { AgendaStatsCards } from "@/components/agenda/agenda-stats-cards";
 import { AgendaTestPanel } from "@/components/agenda/agenda-test-panel";
 import { ContainerLoader } from "@/components/ui/container-loader";
@@ -92,6 +92,7 @@ function buildFormFromEvent(event: AgendaEventSummary): Partial<AgendaEventFormD
     endDateMode,
     modelOverride: event.modelOverride ?? "",
     sessionTarget: ((event as Record<string, unknown>).sessionTarget === "main" ? "main" : "isolated") as "isolated" | "main",
+    notifyChatId: (event as Record<string, unknown>).notifyChatId as string ?? "",
     dependsOnEventId: (event as Record<string, unknown>).dependsOnEventId as string ?? "",
     dependencyTimeoutHours: (event as Record<string, unknown>).dependencyTimeoutHours as number ?? 0,
   };
@@ -100,6 +101,7 @@ function buildFormFromEvent(event: AgendaEventSummary): Partial<AgendaEventFormD
 export function AgendaClientWrapper() {
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [processes, setProcesses] = useState<ProcessOption[]>([]);
+  const [chats, setChats] = useState<ChatOption[]>([]);
   const [allEvents, setAllEvents] = useState<{ id: string; title: string }[]>([]);
   const [agendaInitialReady, setAgendaInitialReady] = useState(false);
   const [contentReady, setContentReady] = useState(false);
@@ -143,6 +145,17 @@ export function AgendaClientWrapper() {
       } catch (err) {
         if (err instanceof Error && err.name !== "AbortError") {
           console.error("[agenda] failed to load agents", err);
+        }
+      }
+      try {
+        const chatsRes = await fetch("/api/agenda/chats", { cache: "reload", signal: controller.signal });
+        const chatsJson = await chatsRes.json();
+        if (!controller.signal.aborted && Array.isArray(chatsJson.chats)) {
+          setChats(chatsJson.chats as ChatOption[]);
+        }
+      } catch (err) {
+        if (err instanceof Error && err.name !== "AbortError") {
+          console.error("[agenda] failed to load chats", err);
         }
       }
     })();
@@ -400,6 +413,7 @@ export function AgendaClientWrapper() {
         processVersionIds: data.processVersionIds,
         modelOverride: data.modelOverride || "",
         sessionTarget: data.sessionTarget || "isolated",
+        notifyChatId: data.notifyChatId || "",
         dependsOnEventId: data.dependsOnEventId || null,
         dependencyTimeoutHours: data.dependencyTimeoutHours || null,
         timeStepMinutes: data.timeStepMinutes,
@@ -483,6 +497,7 @@ export function AgendaClientWrapper() {
           processVersionIds: data.processVersionIds,
           modelOverride: data.modelOverride || "",
           sessionTarget: data.sessionTarget || "isolated",
+          notifyChatId: data.notifyChatId || "",
           dependsOnEventId: data.dependsOnEventId || null,
           dependencyTimeoutHours: data.dependencyTimeoutHours || null,
           timeStepMinutes: data.timeStepMinutes,
@@ -560,6 +575,7 @@ export function AgendaClientWrapper() {
         open={eventModalOpen}
         agents={agents}
         processes={processes}
+        chats={chats}
         allEvents={allEvents}
         initialData={editingFormData}
         isReadOnly={

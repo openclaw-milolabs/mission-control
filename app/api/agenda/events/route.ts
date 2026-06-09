@@ -376,6 +376,8 @@ export async function POST(request: Request) {
       const rawModelOverride = body.modelOverride ? String(body.modelOverride) : "";
       const executionWindowMinutes = Number(body.executionWindowMinutes) || 30;
       const sessionTarget = body.sessionTarget === "main" ? "main" : "isolated";
+      // notify_chat_id: where to send completion/failure reports. Empty = owner's private DM.
+      const notifyChatId = body.notifyChatId ? String(body.notifyChatId).trim() || null : null;
       // Persist the selected override even for main-session events so the value is
       // available if the event is later switched back to isolated mode. It is only
       // applied when the run executes as an isolated agentTurn.
@@ -435,11 +437,11 @@ export async function POST(request: Request) {
         insert into agenda_events (
           workspace_id, title, free_prompt, default_agent_id,
           timezone, starts_at, ends_at, recurrence_rule, recurrence_until, status,
-          model_override, execution_window_minutes, session_target, created_by
+          model_override, execution_window_minutes, session_target, notify_chat_id, created_by
         ) values (
           ${wid}, ${title}, ${freePrompt}, ${agentId},
           ${timezone}, ${startsAt}, ${endsAt}, ${recurrenceRule}, ${recurrenceUntil}, ${status},
-          ${modelOverride}, ${executionWindowMinutes}, ${sessionTarget},
+          ${modelOverride}, ${executionWindowMinutes}, ${sessionTarget}, ${notifyChatId},
           ${body.createdBy ? String(body.createdBy) : null}
         )
         returning *

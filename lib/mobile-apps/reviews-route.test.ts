@@ -48,6 +48,32 @@ describe("reviews route", () => {
     expect(res.status).toBe(422);
   });
 
+  it("accepts a since/until window (for 'reviews of today' crons)", async () => {
+    session.mockResolvedValue({ sub: "s", name: "n", email: "u@example.com" });
+    moduleEnabled.mockResolvedValue(true);
+    vi.mocked(getSql).mockReturnValue(fakeSql() as never);
+    const res = await GET(req("?since=2026-06-09T00:00:00.000Z&until=2026-06-10T00:00:00.000Z"), { params });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+  });
+
+  it("accepts a date-only since (2026-06-09)", async () => {
+    session.mockResolvedValue({ sub: "s", name: "n", email: "u@example.com" });
+    moduleEnabled.mockResolvedValue(true);
+    vi.mocked(getSql).mockReturnValue(fakeSql() as never);
+    const res = await GET(req("?since=2026-06-09"), { params });
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects an unparseable since value (422)", async () => {
+    session.mockResolvedValue({ sub: "s", name: "n", email: "u@example.com" });
+    moduleEnabled.mockResolvedValue(true);
+    vi.mocked(getSql).mockReturnValue(fakeSql() as never);
+    const res = await GET(req("?since=notadate"), { params });
+    expect(res.status).toBe(422);
+  });
+
   it("paginates: returns a page plus total/hasMore/nextOffset", async () => {
     session.mockResolvedValue({ sub: "s", name: "n", email: "u@example.com" });
     moduleEnabled.mockResolvedValue(true);

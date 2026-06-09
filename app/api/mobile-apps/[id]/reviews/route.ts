@@ -16,11 +16,21 @@ async function workspaceId(sql: ReturnType<typeof getSql>) {
   return rows[0]?.id ?? null;
 }
 
+// Accept either a full ISO timestamp (2026-06-09T00:00:00Z) or a date (2026-06-09);
+// both parse to a timestamptz in SQL. Powers "reviews of today" windows for crons.
+const dateLike = z
+  .string()
+  .trim()
+  .refine((s) => !Number.isNaN(Date.parse(s)), "Invalid date/time");
+
 const querySchema = z.object({
   store: z.enum(["apple", "google"]).optional(),
   rating: z.coerce.number().int().min(1).max(5).optional(),
   sort: z.enum(["newest", "oldest", "lowest", "highest"]).default("newest"),
   q: z.string().trim().max(200).optional(),
+  // Filter by review submission time. `since` is inclusive, `until` exclusive.
+  since: dateLike.optional(),
+  until: dateLike.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -39,7 +49,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const { id } = await params;
     const parsed = querySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
     if (!parsed.success) return fail("Invalid review query.", 422);
-    const { store, rating, sort, q, limit, offset } = parsed.data;
+    const { store, rating, sort, q, since, until, limit, offset } = parsed.data;
 
     const sql = getSql();
     await ensureMobileAppsSchema(sql);
@@ -71,6 +81,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       where r.listing_id = any(${sql.array(listingIds)}::uuid[])
         and (${store ?? null}::text is null or l.store = ${store ?? null})
         and (${rating ?? null}::int is null or r.rating = ${rating ?? null})
+        and (${since ?? null}::timestamptz is null or r.submitted_at >= ${since ?? null}::timestamptz)
+        and (${until ?? null}::timestamptz is null or r.submitted_at < ${until ?? null}::timestamptz)
         and (${like}::text is null or r.title ilike ${like} or r.body ilike ${like} or r.author ilike ${like})
     `;
 

@@ -5,6 +5,14 @@ import { isModuleEnabled } from "@/lib/modules/state";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
 import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
+import { readReportRollups, readLatestBreakdowns } from "@/lib/mobile-apps/report-rollups";
+import {
+  checkOfficialReportFreshness,
+  readStoredFreshness,
+  type FreshnessResult,
+  type ReportFreshnessState,
+} from "@/lib/mobile-apps/report-freshness";
+import { enqueueReportSyncJob } from "@/lib/mobile-apps/report-jobs";
 
 export const dynamic = "force-dynamic";
 
@@ -17,18 +25,27 @@ async function workspaceId(sql: ReturnType<typeof getSql>) {
   return rows[0]?.id ?? null;
 }
 
-/** jsonb metrics may arrive as an object or a JSON string depending on the driver. */
-function asMetricsObject(v: unknown): Record<string, number | null> {
-  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, number | null>;
-  if (typeof v === "string") {
-    try {
-      const p = JSON.parse(v);
-      return p && typeof p === "object" ? (p as Record<string, number | null>) : {};
-    } catch {
-      return {};
-    }
-  }
-  return {};
+/** Coerce a possibly-string/null metric to a number for sorting (NaN → 0). */
+function num(v: unknown): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Worst-first ordering so the headline freshness reflects whatever needs attention.
+const STATUS_ORDER: ReportFreshnessState[] = ["failed", "stale", "refreshing", "unknown", "not_configured", "fresh"];
+const NOT_FRESH = new Set<ReportFreshnessState>(["failed", "stale", "refreshing"]);
+
+function unknownFreshness(): FreshnessResult {
+  return {
+    status: "unknown",
+    needsWorker: false,
+    latestOfficialYyyyMm: null,
+    latestProcessedYyyyMm: null,
+    latestOfficialGeneration: null,
+    latestProcessedGeneration: null,
+    activeJobId: null,
+    warnings: [],
+  };
 }
 
 function asJsonArray(v: unknown): Array<Record<string, unknown>> {
@@ -69,7 +86,7 @@ type ListingRow = Record<string, unknown> & {
   official_ratings?: unknown;
 };
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const session = await getSession();
     if (!session?.email) return fail("Not authenticated", 401);
@@ -77,6 +94,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
 
     const { id } = await params;
+    const { searchParams } = new URL(request.url);
     const sql = getSql();
     await ensureMobileAppsSchema(sql);
     const wid = await workspaceId(sql);
@@ -192,74 +210,38 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const reports: Record<string, Array<Record<string, unknown>>> = {};
     const googleListingIds = listings.filter((l) => l.store === "google").map((l) => l.id);
     if (googleListingIds.length > 0) {
-      const seriesRows = (await sql`
-        select report, to_char(metric_date, 'YYYY-MM-DD') as date, metrics
-        from mobile_app_report_metrics
-        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-          and report in ('installs','crashes')
-        order by metric_date asc
-      `) as unknown as Array<{ report: string; date: string; metrics: unknown }>;
-      const rollup = new Map<string, Map<string, Record<string, number>>>();
-      for (const r of seriesRows) {
-        const m = asMetricsObject(r.metrics);
-        const dates = rollup.get(r.report) ?? new Map<string, Record<string, number>>();
-        const agg = dates.get(r.date) ?? {};
-        for (const [k, v] of Object.entries(m)) if (typeof v === "number") agg[k] = (agg[k] ?? 0) + v;
-        dates.set(r.date, agg);
-        rollup.set(r.report, dates);
-      }
-      for (const [report, dates] of rollup) {
-        reports[report] = [...dates.entries()]
-          .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([date, metrics]) => ({ date, metrics }));
+      // Charts read ONLY from the worker-built daily rollups, never from raw
+      // mobile_app_report_metrics. This keeps the request bounded (no unbounded
+      // row scan, no Node-side summation) and correct (installs/crashes come from
+      // the overview dimension; store_performance is summed across countries in
+      // SQL — so there is no double-counting across alternative breakdowns).
+      const daily = await readReportRollups(sql, googleListingIds);
+      for (const row of daily) {
+        (reports[row.report] ??= []).push({ date: row.date, metrics: row.metrics, source: row.source });
       }
 
-      const storePerf = (await sql`
-        select to_char(metric_date, 'YYYY-MM-DD') as date,
-               sum((metrics->>'store_listing_visitors')::numeric)::float8 as visitors,
-               sum((metrics->>'store_listing_acquisitions')::numeric)::float8 as acquisitions
-        from mobile_app_report_metrics
-        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-          and report = 'store_performance'
-          and dimension = 'country'
-        group by metric_date order by metric_date asc
-      `) as unknown as Array<{ date: string; visitors: number | null; acquisitions: number | null }>;
-      if (storePerf.length > 0) {
-        reports.store_performance = storePerf.map((r) => ({
-          date: r.date,
-          metrics: { store_listing_visitors: r.visitors, store_listing_acquisitions: r.acquisitions },
+      // Breakdowns are bounded so the main payload can't blow up. A future
+      // paginated endpoint can serve the long tail; default cap keeps it small.
+      const breakdownLimit = Math.min(Number(searchParams.get("breakdownLimit") ?? 500), 2000);
+      const breakdowns = await readLatestBreakdowns(sql, googleListingIds, { limit: breakdownLimit });
+      if (breakdowns.length > 0) {
+        reports.breakdowns = breakdowns.map((b) => ({
+          report: b.report,
+          dimension: b.dimension,
+          dimension_value: b.dimensionValue,
+          date: b.date,
+          metrics: b.metrics,
+          dimensions: b.dimensions,
         }));
+        // Traffic sources are just the store_performance/traffic_source breakdown,
+        // already deduped to the latest row per source. Sort by acquisitions.
+        const traffic = breakdowns.filter((b) => b.report === "store_performance" && b.dimension === "traffic_source");
+        if (traffic.length > 0) {
+          reports.traffic_sources = traffic
+            .map((t) => ({ dimensions: t.dimensions, metrics: t.metrics }))
+            .sort((a, b) => num(b.metrics.store_listing_acquisitions) - num(a.metrics.store_listing_acquisitions));
+        }
       }
-
-      // Acquisition traffic sources from the latest available date. No UI cap here;
-      // the frontend can collapse sections but should receive all stored rows.
-      const traffic = (await sql`
-        select dimensions, metrics
-        from mobile_app_report_metrics
-        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-          and report = 'store_performance' and dimension = 'traffic_source'
-          and metric_date = (
-            select max(metric_date) from mobile_app_report_metrics
-            where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-              and report = 'store_performance' and dimension = 'traffic_source'
-          )
-        order by (metrics->>'store_listing_acquisitions')::numeric desc nulls last
-      `) as unknown as Array<{ dimensions: unknown; metrics: unknown }>;
-      if (traffic.length > 0) reports.traffic_sources = traffic.map((r) => ({ dimensions: r.dimensions, metrics: r.metrics }));
-
-      // Latest row for every downloaded report/dimension/value so the Google Play
-      // layout can show device/country/app-version/language/OS breakdowns. No cap.
-      const breakdowns = (await sql`
-        select * from (
-          select distinct on (report, dimension, dimension_value)
-            report, dimension, dimension_value, to_char(metric_date, 'YYYY-MM-DD') as date, metrics, dimensions
-          from mobile_app_report_metrics
-          where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-          order by report, dimension, dimension_value, metric_date desc
-        ) latest
-        order by report, dimension, dimension_value
-      `) as unknown as Array<Record<string, unknown>>;
-      if (breakdowns.length > 0) reports.breakdowns = breakdowns;
 
       // CSV cache index grouped in the UI by year/month. No raw CSV/key material is returned.
       const files = (await sql`
@@ -274,7 +256,105 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       if (files.length > 0) reports.files = files;
     }
 
-    return ok({ app: appRows[0], listings, trend, syncRuns, summary, negativeThreshold, reports });
+    // ── Freshness contract ──
+    // Live reviews/ratings are refreshed live elsewhere; they are always "fresh" as
+    // of the listing's last sync. Google report freshness is either read cheaply from
+    // the stored row (available, browser default — no GCS) or checked live (strict,
+    // for skills — metadata only, never downloads). Strict never returns stale charts.
+    const consistency = searchParams.get("consistency") === "strict" ? "strict" : "available";
+    const liveUpdatedAt = listings.reduce<string | null>((acc, l) => {
+      const t = l.last_synced_at ? String(l.last_synced_at) : null;
+      return t && (!acc || t > acc) ? t : acc;
+    }, null);
+    const liveReviews = { status: "fresh" as const, updatedAt: liveUpdatedAt };
+
+    let googleReports: {
+      status: ReportFreshnessState;
+      latestOfficialMonth: string | null;
+      latestProcessedMonth: string | null;
+      checkedAt: string | null;
+      processedAt: string | null;
+    } = { status: "not_configured", latestOfficialMonth: null, latestProcessedMonth: null, checkedAt: null, processedAt: null };
+    let reportsFresh = true;
+    let strict: { httpStatus: number; jobId: string | null } | null = null;
+
+    if (googleListingIds.length > 0) {
+      if (consistency === "strict") {
+        const results: FreshnessResult[] = [];
+        for (const lid of googleListingIds) {
+          results.push(await checkOfficialReportFreshness(sql, lid).catch(() => unknownFreshness()));
+        }
+        const worst = STATUS_ORDER.find((s) => results.some((r) => r.status === s)) ?? "fresh";
+        reportsFresh = !NOT_FRESH.has(worst);
+        const pick = results.find((r) => r.status === worst) ?? results[0];
+        googleReports = {
+          status: worst,
+          latestOfficialMonth: pick?.latestOfficialYyyyMm ?? null,
+          latestProcessedMonth: pick?.latestProcessedYyyyMm ?? null,
+          checkedAt: new Date().toISOString(),
+          processedAt: null,
+        };
+        let jobId = results.find((r) => r.status === "refreshing")?.activeJobId ?? null;
+        if (results.some((r) => r.status === "stale")) {
+          const { job } = await enqueueReportSyncJob(sql, {
+            appId: id,
+            store: "google",
+            mode: "incremental",
+            reason: "detail-strict",
+            requestedBy: session.email,
+          });
+          jobId = job.id;
+        }
+        if (!reportsFresh) strict = { httpStatus: worst === "failed" ? 503 : 202, jobId };
+      } else {
+        const stored = await readStoredFreshness(sql, googleListingIds);
+        if (stored.length > 0) {
+          const worst = STATUS_ORDER.find((s) => stored.some((r) => r.status === s)) ?? "fresh";
+          const pick = stored.find((r) => r.status === worst) ?? stored[0];
+          reportsFresh = !NOT_FRESH.has(worst);
+          googleReports = {
+            status: worst,
+            latestOfficialMonth: pick.latestOfficialYyyyMm,
+            latestProcessedMonth: pick.latestProcessedYyyyMm,
+            checkedAt: pick.checkedAt,
+            processedAt: pick.processedAt,
+          };
+        } else {
+          // No freshness row yet (worker/ensure-fresh hasn't run) → unknown, not stale.
+          googleReports = { status: "unknown", latestOfficialMonth: null, latestProcessedMonth: null, checkedAt: null, processedAt: null };
+        }
+      }
+    }
+
+    const freshness = { liveReviews, googleReports };
+
+    if (strict) {
+      // Strict consumers must not receive stale report charts presented as fresh.
+      // Live data (reviews/ratings/trend/summary) is still returned; `reports` is not.
+      return NextResponse.json(
+        {
+          ok: googleReports.status !== "failed",
+          status: googleReports.status,
+          fresh: false,
+          reportsFresh: false,
+          jobId: strict.jobId,
+          message:
+            googleReports.status === "failed"
+              ? "Latest official report exists but could not be processed."
+              : "Live data is fresh. Google Play reports are refreshing from the latest official CSVs.",
+          app: appRows[0],
+          listings,
+          trend,
+          syncRuns,
+          summary,
+          negativeThreshold,
+          freshness,
+        },
+        { status: strict.httpStatus },
+      );
+    }
+
+    return ok({ app: appRows[0], listings, trend, syncRuns, summary, negativeThreshold, reports, reportsFresh, freshness });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to load app", 500);
   }

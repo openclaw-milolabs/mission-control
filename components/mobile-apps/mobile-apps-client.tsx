@@ -33,20 +33,11 @@ export function MobileAppsClient() {
     }
   }, []);
 
+  // The list page only READS. It deliberately does not trigger any sync: light
+  // review/rating refresh happens on the app detail page, and heavy Google report
+  // ETL is worker-owned. This keeps opening /mobile-apps free of store API calls.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      await load();
-      await fetch("/api/mobile-apps/sync", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
-      }).catch(() => null);
-      if (!cancelled) await load();
-    })().catch(() => null);
-    return () => {
-      cancelled = true;
-    };
+    void load();
   }, [load]);
 
   return (

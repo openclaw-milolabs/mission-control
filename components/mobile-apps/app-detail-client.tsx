@@ -512,6 +512,13 @@ export function AppDetailClient({ appId }: { appId: string }) {
   const [refreshingReports, setRefreshingReports] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [reports, setReports] = useState<{ installs: ReportPoint[]; crashes: ReportPoint[]; storePerformance: ReportPoint[]; trafficSources: TrafficSource[]; files: ReportFileRow[]; breakdowns: ReportBreakdown[] }>({ installs: [], crashes: [], storePerformance: [], trafficSources: [], files: [], breakdowns: [] });
+  const [reportsFreshness, setReportsFreshness] = useState<{
+    status: string;
+    latestOfficialMonth: string | null;
+    latestProcessedMonth: string | null;
+    processedAt: string | null;
+    checkedAt: string | null;
+  } | null>(null);
 
   useEffect(() => {
     if (ready && !isEnabled("mobile-apps")) router.replace("/settings#modules");
@@ -537,6 +544,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
           files: Array.isArray(json.reports?.files) ? json.reports.files : [],
           breakdowns: Array.isArray(json.reports?.breakdowns) ? json.reports.breakdowns : [],
         });
+        setReportsFreshness(json.freshness?.googleReports ?? null);
       } else {
         toast.error(json.error ?? "Failed to load app");
       }
@@ -558,13 +566,15 @@ export function AppDetailClient({ appId }: { appId: string }) {
     let cancelled = false;
     setSyncing(true);
     void (async () => {
-      // Light sync on open: refresh live reviews + ratings only. The heavy
-      // all-years Play Console CSV scan (memory-intensive, a likely crash cause)
-      // stays behind the "Refresh reports" button, not every page visit.
-      await fetch("/api/mobile-apps/sync", {
+      // Ensure-fresh is the control plane: it refreshes live reviews + ratings
+      // (light, in-request) AND cheaply checks Google report freshness, queuing the
+      // background worker if a newer official CSV exists. It never does heavy ETL
+      // here. "available" means we still render last-processed charts, clearly
+      // labeled as refreshing — we never block the page.
+      await fetch(`/api/mobile-apps/${appId}/ensure-fresh`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId, syncReports: false }),
+        body: JSON.stringify({ consistency: "available", includeReports: true }),
       }).catch(() => null);
       if (!cancelled) {
         await loadRef.current();
@@ -589,7 +599,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
       const res = await fetch("/api/mobile-apps/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId, force: true, syncReports: false }),
+        body: JSON.stringify({ appId, force: true, syncReports: false, syncAppleStorefronts: false }),
       });
       const json = await res.json().catch(() => null);
       await loadRef.current();
@@ -699,16 +709,17 @@ export function AppDetailClient({ appId }: { appId: string }) {
   async function refreshGoogleReports() {
     setRefreshingReports(true);
     try {
-      const res = await fetch("/api/mobile-apps/sync", {
+      // Heavy Google report ETL never runs in a web request. This queues a job that
+      // the detached cron-drained worker picks up; the page stays usable and reloads
+      // via SSE when the worker finishes.
+      const res = await fetch("/api/mobile-apps/reports/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId, store: "google", force: true, refreshReports: true }),
+        body: JSON.stringify({ appId, store: "google", mode: "incremental", reason: "manual" }),
       });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || "Failed");
-      await loadRef.current();
-      setRefreshKey((k) => k + 1);
-      toast.success("Google Play reports and reviews refreshed");
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to queue report sync");
+      toast.success(json.status === "running" ? "A report sync is already running." : "Report sync queued.");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to refresh reports");
     } finally {
@@ -862,6 +873,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
               trafficSources={reports.trafficSources}
               files={reports.files}
               breakdowns={reports.breakdowns}
+              freshness={reportsFreshness}
               onRefresh={() => void refreshGoogleReports()}
               refreshing={refreshingReports}
             />

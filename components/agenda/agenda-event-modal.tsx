@@ -38,6 +38,7 @@ import {
   IconServer,
   IconLink,
   IconTerminal2,
+  IconBell,
   IconChevronDown } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -75,6 +76,7 @@ export type AgendaEventFormData = {
   frequency: Frequency;
   executionWindowMinutes: number;
   sessionTarget: "isolated" | "main";
+  notifyChatId: string;            // "" = report to owner's private DM
   dependsOnEventId: string;        // "" = no dependency
   dependencyTimeoutHours: number;  // 0 = wait indefinitely
   timeStepMinutes?: number;
@@ -82,11 +84,13 @@ export type AgendaEventFormData = {
 
 export type AgentOption = { id: string; name: string };
 export type ProcessOption = { id: string; name: string; version_number: number };
+export type ChatOption = { id: string; label: string; type: "private" | "group"; isDefault: boolean };
 
 type Props = {
   open: boolean;
   agents?: AgentOption[];
   processes?: ProcessOption[];
+  chats?: ChatOption[];
   allEvents?: { id: string; title: string }[];   // for dependency picker
   initialData?: Partial<AgendaEventFormData>;
   isReadOnly?: boolean;
@@ -98,6 +102,7 @@ type Props = {
 
 const EMPTY_AGENTS: AgentOption[] = [];
 const EMPTY_PROCESSES: ProcessOption[] = [];
+const EMPTY_CHATS: ChatOption[] = [];
 
 const TIMEZONES = [
   { value: "Europe/Amsterdam", label: "Europe/Amsterdam (CET)", abbr: "CET" },
@@ -206,6 +211,7 @@ const defaultForm: AgendaEventFormData = {
   frequency: "daily",
   executionWindowMinutes: 30,
   sessionTarget: "isolated",
+  notifyChatId: "",
   dependsOnEventId: "",
   dependencyTimeoutHours: 0,
 };
@@ -262,6 +268,7 @@ function buildInitialForm(data: Partial<AgendaEventFormData>): AgendaEventFormDa
     endDateMode,
     executionWindowMinutes: data.executionWindowMinutes ?? 30,
     sessionTarget,
+    notifyChatId: data.notifyChatId ?? "",
     dependsOnEventId: data.dependsOnEventId ?? "",
     dependencyTimeoutHours: data.dependencyTimeoutHours ?? 0,
   };
@@ -376,7 +383,7 @@ function StepIndicator({ currentStep, onStepClick, canReach }: { currentStep: nu
 
 // ── Main component ──────────────────────────────────────────────────────────
 
-export function AgendaEventModal({ open, agents = EMPTY_AGENTS, processes = EMPTY_PROCESSES, allEvents = [], initialData, isReadOnly, onClose, onSave }: Props) {
+export function AgendaEventModal({ open, agents = EMPTY_AGENTS, processes = EMPTY_PROCESSES, chats = EMPTY_CHATS, allEvents = [], initialData, isReadOnly, onClose, onSave }: Props) {
   const isEditing = !!initialData?.title;
   const [form, setForm] = useState<AgendaEventFormData>(initialData ? buildInitialForm(initialData) : defaultForm);
   const [error, setError] = useState("");
@@ -835,6 +842,51 @@ export function AgendaEventModal({ open, agents = EMPTY_AGENTS, processes = EMPT
         )}
       </div>
 
+      {/* Report to — Telegram destination for completion/failure notifications */}
+      <div className="flex flex-col gap-1.5">
+        <Label className="text-xs font-semibold text-foreground/80 flex items-center gap-1.5">
+          <IconBell className="size-3.5 text-primary" />
+          Report to
+        </Label>
+        <Select
+          value={form.notifyChatId || "__private__"}
+          onValueChange={(v) => updateField("notifyChatId", v === "__private__" ? "" : v)}
+        >
+          <SelectTrigger className="h-10 w-full cursor-pointer">
+            <SelectValue>
+              {(() => {
+                if (!form.notifyChatId) return "Private (default)";
+                const match = chats.find((c) => c.id === form.notifyChatId);
+                return match ? match.label : `Chat ${form.notifyChatId}`;
+              })()}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__private__">
+              <div className="flex flex-col py-0.5">
+                <span className="font-medium">Private (default)</span>
+                <span className="text-xs text-muted-foreground">Send the report to your private DM.</span>
+              </div>
+            </SelectItem>
+            {chats
+              .filter((c) => !c.isDefault)
+              .map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  <div className="flex flex-col py-0.5">
+                    <span className="font-medium">{c.label}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {c.type === "group" ? "Group chat" : "Private chat"} · {c.id}
+                    </span>
+                  </div>
+                </SelectItem>
+              ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Where this task posts its result when it finishes or fails.
+        </p>
+      </div>
+
       {/* Dependency — only show when there are other events to pick from */}
       {allEvents.length > 0 && (
         <div className="flex flex-col gap-1.5">
@@ -1149,6 +1201,12 @@ export function AgendaEventModal({ open, agents = EMPTY_AGENTS, processes = EMPT
           <ReviewRow label="Timezone" value={form.timezone} />
           {/* executionWindowMinutes uses global default from settings */}
           <ReviewRow label="Execution" value={form.sessionTarget === "main" ? "Main session" : "Isolated session"} />
+          <ReviewRow
+            label="Report to"
+            value={form.notifyChatId
+              ? (chats.find((c) => c.id === form.notifyChatId)?.label ?? `Chat ${form.notifyChatId}`)
+              : "Private (default)"}
+          />
           {form.dependsOnEventId && (
             <ReviewRow
               label="Depends on"
