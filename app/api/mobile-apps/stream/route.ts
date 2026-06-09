@@ -1,9 +1,19 @@
 import { getSql } from "@/lib/local-db";
+import { getSession } from "@/lib/auth/session";
+import { isModuleEnabled } from "@/lib/modules/state";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: Request): Promise<Response> {
+  // Same gate as every other mobile-apps route: no unauthenticated stream, and no
+  // stream while the module is disabled (it would hold a DB LISTEN connection open
+  // and leak app-change events / app ids).
+  const session = await getSession();
+  if (!session?.email) return new Response("Not authenticated", { status: 401 });
+  if (!(await isModuleEnabled("mobile-apps")))
+    return new Response("Mobile Applications module is disabled.", { status: 503 });
+
   const sql = getSql();
   const encoder = new TextEncoder();
   const { signal } = request;

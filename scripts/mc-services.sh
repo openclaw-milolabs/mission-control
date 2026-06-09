@@ -471,7 +471,12 @@ case "$CMD" in
   start)
     if [ -n "$TARGET_SERVICE" ]; then
       echo "[mc-services] Starting $TARGET_SERVICE..."
-      start_service "$TARGET_SERVICE" || true
+      # Surface failure in the exit code so deploy scripts / CI / operators can tell
+      # a single-service start actually failed (don't swallow it with `|| true`).
+      if ! start_service "$TARGET_SERVICE"; then
+        echo "[mc-services] $TARGET_SERVICE FAILED to start."
+        exit 1
+      fi
     else
       if [ "$NEXTJS_MODE" = "dev" ]; then
         echo "[mc-services] Starting services (Next.js in dev mode)..."
@@ -492,6 +497,11 @@ case "$CMD" in
         echo "[mc-services] Some services failed to start — see per-service messages above."
       fi
       start_watchdog
+      # Opt-in strict mode for deploy/CI: fail the command if any service failed.
+      # Default stays lenient so a single non-critical service can't abort local dev.
+      if [ "${MC_SERVICES_STRICT:-0}" = "1" ] && [ "$any_failed" -ne 0 ]; then
+        exit 1
+      fi
     fi
     ;;
   stop)

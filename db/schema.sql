@@ -910,6 +910,15 @@ CREATE TABLE IF NOT EXISTS mobile_app_report_sync_jobs (
 );
 CREATE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_app_idx ON mobile_app_report_sync_jobs(mobile_app_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_status_idx ON mobile_app_report_sync_jobs(status, created_at DESC);
+-- At most one ACTIVE (queued/running) job per app+listing+store+mode.
+CREATE UNIQUE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_active_unique
+ON mobile_app_report_sync_jobs (
+  coalesce(mobile_app_id, '00000000-0000-0000-0000-000000000000'::uuid),
+  coalesce(listing_id, '00000000-0000-0000-0000-000000000000'::uuid),
+  coalesce(store, ''),
+  mode
+)
+WHERE status IN ('queued','running');
 
 -- Per-listing official-report freshness (cheap fresh/refreshing/stale answer).
 CREATE TABLE IF NOT EXISTS mobile_app_report_freshness (

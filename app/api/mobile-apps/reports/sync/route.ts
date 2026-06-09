@@ -38,6 +38,16 @@ export async function POST(request: Request) {
     const sql = getSql();
     await ensureMobileAppsSchema(sql);
 
+    // If a specific app is named, verify it belongs to the workspace before queuing
+    // any work for it (don't let a guessed UUID enqueue a job for someone else's app).
+    if (parsed.data.appId) {
+      const wsRows = (await sql`select id from workspaces order by created_at asc limit 1`) as unknown as Array<{ id: string }>;
+      const owned = (await sql`
+        select id from mobile_apps where id = ${parsed.data.appId}::uuid and workspace_id = ${wsRows[0]?.id ?? null}::uuid limit 1
+      `) as unknown as Array<{ id: string }>;
+      if (!owned[0]) return fail("App not found", 404);
+    }
+
     const { job, reused } = await enqueueReportSyncJob(sql, {
       appId: parsed.data.appId ?? null,
       listingId: parsed.data.listingId ?? null,

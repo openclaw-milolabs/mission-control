@@ -3,7 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/auth/session", () => ({ getSession: vi.fn() }));
 vi.mock("@/lib/modules/state", () => ({ isModuleEnabled: vi.fn() }));
 vi.mock("@/lib/mobile-apps/ensure-schema", () => ({ ensureMobileAppsSchema: vi.fn(async () => {}) }));
-vi.mock("@/lib/local-db", () => ({ getSql: vi.fn(() => () => Promise.resolve([])) }));
+vi.mock("@/lib/local-db", () => ({
+  getSql: vi.fn(() => (strings: TemplateStringsArray) => {
+    const q = strings.join(" ");
+    if (q.includes("from workspaces")) return Promise.resolve([{ id: "w1" }]);
+    if (q.includes("from mobile_apps")) return Promise.resolve([{ id: "app1" }]); // app is owned
+    return Promise.resolve([]);
+  }),
+}));
 vi.mock("@/lib/mobile-apps/report-jobs", () => ({ enqueueReportSyncJob: vi.fn() }));
 
 import { getSession } from "@/lib/auth/session";

@@ -75,27 +75,40 @@ export async function enqueueReportSyncJob(sql: Sql, input: EnqueueReportSyncInp
 
   await reapStaleReportJobs(sql);
 
-  const existing = (await sql`
-    select id::text, status, mode, store,
-           mobile_app_id::text as "mobileAppId", listing_id::text as "listingId",
-           to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') as "createdAt"
-    from mobile_app_report_sync_jobs
-    where status in ('queued','running')
-      and mobile_app_id is not distinct from ${appId}::uuid
-      and listing_id is not distinct from ${listingId}::uuid
-      and store is not distinct from ${store}
-      and mode = ${mode}
-    order by created_at asc
-    limit 1
-  `) as unknown as ReportSyncJob[];
-  if (existing[0]) return { job: existing[0], reused: true };
+  const findActive = async (): Promise<ReportSyncJob | undefined> => {
+    const rows = (await sql`
+      select id::text, status, mode, store,
+             mobile_app_id::text as "mobileAppId", listing_id::text as "listingId",
+             to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') as "createdAt"
+      from mobile_app_report_sync_jobs
+      where status in ('queued','running')
+        and mobile_app_id is not distinct from ${appId}::uuid
+        and listing_id is not distinct from ${listingId}::uuid
+        and store is not distinct from ${store}
+        and mode = ${mode}
+      order by created_at asc
+      limit 1
+    `) as unknown as ReportSyncJob[];
+    return rows[0];
+  };
 
-  const inserted = (await sql`
-    insert into mobile_app_report_sync_jobs (mobile_app_id, listing_id, store, mode, reason, requested_by, status)
-    values (${appId}::uuid, ${listingId}::uuid, ${store}, ${mode}, ${reason}, ${requestedBy}, 'queued')
-    returning id::text, status, mode, store,
-              mobile_app_id::text as "mobileAppId", listing_id::text as "listingId",
-              to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') as "createdAt"
-  `) as unknown as ReportSyncJob[];
-  return { job: inserted[0]!, reused: false };
+  const existing = await findActive();
+  if (existing) return { job: existing, reused: true };
+
+  try {
+    const inserted = (await sql`
+      insert into mobile_app_report_sync_jobs (mobile_app_id, listing_id, store, mode, reason, requested_by, status)
+      values (${appId}::uuid, ${listingId}::uuid, ${store}, ${mode}, ${reason}, ${requestedBy}, 'queued')
+      returning id::text, status, mode, store,
+                mobile_app_id::text as "mobileAppId", listing_id::text as "listingId",
+                to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') as "createdAt"
+    `) as unknown as ReportSyncJob[];
+    return { job: inserted[0]!, reused: false };
+  } catch (err) {
+    // Lost a race to a concurrent enqueue (the active-job partial unique index
+    // fired). Return the job the other request created instead of failing.
+    const raced = await findActive();
+    if (raced) return { job: raced, reused: true };
+    throw err;
+  }
 }

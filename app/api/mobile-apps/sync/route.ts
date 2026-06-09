@@ -50,11 +50,22 @@ export async function POST(request: Request) {
     }
 
     const sql = getSql();
+    // Scope to the workspace, never "every app in the database". (Mission Control is
+    // single-workspace today; this keeps the behaviour correct if that ever changes
+    // and matches how the detail/list routes resolve the workspace.)
+    const wsRows = (await sql`select id from workspaces order by created_at asc limit 1`) as unknown as Array<{ id: string }>;
+    const wid = wsRows[0]?.id ?? null;
     let appIds: string[];
     if (appId) {
-      appIds = [appId];
+      // Verify the requested app belongs to the workspace before syncing it.
+      const owned = (await sql`
+        select id::text from mobile_apps where id = ${appId}::uuid and workspace_id = ${wid}::uuid limit 1
+      `) as unknown as Array<{ id: string }>;
+      appIds = owned[0] ? [owned[0].id] : [];
     } else {
-      const rows = (await sql`select id::text from mobile_apps`) as unknown as Array<{ id: string }>;
+      const rows = (await sql`
+        select id::text from mobile_apps where workspace_id = ${wid}::uuid
+      `) as unknown as Array<{ id: string }>;
       appIds = rows.map((r) => r.id);
     }
 

@@ -2,6 +2,15 @@ import { getSql } from "@/lib/local-db";
 
 let _ensured = false;
 
+/**
+ * Reset the "schema already ensured" memo. Call this after dropping the module's
+ * tables (cleanup) so a later ensure in the SAME process actually recreates them
+ * instead of short-circuiting on the stale cache.
+ */
+export function resetMobileAppsSchemaCache(): void {
+  _ensured = false;
+}
+
 export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Promise<void> {
   if (_ensured) return;
   // gen_random_uuid() is core in Postgres 13+; pgcrypto provides it on older
@@ -213,6 +222,18 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
   `;
   await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_app_idx ON mobile_app_report_sync_jobs(mobile_app_id, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_status_idx ON mobile_app_report_sync_jobs(status, created_at DESC)`;
+  // At most one ACTIVE (queued/running) job per app+listing+store+mode. Backstops
+  // the read-then-insert dedupe in enqueueReportSyncJob against a concurrent race.
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_active_unique
+    ON mobile_app_report_sync_jobs (
+      coalesce(mobile_app_id, '00000000-0000-0000-0000-000000000000'::uuid),
+      coalesce(listing_id, '00000000-0000-0000-0000-000000000000'::uuid),
+      coalesce(store, ''),
+      mode
+    )
+    WHERE status IN ('queued','running')
+  `.catch(() => null);
 
   // Per-listing official-report freshness: compares newest GCS generation against
   // the newest generation we have actually parsed, so the API can answer fresh /

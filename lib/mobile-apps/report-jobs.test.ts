@@ -75,6 +75,28 @@ describe("enqueueReportSyncJob", () => {
     expect(joined()).not.toMatch(/insert into mobile_app_report_sync_jobs/i);
   });
 
+  it("tolerates a concurrent-insert race: on unique violation, returns the winner as reused", async () => {
+    // First active-job SELECT → none; INSERT → throws (partial unique index fired);
+    // second active-job SELECT → the job the racing request created.
+    let selects = 0;
+    const calls: string[] = [];
+    const fn = ((strings: TemplateStringsArray) => {
+      const q = strings.join(" ? ");
+      calls.push(q);
+      if (/status = 'failed'/i.test(q)) return Promise.resolve([]); // reap
+      if (/^\s*select/i.test(q) && /from mobile_app_report_sync_jobs/i.test(q)) {
+        selects += 1;
+        return selects === 1 ? Promise.resolve([]) : Promise.resolve([{ id: "winner", status: "queued" }]);
+      }
+      if (/insert into mobile_app_report_sync_jobs/i.test(q)) return Promise.reject(new Error("duplicate key value violates unique constraint"));
+      return Promise.resolve([]);
+    }) as unknown as ReturnType<typeof import("@/lib/local-db").getSql>;
+
+    const result = await enqueueReportSyncJob(fn as never, { appId: "A1", mode: "incremental" });
+    expect(result.reused).toBe(true);
+    expect(result.job).toMatchObject({ id: "winner" });
+  });
+
   it("dedupe check is scoped to active statuses only", async () => {
     const { fn, calls } = routerSql();
     await enqueueReportSyncJob(fn as never, { appId: "A1", mode: "incremental" });
