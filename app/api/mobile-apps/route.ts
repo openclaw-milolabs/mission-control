@@ -105,8 +105,9 @@ export async function POST(request: Request) {
       `;
     }
 
-    // Kick off an immediate forced sync so the app isn't empty on first view.
-    await syncApp(appId, { force: true }).catch(() => null);
+    // Kick off an immediate forced LIGHT sync so the app isn't empty on first view.
+    // Heavy Google report ETL and the full Apple storefront scan are worker-owned.
+    await syncApp(appId, { force: true, syncReports: false, syncAppleStorefronts: false }).catch(() => null);
 
     return ok({ id: appId, name });
   } catch (error) {

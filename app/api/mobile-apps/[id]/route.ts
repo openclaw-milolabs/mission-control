@@ -5,6 +5,7 @@ import { isModuleEnabled } from "@/lib/modules/state";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
 import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
+import { readReportRollups, readLatestBreakdowns } from "@/lib/mobile-apps/report-rollups";
 
 export const dynamic = "force-dynamic";
 
@@ -17,18 +18,10 @@ async function workspaceId(sql: ReturnType<typeof getSql>) {
   return rows[0]?.id ?? null;
 }
 
-/** jsonb metrics may arrive as an object or a JSON string depending on the driver. */
-function asMetricsObject(v: unknown): Record<string, number | null> {
-  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, number | null>;
-  if (typeof v === "string") {
-    try {
-      const p = JSON.parse(v);
-      return p && typeof p === "object" ? (p as Record<string, number | null>) : {};
-    } catch {
-      return {};
-    }
-  }
-  return {};
+/** Coerce a possibly-string/null metric to a number for sorting (NaN → 0). */
+function num(v: unknown): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function asJsonArray(v: unknown): Array<Record<string, unknown>> {
@@ -69,7 +62,7 @@ type ListingRow = Record<string, unknown> & {
   official_ratings?: unknown;
 };
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const session = await getSession();
     if (!session?.email) return fail("Not authenticated", 401);
@@ -77,6 +70,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
 
     const { id } = await params;
+    const { searchParams } = new URL(request.url);
     const sql = getSql();
     await ensureMobileAppsSchema(sql);
     const wid = await workspaceId(sql);
@@ -192,74 +186,38 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const reports: Record<string, Array<Record<string, unknown>>> = {};
     const googleListingIds = listings.filter((l) => l.store === "google").map((l) => l.id);
     if (googleListingIds.length > 0) {
-      const seriesRows = (await sql`
-        select report, to_char(metric_date, 'YYYY-MM-DD') as date, metrics
-        from mobile_app_report_metrics
-        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-          and report in ('installs','crashes')
-        order by metric_date asc
-      `) as unknown as Array<{ report: string; date: string; metrics: unknown }>;
-      const rollup = new Map<string, Map<string, Record<string, number>>>();
-      for (const r of seriesRows) {
-        const m = asMetricsObject(r.metrics);
-        const dates = rollup.get(r.report) ?? new Map<string, Record<string, number>>();
-        const agg = dates.get(r.date) ?? {};
-        for (const [k, v] of Object.entries(m)) if (typeof v === "number") agg[k] = (agg[k] ?? 0) + v;
-        dates.set(r.date, agg);
-        rollup.set(r.report, dates);
-      }
-      for (const [report, dates] of rollup) {
-        reports[report] = [...dates.entries()]
-          .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([date, metrics]) => ({ date, metrics }));
+      // Charts read ONLY from the worker-built daily rollups, never from raw
+      // mobile_app_report_metrics. This keeps the request bounded (no unbounded
+      // row scan, no Node-side summation) and correct (installs/crashes come from
+      // the overview dimension; store_performance is summed across countries in
+      // SQL — so there is no double-counting across alternative breakdowns).
+      const daily = await readReportRollups(sql, googleListingIds);
+      for (const row of daily) {
+        (reports[row.report] ??= []).push({ date: row.date, metrics: row.metrics, source: row.source });
       }
 
-      const storePerf = (await sql`
-        select to_char(metric_date, 'YYYY-MM-DD') as date,
-               sum((metrics->>'store_listing_visitors')::numeric)::float8 as visitors,
-               sum((metrics->>'store_listing_acquisitions')::numeric)::float8 as acquisitions
-        from mobile_app_report_metrics
-        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-          and report = 'store_performance'
-          and dimension = 'country'
-        group by metric_date order by metric_date asc
-      `) as unknown as Array<{ date: string; visitors: number | null; acquisitions: number | null }>;
-      if (storePerf.length > 0) {
-        reports.store_performance = storePerf.map((r) => ({
-          date: r.date,
-          metrics: { store_listing_visitors: r.visitors, store_listing_acquisitions: r.acquisitions },
+      // Breakdowns are bounded so the main payload can't blow up. A future
+      // paginated endpoint can serve the long tail; default cap keeps it small.
+      const breakdownLimit = Math.min(Number(searchParams.get("breakdownLimit") ?? 500), 2000);
+      const breakdowns = await readLatestBreakdowns(sql, googleListingIds, { limit: breakdownLimit });
+      if (breakdowns.length > 0) {
+        reports.breakdowns = breakdowns.map((b) => ({
+          report: b.report,
+          dimension: b.dimension,
+          dimension_value: b.dimensionValue,
+          date: b.date,
+          metrics: b.metrics,
+          dimensions: b.dimensions,
         }));
+        // Traffic sources are just the store_performance/traffic_source breakdown,
+        // already deduped to the latest row per source. Sort by acquisitions.
+        const traffic = breakdowns.filter((b) => b.report === "store_performance" && b.dimension === "traffic_source");
+        if (traffic.length > 0) {
+          reports.traffic_sources = traffic
+            .map((t) => ({ dimensions: t.dimensions, metrics: t.metrics }))
+            .sort((a, b) => num(b.metrics.store_listing_acquisitions) - num(a.metrics.store_listing_acquisitions));
+        }
       }
-
-      // Acquisition traffic sources from the latest available date. No UI cap here;
-      // the frontend can collapse sections but should receive all stored rows.
-      const traffic = (await sql`
-        select dimensions, metrics
-        from mobile_app_report_metrics
-        where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-          and report = 'store_performance' and dimension = 'traffic_source'
-          and metric_date = (
-            select max(metric_date) from mobile_app_report_metrics
-            where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-              and report = 'store_performance' and dimension = 'traffic_source'
-          )
-        order by (metrics->>'store_listing_acquisitions')::numeric desc nulls last
-      `) as unknown as Array<{ dimensions: unknown; metrics: unknown }>;
-      if (traffic.length > 0) reports.traffic_sources = traffic.map((r) => ({ dimensions: r.dimensions, metrics: r.metrics }));
-
-      // Latest row for every downloaded report/dimension/value so the Google Play
-      // layout can show device/country/app-version/language/OS breakdowns. No cap.
-      const breakdowns = (await sql`
-        select * from (
-          select distinct on (report, dimension, dimension_value)
-            report, dimension, dimension_value, to_char(metric_date, 'YYYY-MM-DD') as date, metrics, dimensions
-          from mobile_app_report_metrics
-          where listing_id = any(${sql.array(googleListingIds)}::uuid[])
-          order by report, dimension, dimension_value, metric_date desc
-        ) latest
-        order by report, dimension, dimension_value
-      `) as unknown as Array<Record<string, unknown>>;
-      if (breakdowns.length > 0) reports.breakdowns = breakdowns;
 
       // CSV cache index grouped in the UI by year/month. No raw CSV/key material is returned.
       const files = (await sql`

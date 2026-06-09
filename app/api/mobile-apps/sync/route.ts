@@ -31,8 +31,23 @@ export async function POST(request: Request) {
 
     const parsed = bodySchema.safeParse(await request.json().catch(() => ({})));
     if (!parsed.success) return fail("Invalid sync request.", 422);
-    const { appId, force, refreshReports, syncReports } = parsed.data;
+    const { appId, force } = parsed.data;
     const storeFilter = parsed.data.store && parsed.data.store !== "all" ? parsed.data.store : undefined;
+
+    // This is the LIGHT sync route: live reviews + primary-country ratings only.
+    // Heavy Google Play report ETL (GCS CSV downloads, rollups) is memory-intensive
+    // and must run in the detached cron-drained worker, never in a web request.
+    if (parsed.data.syncReports === true || parsed.data.refreshReports === true) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Heavy report syncs must use /api/mobile-apps/reports/sync. This endpoint only refreshes live reviews and primary ratings.",
+          code: "HEAVY_SYNC_NOT_ALLOWED_IN_WEB_ROUTE",
+        },
+        { status: 409 },
+      );
+    }
 
     const sql = getSql();
     let appIds: string[];
@@ -49,8 +64,8 @@ export async function POST(request: Request) {
         appId: id,
         listings: await syncApp(id, {
           force: Boolean(force),
-          refreshReports: Boolean(refreshReports),
-          syncReports,
+          syncReports: false,
+          syncAppleStorefronts: false,
           store: storeFilter,
         }),
       });

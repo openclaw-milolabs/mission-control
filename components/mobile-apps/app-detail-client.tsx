@@ -564,7 +564,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
       await fetch("/api/mobile-apps/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId, syncReports: false }),
+        body: JSON.stringify({ appId, syncReports: false, syncAppleStorefronts: false }),
       }).catch(() => null);
       if (!cancelled) {
         await loadRef.current();
@@ -589,7 +589,7 @@ export function AppDetailClient({ appId }: { appId: string }) {
       const res = await fetch("/api/mobile-apps/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId, force: true, syncReports: false }),
+        body: JSON.stringify({ appId, force: true, syncReports: false, syncAppleStorefronts: false }),
       });
       const json = await res.json().catch(() => null);
       await loadRef.current();
@@ -699,16 +699,17 @@ export function AppDetailClient({ appId }: { appId: string }) {
   async function refreshGoogleReports() {
     setRefreshingReports(true);
     try {
-      const res = await fetch("/api/mobile-apps/sync", {
+      // Heavy Google report ETL never runs in a web request. This queues a job that
+      // the detached cron-drained worker picks up; the page stays usable and reloads
+      // via SSE when the worker finishes.
+      const res = await fetch("/api/mobile-apps/reports/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ appId, store: "google", force: true, refreshReports: true }),
+        body: JSON.stringify({ appId, store: "google", mode: "incremental", reason: "manual" }),
       });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || "Failed");
-      await loadRef.current();
-      setRefreshKey((k) => k + 1);
-      toast.success("Google Play reports and reviews refreshed");
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "Failed to queue report sync");
+      toast.success(json.status === "running" ? "A report sync is already running." : "Report sync queued.");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to refresh reports");
     } finally {

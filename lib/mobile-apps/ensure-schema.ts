@@ -183,6 +183,97 @@ export async function ensureMobileAppsSchema(sql: ReturnType<typeof getSql>): Pr
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_files_listing_idx ON mobile_app_report_files(listing_id, report, yyyy_mm desc)`;
+
+  // ── API-first report pipeline (Postgres is the contract between the detached
+  // worker and the API). The API reads pre-aggregated rollups/breakdowns and the
+  // freshness/job state; it never parses CSVs nor sums raw metric rows in Node. ──
+
+  // Detached-worker job ledger. The API enqueues 'queued' rows; the cron-drained
+  // worker advances them and writes heartbeats so stuck runs can be reaped.
+  await sql`
+    CREATE TABLE IF NOT EXISTS mobile_app_report_sync_jobs (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      mobile_app_id uuid REFERENCES mobile_apps(id) ON DELETE CASCADE,
+      listing_id uuid REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+      store text CHECK (store IN ('apple','google')),
+      mode text NOT NULL DEFAULT 'incremental'
+        CHECK (mode IN ('incremental','backfill')),
+      reason text NOT NULL DEFAULT 'manual',
+      status text NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued','running','success','partial','failed','skipped')),
+      requested_by text,
+      started_at timestamptz,
+      heartbeat_at timestamptz,
+      finished_at timestamptz,
+      error_message text,
+      warnings jsonb NOT NULL DEFAULT '[]'::jsonb,
+      stats jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_app_idx ON mobile_app_report_sync_jobs(mobile_app_id, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_status_idx ON mobile_app_report_sync_jobs(status, created_at DESC)`;
+
+  // Per-listing official-report freshness: compares newest GCS generation against
+  // the newest generation we have actually parsed, so the API can answer fresh /
+  // refreshing / stale cheaply without downloading anything.
+  await sql`
+    CREATE TABLE IF NOT EXISTS mobile_app_report_freshness (
+      listing_id uuid PRIMARY KEY REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+      status text NOT NULL DEFAULT 'unknown'
+        CHECK (status IN ('unknown','fresh','refreshing','stale','failed','not_configured')),
+      latest_official_yyyy_mm text,
+      latest_processed_yyyy_mm text,
+      latest_official_generation text,
+      latest_processed_generation text,
+      checked_at timestamptz,
+      processed_at timestamptz,
+      active_job_id uuid REFERENCES mobile_app_report_sync_jobs(id) ON DELETE SET NULL,
+      error_message text,
+      warnings jsonb NOT NULL DEFAULT '[]'::jsonb,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
+  // Pre-aggregated daily series the charts read directly. installs/crashes come
+  // from the 'overview' dimension only; store_performance sums countries. Built in
+  // SQL by the worker so the API never sums raw rows (which double-counts across
+  // alternative breakdown dimensions and is memory-heavy).
+  await sql`
+    CREATE TABLE IF NOT EXISTS mobile_app_report_daily_rollups (
+      listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+      report text NOT NULL,
+      metric_date date NOT NULL,
+      metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+      source text,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (listing_id, report, metric_date)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_daily_rollups_idx ON mobile_app_report_daily_rollups(listing_id, report, metric_date)`;
+
+  // Latest row per non-overview breakdown (country/device/app_version/…), so the
+  // detail payload can show breakdowns bounded without scanning raw history.
+  await sql`
+    CREATE TABLE IF NOT EXISTS mobile_app_report_latest_breakdowns (
+      listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+      report text NOT NULL,
+      dimension text NOT NULL,
+      dimension_value text NOT NULL DEFAULT '',
+      metric_date date NOT NULL,
+      metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+      dimensions jsonb,
+      source text,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (listing_id, report, dimension, dimension_value)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_latest_breakdowns_idx ON mobile_app_report_latest_breakdowns(listing_id, report, dimension)`;
+
+  // Tighter indexes on the raw table to make worker rollups and freshness lookups cheap.
+  await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_metrics_listing_report_dim_date_idx ON mobile_app_report_metrics(listing_id, report, dimension, metric_date DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS mobile_app_report_files_generation_idx ON mobile_app_report_files(listing_id, object_path, generation, status)`;
+
   // Backfill the store CHECK on pre-existing sync_runs tables — add only if missing.
   await sql`
     DO $$

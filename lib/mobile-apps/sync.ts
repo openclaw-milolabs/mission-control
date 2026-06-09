@@ -481,7 +481,7 @@ async function loadGoogleRatingsFromDb(sql: Sql, listingId: string): Promise<{ t
 async function syncListing(
   sql: Sql,
   listing: ListingRow,
-  opts: { force: boolean; dedupeMs: number; refreshReports: boolean; syncReports: boolean },
+  opts: { force: boolean; dedupeMs: number; refreshReports: boolean; syncReports: boolean; syncAppleStorefronts: boolean },
 ): Promise<SyncResult> {
   const store = listing.store as Store;
   const appIdentifier = listing.store_app_id;
@@ -540,9 +540,13 @@ async function syncListing(
     let storeMetadata: AppleAppMetadata | null = null;
 
     if (store === "apple") {
-      const territories = [...reviews.map((r) => r.country ?? ""), listing.country];
+      // The full ~155-storefront scan is heavy and worker-owned: it only runs when
+      // the caller explicitly opts in via syncAppleStorefronts (and the config mode
+      // allows it). `force` from web/API routes must NOT trigger it. Normal live
+      // sync fetches only the listing's own country rating/metadata.
       const mode = cfg.apple.fullStorefrontScan;
-      const fullScan = mode === "always" || (mode === "forced" && opts.force);
+      const fullScan = opts.syncAppleStorefronts && (mode === "always" || mode === "forced");
+      const territories = fullScan ? [...reviews.map((r) => r.country ?? ""), listing.country] : [listing.country];
       // Ratings scan + one metadata lookup, in parallel. Metadata is best-effort.
       const [territoryRatings, metadata] = await Promise.all([
         fetchAppleTerritoryRatings(appIdentifier, territories, {
@@ -727,15 +731,28 @@ async function syncListing(
  */
 export async function syncApp(
   appId: string,
-  opts: { force?: boolean; dedupeMs?: number; store?: Store; refreshReports?: boolean; syncReports?: boolean } = {},
+  opts: {
+    force?: boolean;
+    dedupeMs?: number;
+    store?: Store;
+    refreshReports?: boolean;
+    syncReports?: boolean;
+    syncAppleStorefronts?: boolean;
+    listingConcurrency?: number;
+  } = {},
 ): Promise<SyncResult[]> {
   const sql: Sql = getSql();
   await ensureMobileAppsSchema(sql); // safe if a cron/job syncs before any route inits the schema
   const cfg = loadMobileReviewsConfig();
   const dedupeMs = opts.dedupeMs ?? DEFAULT_DEDUPE_MS;
   const force = Boolean(opts.force);
-  const refreshReports = Boolean(opts.refreshReports || opts.force);
-  const syncReports = opts.syncReports ?? true;
+  // Heavy work is opt-in only. `force` must never imply heavy report or storefront
+  // scans — that coupling is what let web/API requests trigger OOM-prone CSV ETL.
+  const syncReports = opts.syncReports === true;
+  const syncAppleStorefronts = opts.syncAppleStorefronts === true;
+  // refreshReports (force re-download of CSVs) is meaningless without syncReports,
+  // so derive it from syncReports rather than from `force`.
+  const refreshReports = syncReports && opts.refreshReports === true;
 
   const listings = (await sql`
     select id::text, store, store_app_id, country, last_synced_at
@@ -744,9 +761,11 @@ export async function syncApp(
       and (${opts.store ?? null}::text is null or store = ${opts.store ?? null})
   `) as unknown as ListingRow[];
 
-  const limit = pLimit(Math.max(1, cfg.sync.concurrency));
+  const limit = pLimit(Math.max(1, opts.listingConcurrency ?? cfg.sync.concurrency));
   const results = await Promise.all(
-    listings.map((l) => limit(() => syncListing(sql, l, { force, dedupeMs, refreshReports, syncReports }))),
+    listings.map((l) =>
+      limit(() => syncListing(sql, l, { force, dedupeMs, refreshReports, syncReports, syncAppleStorefronts })),
+    ),
   );
 
   // Notify SSE listeners that this app changed.

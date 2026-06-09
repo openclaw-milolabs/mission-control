@@ -712,6 +712,11 @@ ALTER TABLE agenda_occurrences ADD COLUMN IF NOT EXISTS rendered_prompt TEXT;
 ALTER TABLE agenda_events ADD COLUMN IF NOT EXISTS session_target TEXT NOT NULL DEFAULT 'isolated'
   CHECK (session_target IN ('isolated', 'main'));
 
+-- v4.1: per-event Telegram notification target for completion/failure reports.
+-- NULL = report to the owner's private DM (auto-detected). A specific Telegram
+-- chat id (e.g. a group chat, negative id) routes the report there instead.
+ALTER TABLE agenda_events ADD COLUMN IF NOT EXISTS notify_chat_id TEXT;
+
 -- v3.0: sidebar activity count setting
 ALTER TABLE worker_settings ADD COLUMN IF NOT EXISTS sidebar_activity_count INTEGER NOT NULL DEFAULT 8;
 
@@ -821,3 +826,131 @@ CREATE TABLE IF NOT EXISTS app_alert_rules (
   last_fired_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ── Mobile Apps: official review-sync runs + Play Console report pipeline ──
+-- Runtime authority is lib/mobile-apps/ensure-schema.ts (idempotent, runs on boot);
+-- this mirror keeps db/schema.sql honest as the canonical reference.
+
+CREATE TABLE IF NOT EXISTS app_review_sync_runs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+  store text NOT NULL CHECK (store IN ('apple','google')),
+  app_identifier text NOT NULL,
+  status text NOT NULL CHECK (status IN ('running','success','failed')),
+  started_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz,
+  fetched_count integer NOT NULL DEFAULT 0,
+  upserted_count integer NOT NULL DEFAULT 0,
+  error_message text,
+  report_status text,
+  report_warnings jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS app_review_sync_runs_listing_idx ON app_review_sync_runs(listing_id, started_at desc);
+
+-- Raw daily metrics from Play Console bulk reports. One row per
+-- listing/report/dimension/dimension_value/date. The API does NOT read this for
+-- charts; the worker rolls it up into the tables below.
+CREATE TABLE IF NOT EXISTS mobile_app_report_metrics (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+  report text NOT NULL,
+  dimension text NOT NULL DEFAULT 'overview',
+  dimension_value text NOT NULL DEFAULT '',
+  metric_date date NOT NULL,
+  report_month text,
+  metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+  dimensions jsonb,
+  source text,
+  captured_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (listing_id, report, dimension, dimension_value, metric_date)
+);
+CREATE INDEX IF NOT EXISTS mobile_app_report_metrics_idx ON mobile_app_report_metrics(listing_id, report, metric_date);
+CREATE INDEX IF NOT EXISTS mobile_app_report_metrics_listing_report_dim_date_idx ON mobile_app_report_metrics(listing_id, report, dimension, metric_date DESC);
+
+-- Download index of Google Play Console CSV objects (no raw CSV stored).
+CREATE TABLE IF NOT EXISTS mobile_app_report_files (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+  report text NOT NULL,
+  dimension text NOT NULL,
+  object_path text NOT NULL,
+  yyyy_mm text,
+  generation text,
+  size_bytes bigint,
+  downloaded_at timestamptz,
+  parsed_at timestamptz,
+  rows_count integer NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'parsed',
+  error_message text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (listing_id, object_path)
+);
+CREATE INDEX IF NOT EXISTS mobile_app_report_files_listing_idx ON mobile_app_report_files(listing_id, report, yyyy_mm desc);
+CREATE INDEX IF NOT EXISTS mobile_app_report_files_generation_idx ON mobile_app_report_files(listing_id, object_path, generation, status);
+
+-- Detached-worker job ledger (API enqueues 'queued'; cron worker drains).
+CREATE TABLE IF NOT EXISTS mobile_app_report_sync_jobs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  mobile_app_id uuid REFERENCES mobile_apps(id) ON DELETE CASCADE,
+  listing_id uuid REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+  store text CHECK (store IN ('apple','google')),
+  mode text NOT NULL DEFAULT 'incremental' CHECK (mode IN ('incremental','backfill')),
+  reason text NOT NULL DEFAULT 'manual',
+  status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','success','partial','failed','skipped')),
+  requested_by text,
+  started_at timestamptz,
+  heartbeat_at timestamptz,
+  finished_at timestamptz,
+  error_message text,
+  warnings jsonb NOT NULL DEFAULT '[]'::jsonb,
+  stats jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_app_idx ON mobile_app_report_sync_jobs(mobile_app_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS mobile_app_report_sync_jobs_status_idx ON mobile_app_report_sync_jobs(status, created_at DESC);
+
+-- Per-listing official-report freshness (cheap fresh/refreshing/stale answer).
+CREATE TABLE IF NOT EXISTS mobile_app_report_freshness (
+  listing_id uuid PRIMARY KEY REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+  status text NOT NULL DEFAULT 'unknown' CHECK (status IN ('unknown','fresh','refreshing','stale','failed','not_configured')),
+  latest_official_yyyy_mm text,
+  latest_processed_yyyy_mm text,
+  latest_official_generation text,
+  latest_processed_generation text,
+  checked_at timestamptz,
+  processed_at timestamptz,
+  active_job_id uuid REFERENCES mobile_app_report_sync_jobs(id) ON DELETE SET NULL,
+  error_message text,
+  warnings jsonb NOT NULL DEFAULT '[]'::jsonb,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Pre-aggregated daily series the charts read (installs/crashes overview-only;
+-- store_performance summed across countries). Built by the worker, in SQL.
+CREATE TABLE IF NOT EXISTS mobile_app_report_daily_rollups (
+  listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+  report text NOT NULL,
+  metric_date date NOT NULL,
+  metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+  source text,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (listing_id, report, metric_date)
+);
+CREATE INDEX IF NOT EXISTS mobile_app_report_daily_rollups_idx ON mobile_app_report_daily_rollups(listing_id, report, metric_date);
+
+-- Latest row per non-overview breakdown for bounded detail payloads.
+CREATE TABLE IF NOT EXISTS mobile_app_report_latest_breakdowns (
+  listing_id uuid NOT NULL REFERENCES mobile_app_listings(id) ON DELETE CASCADE,
+  report text NOT NULL,
+  dimension text NOT NULL,
+  dimension_value text NOT NULL DEFAULT '',
+  metric_date date NOT NULL,
+  metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+  dimensions jsonb,
+  source text,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (listing_id, report, dimension, dimension_value)
+);
+CREATE INDEX IF NOT EXISTS mobile_app_report_latest_breakdowns_idx ON mobile_app_report_latest_breakdowns(listing_id, report, dimension);
