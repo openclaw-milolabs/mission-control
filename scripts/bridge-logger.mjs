@@ -1160,7 +1160,8 @@ async function handleCronRunLine(getSql, jobId, line) {
     SELECT ao.id as occurrence_id, ao.agenda_event_id, ao.latest_attempt_no,
            ao.rendered_prompt, ao.status, ao.scheduled_for,
            ao.session_line_offset,
-           ae.title, ae.default_agent_id, ae.execution_window_minutes, ae.session_target
+           ae.title, ae.default_agent_id, ae.execution_window_minutes, ae.session_target,
+           ae.notify_chat_id
     FROM agenda_occurrences ao
     JOIN agenda_events ae ON ae.id = ao.agenda_event_id
     WHERE ao.cron_job_id = ${jobId}
@@ -1195,6 +1196,7 @@ async function handleCronRunLine(getSql, jobId, line) {
         title: occ2.title, status: 'succeeded',
         summary: run.summary || '[output unavailable]',
         occurrenceId: occ2.occurrence_id, eventId: occ2.agenda_event_id,
+        notifyChatId: occ2.notify_chat_id,
         sessionId: null,
       }).catch((err) => console.error(`[bridge-logger] catch-up notifyMainSession failed: ${err?.message || err}`));
     }
@@ -1392,6 +1394,7 @@ async function handleCronRunLine(getSql, jobId, line) {
     notifyMainSession(occ.session_target || 'isolated', {
       title: occ.title, status: 'succeeded', summary: agentOutput,
       occurrenceId: occ.occurrence_id, eventId: occ.agenda_event_id,
+      notifyChatId: occ.notify_chat_id,
     }).catch((err) => {
       console.error(`[bridge-logger] notifyMainSession failed for occurrence ${occ.occurrence_id}: ${err?.message || err}`);
     });
@@ -1508,6 +1511,7 @@ async function handleCronRunLine(getSql, jobId, line) {
       notifyMainSession(occ.session_target || 'isolated', {
         title: occ.title, status: 'needs_retry', summary: failureReason.slice(0, 400),
         occurrenceId: occ.occurrence_id, eventId: occ.agenda_event_id,
+        notifyChatId: occ.notify_chat_id,
       }).catch(() => {});
       deleteCronJobSilently(jobId).catch(() => {});
     }
@@ -1553,23 +1557,47 @@ async function scanRunArtifacts(occurrenceId, eventId) {
 }
 
 /**
- * Send a Telegram notification for an agenda task result.
- * Works for both main-session and isolated sessions.
- * Non-fatal.
+ * Resolve the owner's private Telegram chat id deterministically.
+ *
+ * Telegram private chats have positive ids; groups/supergroups are negative.
+ * We prefer the first *positive* (private) delivery context so the default
+ * "report to private" is stable regardless of sessions.json ordering — the
+ * old "first telegram context found" behaviour leaked task reports into
+ * whichever group chat happened to be listed first. Falls back to the first
+ * telegram context of any kind only if no private chat is known.
  */
-async function sendTelegramNotification(title, status, summary, occurrenceId, eventId) {
+function resolvePrivateChatId() {
   try {
     const sessionsPath = path.join(OPENCLAW_HOME, 'agents', 'main', 'sessions', 'sessions.json');
-    let chatId;
-    try {
-      const data = JSON.parse(fs.readFileSync(sessionsPath, 'utf8'));
-      for (const val of Object.values(data)) {
-        if (val?.deliveryContext?.channel === 'telegram' && val?.deliveryContext?.to) {
-          chatId = String(val.deliveryContext.to).replace(/^telegram:/, '');
-          break;
-        }
+    const data = JSON.parse(fs.readFileSync(sessionsPath, 'utf8'));
+    let firstAny = null;
+    for (const val of Object.values(data)) {
+      if (val?.deliveryContext?.channel === 'telegram' && val?.deliveryContext?.to) {
+        const id = String(val.deliveryContext.to).replace(/^telegram:/, '').trim();
+        if (!id) continue;
+        if (firstAny === null) firstAny = id;
+        if (!id.startsWith('-')) return id; // positive id = private chat
       }
-    } catch { return; }
+    }
+    return firstAny;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Send a Telegram notification for an agenda task result.
+ * Works for both main-session and isolated sessions.
+ *
+ * `notifyChatId` is the event's configured target (agenda_events.notify_chat_id):
+ * a specific chat id (e.g. a group chat) routes the report there; null/empty
+ * falls back to the owner's private DM via resolvePrivateChatId().
+ * Non-fatal.
+ */
+async function sendTelegramNotification(title, status, summary, occurrenceId, eventId, notifyChatId = null) {
+  try {
+    const configured = notifyChatId != null ? String(notifyChatId).replace(/^telegram:/, '').trim() : '';
+    const chatId = configured || resolvePrivateChatId();
     if (!chatId) {
       console.warn('[bridge-logger] Telegram notification skipped — no telegram chatId found in sessions.json');
       return;
@@ -1620,7 +1648,7 @@ async function sendTelegramNotification(title, status, summary, occurrenceId, ev
  * For main session runs: only sends Telegram (output already in chat).
  * Non-fatal.
  */
-async function notifyMainSession(sessionTarget, { title, status, summary, occurrenceId, eventId }) {
+async function notifyMainSession(sessionTarget, { title, status, summary, occurrenceId, eventId, notifyChatId = null }) {
   const isIsolated = sessionTarget !== 'main';
 
   if (isIsolated) {
@@ -1646,12 +1674,12 @@ async function notifyMainSession(sessionTarget, { title, status, summary, occurr
       console.warn("[bridge-logger] notifyMainSession system event failed (non-fatal):", err?.message);
     }
     // Also send a Telegram notification for isolated sessions
-    await sendTelegramNotification(title, status, summary, occurrenceId, eventId);
+    await sendTelegramNotification(title, status, summary, occurrenceId, eventId, notifyChatId);
     return;
   }
 
   // Main session run — send summary directly to Telegram (output already lands in chat)
-  await sendTelegramNotification(title, status, summary, occurrenceId, eventId);
+  await sendTelegramNotification(title, status, summary, occurrenceId, eventId, notifyChatId);
 }
 
 /**

@@ -51,6 +51,7 @@ export async function assertAgendaSchema(sql) {
     'model_override',
     'depends_on_event_id',
     'dependency_timeout_hours',
+    'notify_chat_id',
   ];
   const missingEvt = requiredEventCols.filter((c) => !evtCols.has(c));
   if (missingEvt.length > 0) {

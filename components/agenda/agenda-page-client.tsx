@@ -263,6 +263,7 @@ export function AgendaPageClient({ onEditEvent, onCopyEvent, onDeleteEvent, onAd
           occurrenceId,
           modelOverride: (evt as Record<string, unknown>).model_override as string ?? "",
           sessionTarget: ((evt as Record<string, unknown>).session_target === "main" ? "main" : "isolated") as "isolated" | "main",
+          notifyChatId: (evt as Record<string, unknown>).notify_chat_id as string ?? null,
           createdAt: (evt as Record<string, unknown>).created_at as string ?? null,
           dependsOnEventId: (evt as Record<string, unknown>).depends_on_event_id as string ?? null,
         };
