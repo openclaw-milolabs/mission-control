@@ -32,7 +32,10 @@ fi
 
 # ── Service definitions ─────────────────────────────────────
 # v2: agenda-worker removed — execution now via openclaw cron (no Redis/BullMQ needed)
-SERVICES="gateway-sync bridge-logger agenda-scheduler nextjs"
+# mobile-reports: resident worker that drains the mobile-app report job queue and
+# pulls Google Play's newest published CSVs on an interval (default 30 min, tune via
+# MOBILE_REPORTS_WORKER_INTERVAL_MS). Heavy ETL lives here, never in a web request.
+SERVICES="gateway-sync bridge-logger agenda-scheduler mobile-reports nextjs"
 
 # One-shot services run once and exit (e.g. a sync that imports state then quits).
 # They don't get a persistent PID; success is "the command exited with code 0".
@@ -57,6 +60,7 @@ done
 SERVICE_CMDS[gateway-sync]="node scripts/gateway-sync.mjs"
 SERVICE_CMDS[bridge-logger]="node scripts/bridge-logger.mjs"
 SERVICE_CMDS[agenda-scheduler]="node scripts/agenda-scheduler.mjs"
+SERVICE_CMDS[mobile-reports]="npx tsx scripts/mobile-reports-sync.ts --watch"
 
 NEXTJS_DEV_CMD="cd \"$PROJECT_ROOT\" && env -u NODE_ENV NODE_ENV=development npx next dev"
 NEXTJS_PROD_CMD="cd \"$PROJECT_ROOT\" && env -u NODE_ENV NODE_ENV=production npm run start"
@@ -207,6 +211,9 @@ stop_service() {
         ;;
       agenda-scheduler)
         pkill -f "agenda-scheduler.mjs" 2>/dev/null && echo "  $svc — killed via pkill" || echo "  $svc — not running"
+        ;;
+      mobile-reports)
+        pkill -f "mobile-reports-sync" 2>/dev/null && echo "  $svc — killed via pkill" || echo "  $svc — not running"
         ;;
 
       nextjs)
