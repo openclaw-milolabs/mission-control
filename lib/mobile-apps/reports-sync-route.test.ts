@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/mobile-apps/api-auth", () => ({ requireMobileAppsApiAuth: vi.fn() }));
+vi.mock("@/lib/auth/session", () => ({ getSession: vi.fn() }));
 vi.mock("@/lib/modules/state", () => ({ isModuleEnabled: vi.fn() }));
 vi.mock("@/lib/mobile-apps/ensure-schema", () => ({ ensureMobileAppsSchema: vi.fn(async () => {}) }));
 vi.mock("@/lib/local-db", () => ({ getSql: vi.fn(() => () => Promise.resolve([])) }));
 vi.mock("@/lib/mobile-apps/report-jobs", () => ({ enqueueReportSyncJob: vi.fn() }));
 
-import { requireMobileAppsApiAuth } from "@/lib/mobile-apps/api-auth";
+import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
 import { enqueueReportSyncJob } from "@/lib/mobile-apps/report-jobs";
 import { POST } from "@/app/api/mobile-apps/reports/sync/route";
@@ -22,7 +22,7 @@ function req(body: unknown) {
 }
 
 beforeEach(() => {
-  vi.mocked(requireMobileAppsApiAuth).mockResolvedValue({ type: "session", email: "u@example.com" });
+  vi.mocked(getSession).mockResolvedValue({ sub: "s", name: "n", email: "u@example.com" });
   vi.mocked(isModuleEnabled).mockResolvedValue(true);
 });
 afterEach(() => vi.clearAllMocks());
@@ -55,7 +55,7 @@ describe("POST /api/mobile-apps/reports/sync", () => {
   });
 
   it("rejects unauthenticated callers with 401 and does not enqueue", async () => {
-    vi.mocked(requireMobileAppsApiAuth).mockResolvedValue(null);
+    vi.mocked(getSession).mockResolvedValue(null);
     const res = await POST(req({ appId: APP }));
     expect(res.status).toBe(401);
     expect(enqueueReportSyncJob).not.toHaveBeenCalled();

@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSql } from "@/lib/local-db";
+import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
-import { requireMobileAppsApiAuth } from "@/lib/mobile-apps/api-auth";
 import { enqueueReportSyncJob } from "@/lib/mobile-apps/report-jobs";
 
 export const dynamic = "force-dynamic";
@@ -27,8 +27,8 @@ const bodySchema = z.object({
  */
 export async function POST(request: Request) {
   try {
-    const auth = await requireMobileAppsApiAuth(request);
-    if (!auth) return fail("Not authenticated", 401);
+    const session = await getSession();
+    if (!session?.email) return fail("Not authenticated", 401);
     if (!(await isModuleEnabled("mobile-apps")))
       return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
 
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       store: parsed.data.store ?? null,
       mode: parsed.data.mode ?? "incremental",
       reason: parsed.data.reason ?? "api",
-      requestedBy: auth.email,
+      requestedBy: session.email,
     });
 
     const running = job.status === "running";

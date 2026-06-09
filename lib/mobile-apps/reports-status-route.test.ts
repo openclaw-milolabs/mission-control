@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/mobile-apps/api-auth", () => ({ requireMobileAppsApiAuth: vi.fn() }));
+vi.mock("@/lib/auth/session", () => ({ getSession: vi.fn() }));
 vi.mock("@/lib/modules/state", () => ({ isModuleEnabled: vi.fn() }));
 vi.mock("@/lib/mobile-apps/ensure-schema", () => ({ ensureMobileAppsSchema: vi.fn(async () => {}) }));
 vi.mock("@/lib/local-db", () => ({ getSql: vi.fn() }));
 
-import { requireMobileAppsApiAuth } from "@/lib/mobile-apps/api-auth";
+import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
 import { getSql } from "@/lib/local-db";
 import { GET } from "@/app/api/mobile-apps/reports/status/route";
@@ -25,7 +25,7 @@ function routerSql() {
 }
 
 beforeEach(() => {
-  vi.mocked(requireMobileAppsApiAuth).mockResolvedValue({ type: "token", email: null });
+  vi.mocked(getSession).mockResolvedValue({ sub: "s", name: "n", email: "u@example.com" });
   vi.mocked(isModuleEnabled).mockResolvedValue(true);
 });
 afterEach(() => vi.clearAllMocks());
@@ -44,7 +44,7 @@ describe("GET /api/mobile-apps/reports/status", () => {
   });
 
   it("rejects unauthenticated callers with 401", async () => {
-    vi.mocked(requireMobileAppsApiAuth).mockResolvedValue(null);
+    vi.mocked(getSession).mockResolvedValue(null);
     vi.mocked(getSql).mockReturnValue(routerSql().fn);
     const res = await GET(new Request("http://localhost/api/mobile-apps/reports/status?jobId=job-1"));
     expect(res.status).toBe(401);

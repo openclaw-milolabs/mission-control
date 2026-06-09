@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/local-db";
+import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
-import { requireMobileAppsApiAuth } from "@/lib/mobile-apps/api-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -16,8 +16,8 @@ const uuidOrNull = (v: string | null) => (v && /^[0-9a-fA-F-]{36}$/.test(v) ? v 
  */
 export async function GET(request: Request) {
   try {
-    const auth = await requireMobileAppsApiAuth(request);
-    if (!auth) return fail("Not authenticated", 401);
+    const session = await getSession();
+    if (!session?.email) return fail("Not authenticated", 401);
     if (!(await isModuleEnabled("mobile-apps")))
       return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
 
