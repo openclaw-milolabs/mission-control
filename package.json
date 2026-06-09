@@ -21,6 +21,9 @@
     "bot:setup": "node scripts/openclaw-bot-setup.mjs",
     "bridge:logger": "node scripts/bridge-logger.mjs",
     "bridge:logger:check": "node --check scripts/bridge-logger.mjs",
+    "mobile:reports:worker": "tsx scripts/mobile-reports-sync.ts --drain-only",
+    "mobile:reports:sync:incremental": "tsx scripts/mobile-reports-sync.ts --mode incremental",
+    "mobile:reports:sync:backfill": "tsx scripts/mobile-reports-sync.ts --mode backfill",
     "agenda:selfcheck": "node scripts/agenda-selfcheck.mjs",
     "agenda:smoke": "node scripts/agenda-smoke.mjs",
     "logs:repair-attribution": "node scripts/repair-agent-log-attribution.mjs",
@@ -95,6 +98,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "shadcn": "^3.8.5",
+    "tsx": "^4.22.4",
     "typescript": "5.9.3",
     "vitest": "^4.1.8"
   }
