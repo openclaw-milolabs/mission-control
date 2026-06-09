@@ -36,6 +36,50 @@ export type ReportBreakdown = {
   metrics: unknown;
   dimensions?: unknown;
 };
+export type ReportFreshness = {
+  status: string;
+  latestOfficialMonth: string | null;
+  latestProcessedMonth: string | null;
+  processedAt: string | null;
+  checkedAt: string | null;
+};
+
+function fmtMonth(yyyymm: string | null): string {
+  if (!yyyymm || yyyymm.length !== 6) return yyyymm ?? "—";
+  return `${yyyymm.slice(0, 4)}-${yyyymm.slice(4, 6)}`;
+}
+
+/**
+ * Freshness pill: tells the user whether the Google reports shown are up to date,
+ * being refreshed, behind, or failed — so last-processed charts are never mistaken
+ * for the very latest. Maps the API's freshness.googleReports.status.
+ */
+function FreshnessBadge({ freshness }: { freshness: ReportFreshness }) {
+  const { status } = freshness;
+  const map: Record<string, { label: string; cls: string; pulse?: boolean }> = {
+    fresh: { label: "Up to date", cls: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
+    refreshing: { label: "Refreshing…", cls: "bg-amber-500/10 text-amber-600 dark:text-amber-400", pulse: true },
+    stale: { label: "Update available", cls: "bg-amber-500/10 text-amber-600 dark:text-amber-400" },
+    failed: { label: "Refresh failed", cls: "bg-red-500/10 text-red-600 dark:text-red-400" },
+    not_configured: { label: "Not configured", cls: "bg-muted text-muted-foreground" },
+    unknown: { label: "Checking…", cls: "bg-muted text-muted-foreground" },
+  };
+  const m = map[status] ?? map.unknown;
+  const months =
+    freshness.latestOfficialMonth || freshness.latestProcessedMonth
+      ? `official ${fmtMonth(freshness.latestOfficialMonth)} · processed ${fmtMonth(freshness.latestProcessedMonth)}`
+      : null;
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${m.cls}`}
+      title={months ? `Google Play reports — ${months}${freshness.processedAt ? ` · processed at ${freshness.processedAt}` : ""}` : "Google Play report freshness"}
+    >
+      <span className={`size-1.5 rounded-full bg-current ${m.pulse ? "animate-pulse" : ""}`} />
+      {m.label}
+      {months ? <span className="font-normal opacity-70">· {months}</span> : null}
+    </span>
+  );
+}
 
 type Metrics = Record<string, number | null>;
 type Dims = Record<string, string>;
@@ -176,6 +220,7 @@ export function PlayReportsCard({
   breakdowns = [],
   onRefresh,
   refreshing = false,
+  freshness = null,
 }: {
   installs?: ReportPoint[];
   crashes?: ReportPoint[];
@@ -185,6 +230,7 @@ export function PlayReportsCard({
   breakdowns?: ReportBreakdown[];
   onRefresh?: () => void;
   refreshing?: boolean;
+  freshness?: ReportFreshness | null;
 }) {
   const installData = useMemo(
     () =>
@@ -243,21 +289,39 @@ export function PlayReportsCard({
   const groupedFiles = useMemo(() => groupFiles(files), [files]);
   const [open, setOpen] = useState(false);
 
-  if (installs.length === 0 && crashes.length === 0 && storePerformance.length === 0 && trafficSources.length === 0 && files.length === 0)
-    return null;
+  const hasData =
+    installs.length > 0 || crashes.length > 0 || storePerformance.length > 0 || trafficSources.length > 0 || files.length > 0;
+  // Render even with no data when reports are actively being worked on, so the user
+  // sees "Refreshing…" instead of an empty void. Stay hidden only when there is
+  // nothing to show and nothing happening.
+  const activeStatus = freshness && ["refreshing", "stale", "failed"].includes(freshness.status);
+  if (!hasData && !activeStatus) return null;
 
   return (
     <section className="w-full rounded-2xl border bg-card p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="flex items-center gap-2 text-base font-semibold">
+          <h2 className="flex flex-wrap items-center gap-2 text-base font-semibold">
             <IconBrandGooglePlay className="size-4" />
             Google Play Console reports
             <SourceBadge kind="csv" title="All figures here come from Google Play Console CSV exports in your GCS bucket — delayed (daily/monthly), not a live API." />
+            {freshness ? <FreshnessBadge freshness={freshness} /> : null}
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
             Downloaded from official Play Console CSV exports. Refresh re-lists the bucket and downloads changed/missing files, including monthly reviews CSVs.
           </p>
+          {freshness && freshness.status === "refreshing" && hasData ? (
+            <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-400">
+              Showing the last processed Google report while the latest official CSV is being processed.
+            </p>
+          ) : null}
+          {freshness && !hasData && activeStatus ? (
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              {freshness.status === "failed"
+                ? "The latest official report could not be processed. Try Refresh reports."
+                : "Fetching the latest official Google Play reports…"}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button

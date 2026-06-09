@@ -68,7 +68,8 @@ describe("processQueuedJobs orchestration", () => {
       { listingId: "L1", store: "google", status: "success", reportWarnings: [], fetched: 3, inserted: 1 },
     ]);
     const refreshReportRollups = vi.fn(async () => {});
-    const deps: WorkerDeps = { syncApp: syncApp as never, refreshReportRollups };
+    const updateFreshness = vi.fn(async () => {});
+    const deps: WorkerDeps = { syncApp: syncApp as never, refreshReportRollups, updateFreshness };
 
     const result = await processQueuedJobs(fn as never, deps);
 
@@ -77,8 +78,9 @@ describe("processQueuedJobs orchestration", () => {
     expect(syncApp).toHaveBeenCalledTimes(1);
     const opts = (syncApp.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
     expect(opts).toMatchObject({ force: true, syncReports: true, syncAppleStorefronts: true });
-    // Rollups refreshed for the google listing.
+    // Rollups refreshed + real freshness recomputed for the google listing.
     expect(refreshReportRollups).toHaveBeenCalledWith(fn, "L1");
+    expect(updateFreshness).toHaveBeenCalledWith(fn, "L1");
     // Job finished success.
     const finish = calls.find((c) => /update mobile_app_report_sync_jobs/i.test(c.q) && c.values.includes("success"));
     expect(finish, "a success finish update was issued").toBeTruthy();
@@ -95,6 +97,7 @@ describe("processQueuedJobs orchestration", () => {
         throw new Error("boom");
       }) as never,
       refreshReportRollups: vi.fn(async () => {}),
+      updateFreshness: vi.fn(async () => {}),
     };
     const result = await processQueuedJobs(fn as never, deps);
     expect(result.processed).toBe(1);

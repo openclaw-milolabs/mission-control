@@ -6,6 +6,13 @@ import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 import { loadMobileReviewsConfig } from "@/lib/mobile-apps/config";
 import { toAlpha2 } from "@/lib/mobile-apps/country-codes";
 import { readReportRollups, readLatestBreakdowns } from "@/lib/mobile-apps/report-rollups";
+import {
+  checkOfficialReportFreshness,
+  readStoredFreshness,
+  type FreshnessResult,
+  type ReportFreshnessState,
+} from "@/lib/mobile-apps/report-freshness";
+import { enqueueReportSyncJob } from "@/lib/mobile-apps/report-jobs";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +29,23 @@ async function workspaceId(sql: ReturnType<typeof getSql>) {
 function num(v: unknown): number {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+// Worst-first ordering so the headline freshness reflects whatever needs attention.
+const STATUS_ORDER: ReportFreshnessState[] = ["failed", "stale", "refreshing", "unknown", "not_configured", "fresh"];
+const NOT_FRESH = new Set<ReportFreshnessState>(["failed", "stale", "refreshing"]);
+
+function unknownFreshness(): FreshnessResult {
+  return {
+    status: "unknown",
+    needsWorker: false,
+    latestOfficialYyyyMm: null,
+    latestProcessedYyyyMm: null,
+    latestOfficialGeneration: null,
+    latestProcessedGeneration: null,
+    activeJobId: null,
+    warnings: [],
+  };
 }
 
 function asJsonArray(v: unknown): Array<Record<string, unknown>> {
@@ -232,7 +256,105 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       if (files.length > 0) reports.files = files;
     }
 
-    return ok({ app: appRows[0], listings, trend, syncRuns, summary, negativeThreshold, reports });
+    // ── Freshness contract ──
+    // Live reviews/ratings are refreshed live elsewhere; they are always "fresh" as
+    // of the listing's last sync. Google report freshness is either read cheaply from
+    // the stored row (available, browser default — no GCS) or checked live (strict,
+    // for skills — metadata only, never downloads). Strict never returns stale charts.
+    const consistency = searchParams.get("consistency") === "strict" ? "strict" : "available";
+    const liveUpdatedAt = listings.reduce<string | null>((acc, l) => {
+      const t = l.last_synced_at ? String(l.last_synced_at) : null;
+      return t && (!acc || t > acc) ? t : acc;
+    }, null);
+    const liveReviews = { status: "fresh" as const, updatedAt: liveUpdatedAt };
+
+    let googleReports: {
+      status: ReportFreshnessState;
+      latestOfficialMonth: string | null;
+      latestProcessedMonth: string | null;
+      checkedAt: string | null;
+      processedAt: string | null;
+    } = { status: "not_configured", latestOfficialMonth: null, latestProcessedMonth: null, checkedAt: null, processedAt: null };
+    let reportsFresh = true;
+    let strict: { httpStatus: number; jobId: string | null } | null = null;
+
+    if (googleListingIds.length > 0) {
+      if (consistency === "strict") {
+        const results: FreshnessResult[] = [];
+        for (const lid of googleListingIds) {
+          results.push(await checkOfficialReportFreshness(sql, lid).catch(() => unknownFreshness()));
+        }
+        const worst = STATUS_ORDER.find((s) => results.some((r) => r.status === s)) ?? "fresh";
+        reportsFresh = !NOT_FRESH.has(worst);
+        const pick = results.find((r) => r.status === worst) ?? results[0];
+        googleReports = {
+          status: worst,
+          latestOfficialMonth: pick?.latestOfficialYyyyMm ?? null,
+          latestProcessedMonth: pick?.latestProcessedYyyyMm ?? null,
+          checkedAt: new Date().toISOString(),
+          processedAt: null,
+        };
+        let jobId = results.find((r) => r.status === "refreshing")?.activeJobId ?? null;
+        if (results.some((r) => r.status === "stale")) {
+          const { job } = await enqueueReportSyncJob(sql, {
+            appId: id,
+            store: "google",
+            mode: "incremental",
+            reason: "detail-strict",
+            requestedBy: session.email,
+          });
+          jobId = job.id;
+        }
+        if (!reportsFresh) strict = { httpStatus: worst === "failed" ? 503 : 202, jobId };
+      } else {
+        const stored = await readStoredFreshness(sql, googleListingIds);
+        if (stored.length > 0) {
+          const worst = STATUS_ORDER.find((s) => stored.some((r) => r.status === s)) ?? "fresh";
+          const pick = stored.find((r) => r.status === worst) ?? stored[0];
+          reportsFresh = !NOT_FRESH.has(worst);
+          googleReports = {
+            status: worst,
+            latestOfficialMonth: pick.latestOfficialYyyyMm,
+            latestProcessedMonth: pick.latestProcessedYyyyMm,
+            checkedAt: pick.checkedAt,
+            processedAt: pick.processedAt,
+          };
+        } else {
+          // No freshness row yet (worker/ensure-fresh hasn't run) → unknown, not stale.
+          googleReports = { status: "unknown", latestOfficialMonth: null, latestProcessedMonth: null, checkedAt: null, processedAt: null };
+        }
+      }
+    }
+
+    const freshness = { liveReviews, googleReports };
+
+    if (strict) {
+      // Strict consumers must not receive stale report charts presented as fresh.
+      // Live data (reviews/ratings/trend/summary) is still returned; `reports` is not.
+      return NextResponse.json(
+        {
+          ok: googleReports.status !== "failed",
+          status: googleReports.status,
+          fresh: false,
+          reportsFresh: false,
+          jobId: strict.jobId,
+          message:
+            googleReports.status === "failed"
+              ? "Latest official report exists but could not be processed."
+              : "Live data is fresh. Google Play reports are refreshing from the latest official CSVs.",
+          app: appRows[0],
+          listings,
+          trend,
+          syncRuns,
+          summary,
+          negativeThreshold,
+          freshness,
+        },
+        { status: strict.httpStatus },
+      );
+    }
+
+    return ok({ app: appRows[0], listings, trend, syncRuns, summary, negativeThreshold, reports, reportsFresh, freshness });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Failed to load app", 500);
   }

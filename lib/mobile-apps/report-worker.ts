@@ -2,6 +2,7 @@ import { getSql } from "@/lib/local-db";
 import { syncApp } from "@/lib/mobile-apps/sync";
 import { refreshReportRollups } from "@/lib/mobile-apps/report-rollups";
 import { reapStaleReportJobs } from "@/lib/mobile-apps/report-jobs";
+import { checkOfficialReportFreshness } from "@/lib/mobile-apps/report-freshness";
 
 type Sql = ReturnType<typeof getSql>;
 
@@ -27,9 +28,18 @@ export type JobOutcome = {
 export type WorkerDeps = {
   syncApp: typeof syncApp;
   refreshReportRollups: (sql: Sql, listingId: string) => Promise<void>;
+  updateFreshness: (sql: Sql, listingId: string) => Promise<void>;
 };
 
-const defaultDeps: WorkerDeps = { syncApp, refreshReportRollups };
+const defaultDeps: WorkerDeps = {
+  syncApp,
+  refreshReportRollups,
+  // Recompute the real freshness verdict from GCS generations after processing, so
+  // the row reflects exactly what was just parsed (fresh when caught up).
+  updateFreshness: async (sql, listingId) => {
+    await checkOfficialReportFreshness(sql, listingId);
+  },
+};
 
 /** Try to grab the global worker lock. Returns false if another worker holds it. */
 export async function acquireWorkerLock(sql: Sql): Promise<boolean> {
@@ -76,23 +86,6 @@ export async function finishJob(sql: Sql, jobId: string, outcome: JobOutcome): P
         stats = ${JSON.stringify(outcome.stats ?? {})}::jsonb
     where id = ${jobId}::uuid
   `;
-}
-
-/** Basic freshness state after a successful process pass (B1: mark fresh). */
-async function markListingFresh(sql: Sql, listingId: string): Promise<void> {
-  await sql`
-    insert into mobile_app_report_freshness
-      (listing_id, status, checked_at, processed_at, updated_at, latest_processed_yyyy_mm, latest_processed_generation)
-    select ${listingId}::uuid, 'fresh', now(), now(), now(),
-      (select yyyy_mm from mobile_app_report_files
-        where listing_id = ${listingId}::uuid order by yyyy_mm desc nulls last limit 1),
-      (select generation from mobile_app_report_files
-        where listing_id = ${listingId}::uuid order by yyyy_mm desc nulls last, generation desc limit 1)
-    on conflict (listing_id) do update set
-      status = 'fresh', checked_at = now(), processed_at = now(), updated_at = now(),
-      latest_processed_yyyy_mm = excluded.latest_processed_yyyy_mm,
-      latest_processed_generation = excluded.latest_processed_generation
-  `.catch(() => null);
 }
 
 /** Resolve which app ids a job targets. */
@@ -144,11 +137,11 @@ export async function runReportSyncJob(sql: Sql, job: ClaimedJob, deps: WorkerDe
     }
   }
 
-  // Rebuild rollups + freshness for every Google listing we touched.
+  // Rebuild rollups + recompute real freshness for every Google listing we touched.
   for (const listingId of googleListingIds) {
     await heartbeatJob(sql, job.id);
     await deps.refreshReportRollups(sql, listingId);
-    await markListingFresh(sql, listingId);
+    await deps.updateFreshness(sql, listingId);
   }
 
   stats.fetched = fetched;
