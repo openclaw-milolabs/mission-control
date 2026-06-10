@@ -75,6 +75,18 @@ describe("checkOfficialReportFreshness", () => {
     expect(res.needsWorker).toBe(false);
   });
 
+  it("active-job query also matches the worker's global jobs (no app/listing target)", async () => {
+    const path = "stats/installs/installs_com.x_202606_overview.csv";
+    const { fn, calls } = routerSql({ processed: [{ object_path: path, generation: "99" }] });
+    await checkOfficialReportFreshness(fn as never, "L1", deps([officialFile(path, "100")]));
+    const jobQuery = calls.find((c) => /select id::text, status from mobile_app_report_sync_jobs/i.test(c.q));
+    expect(jobQuery, "the recent-job lookup exists").toBeTruthy();
+    // The worker's periodic incremental pass enqueues with NULL app + NULL listing;
+    // it covers every listing, so it must read as 'refreshing' rather than letting
+    // a detail-page check enqueue duplicate work mid-pass.
+    expect(jobQuery!.q).toMatch(/listing_id is null and mobile_app_id is null/i);
+  });
+
   it("failed when the most recent job failed and official data is still unprocessed", async () => {
     const path = "stats/installs/installs_com.x_202606_overview.csv";
     const { fn } = routerSql({ processed: [{ object_path: path, generation: "99" }], recentJob: [{ id: "job-1", status: "failed" }] });

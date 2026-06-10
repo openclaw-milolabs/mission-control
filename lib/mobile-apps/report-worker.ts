@@ -75,6 +75,13 @@ export async function heartbeatJob(sql: Sql, jobId: string): Promise<void> {
   await sql`update mobile_app_report_sync_jobs set heartbeat_at = now() where id = ${jobId}::uuid`.catch(() => null);
 }
 
+/**
+ * Heartbeat interval while a job runs. Must be comfortably under STALE_JOB_MS
+ * (report-jobs.ts) or a long single-app CSV sync — which has no internal await
+ * points where we could beat manually — gets reaped as stalled mid-run.
+ */
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
 export async function finishJob(sql: Sql, jobId: string, outcome: JobOutcome): Promise<void> {
   await sql`
     update mobile_app_report_sync_jobs
@@ -111,45 +118,52 @@ async function resolveAppIds(sql: Sql, job: ClaimedJob): Promise<string[]> {
  * updated. Idempotent: sync skips unchanged GCS generations and rollups converge.
  */
 export async function runReportSyncJob(sql: Sql, job: ClaimedJob, deps: WorkerDeps = defaultDeps): Promise<JobOutcome> {
-  const appIds = await resolveAppIds(sql, job);
-  const warnings: string[] = [];
-  const stats: Record<string, unknown> = { apps: appIds.length };
-  let fetched = 0;
-  let inserted = 0;
-  let failures = 0;
-  const googleListingIds = new Set<string>();
+  // Timer-based heartbeat for the whole job: per-step beats are not enough because
+  // one syncApp call can stream CSVs for longer than the stale threshold.
+  const beat = setInterval(() => void heartbeatJob(sql, job.id), HEARTBEAT_INTERVAL_MS);
+  try {
+    const appIds = await resolveAppIds(sql, job);
+    const warnings: string[] = [];
+    const stats: Record<string, unknown> = { apps: appIds.length };
+    let fetched = 0;
+    let inserted = 0;
+    let failures = 0;
+    const googleListingIds = new Set<string>();
 
-  for (const appId of appIds) {
-    await heartbeatJob(sql, job.id);
-    const results = await deps.syncApp(appId, {
-      force: true,
-      syncReports: true,
-      syncAppleStorefronts: true,
-      refreshReports: job.mode === "backfill",
-      store: job.store ?? undefined,
-    });
-    for (const r of results) {
-      fetched += r.fetched ?? 0;
-      inserted += r.inserted ?? 0;
-      if (r.status === "failed") failures += 1;
-      if (Array.isArray(r.reportWarnings)) warnings.push(...r.reportWarnings);
-      if (r.store === "google" && r.listingId) googleListingIds.add(r.listingId);
+    for (const appId of appIds) {
+      await heartbeatJob(sql, job.id);
+      const results = await deps.syncApp(appId, {
+        force: true,
+        syncReports: true,
+        syncAppleStorefronts: true,
+        refreshReports: job.mode === "backfill",
+        store: job.store ?? undefined,
+      });
+      for (const r of results) {
+        fetched += r.fetched ?? 0;
+        inserted += r.inserted ?? 0;
+        if (r.status === "failed") failures += 1;
+        if (Array.isArray(r.reportWarnings)) warnings.push(...r.reportWarnings);
+        if (r.store === "google" && r.listingId) googleListingIds.add(r.listingId);
+      }
     }
+
+    // Rebuild rollups + recompute real freshness for every Google listing we touched.
+    for (const listingId of googleListingIds) {
+      await heartbeatJob(sql, job.id);
+      await deps.refreshReportRollups(sql, listingId);
+      await deps.updateFreshness(sql, listingId);
+    }
+
+    stats.fetched = fetched;
+    stats.inserted = inserted;
+    stats.googleListings = googleListingIds.size;
+
+    const status: JobOutcome["status"] = failures === 0 ? "success" : failures < appIds.length ? "partial" : "failed";
+    return { status, warnings, stats, error: failures > 0 ? `${failures} listing sync(s) failed` : null };
+  } finally {
+    clearInterval(beat);
   }
-
-  // Rebuild rollups + recompute real freshness for every Google listing we touched.
-  for (const listingId of googleListingIds) {
-    await heartbeatJob(sql, job.id);
-    await deps.refreshReportRollups(sql, listingId);
-    await deps.updateFreshness(sql, listingId);
-  }
-
-  stats.fetched = fetched;
-  stats.inserted = inserted;
-  stats.googleListings = googleListingIds.size;
-
-  const status: JobOutcome["status"] = failures === 0 ? "success" : failures < appIds.length ? "partial" : "failed";
-  return { status, warnings, stats, error: failures > 0 ? `${failures} listing sync(s) failed` : null };
 }
 
 async function notifyChange(sql: Sql, appId: string | null): Promise<void> {

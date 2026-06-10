@@ -25,7 +25,17 @@ function chunkText(text: string): string[] {
   const words = text.split(/(\s+)/);
   const chunks: string[] = [];
   let cur = "";
-  for (const w of words) {
+  for (let w of words) {
+    // A single token longer than the cap (URL, no-space script, emoji run) would
+    // otherwise become an oversized chunk the API rejects — hard-split it.
+    while (w.length > CHUNK) {
+      if (cur) {
+        chunks.push(cur);
+        cur = "";
+      }
+      chunks.push(w.slice(0, CHUNK));
+      w = w.slice(CHUNK);
+    }
     if ((cur + w).length > CHUNK && cur) {
       chunks.push(cur);
       cur = "";

@@ -3,6 +3,7 @@ import { getSql } from "@/lib/local-db";
 import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
 import { resolveListing } from "@/lib/mobile-apps/resolve";
+import { isUuid } from "@/lib/mobile-apps/ids";
 import { syncApp } from "@/lib/mobile-apps/sync";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 
@@ -76,6 +77,8 @@ export async function POST(request: Request) {
     const body = (await request.json()) as { name?: string; refs?: string[] };
     const refs = (Array.isArray(body.refs) ? body.refs : []).map((s) => String(s || "").trim()).filter(Boolean);
     if (refs.length === 0) return fail("Provide at least one App Store or Play Store URL/ID.");
+    if (refs.length > 10) return fail("Too many app references (max 10).");
+    if (refs.some((r) => r.length > 500)) return fail("App reference is too long (max 500 characters).");
 
     // Resolve all refs first so a bad one fails before we create anything.
     let resolved: ReturnType<typeof resolveListing>[];
@@ -87,7 +90,7 @@ export async function POST(request: Request) {
 
     // The official publisher APIs are review-only and expose no store listing
     // metadata, so we name the app from the provided name or its store id.
-    const name = String(body.name || "").trim() || resolved[0].storeAppId || "Untitled app";
+    const name = (String(body.name || "").trim() || resolved[0].storeAppId || "Untitled app").slice(0, 200);
     const iconUrl: string | null = null;
 
     const appRows = (await sql`
@@ -129,6 +132,7 @@ export async function DELETE(request: Request) {
     const body = (await request.json()) as { id?: string };
     const id = String(body.id || "");
     if (!id) return fail("App id is required.");
+    if (!isUuid(id)) return fail("Invalid app id.");
     await sql`delete from mobile_apps where id = ${id}::uuid and workspace_id = ${wid}::uuid`;
     return ok();
   } catch (error) {

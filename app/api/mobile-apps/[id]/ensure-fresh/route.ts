@@ -7,6 +7,7 @@ import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
 import { syncApp } from "@/lib/mobile-apps/sync";
 import { checkOfficialReportFreshness, type FreshnessResult } from "@/lib/mobile-apps/report-freshness";
 import { enqueueReportSyncJob } from "@/lib/mobile-apps/report-jobs";
+import { isUuid } from "@/lib/mobile-apps/ids";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +41,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
 
     const { id } = await params;
+    if (!isUuid(id)) return fail("App not found", 404);
     const parsed = bodySchema.safeParse(await request.json().catch(() => ({})));
     if (!parsed.success) return fail("Invalid ensure-fresh request.", 422);
     const { consistency, includeReports } = parsed.data;

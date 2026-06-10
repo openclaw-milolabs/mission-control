@@ -167,10 +167,15 @@ export async function checkOfficialReportFreshness(
     latestProcessedGeneration: newestProcessed?.generation ?? null,
   };
 
-  // 3. Is a job already in flight, or did the last one fail?
+  // 3. Is a job already in flight, or did the last one fail? Global jobs (no app,
+  // no listing — the worker's periodic incremental pass) cover every listing, so
+  // they count too; otherwise we'd report 'stale' and enqueue duplicate work while
+  // the global pass is already processing this listing.
   const recentRows = (await sql`
     select id::text, status from mobile_app_report_sync_jobs
-    where (listing_id = ${listingId}::uuid or mobile_app_id = ${listing.mobileAppId}::uuid)
+    where (listing_id = ${listingId}::uuid
+       or mobile_app_id = ${listing.mobileAppId}::uuid
+       or (listing_id is null and mobile_app_id is null))
     order by created_at desc limit 1
   `) as unknown as Array<{ id: string; status: string }>;
   const recent = recentRows[0];

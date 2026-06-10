@@ -47,6 +47,13 @@ export type BreakdownRow = {
  *   latest breakdowns    → every non-overview dimension EXCEPT ratings
  */
 export async function refreshReportRollups(sql: Sql, listingId: string): Promise<void> {
+  // Delete + rebuild in ONE transaction: a concurrent API read must never observe
+  // the window between the deletes and the re-inserts (empty charts), and a worker
+  // crash mid-rebuild must not leave the listing without rollups until the next pass.
+  await sql.begin(async (tx) => refreshReportRollupsTx(tx as unknown as Sql, listingId));
+}
+
+async function refreshReportRollupsTx(sql: Sql, listingId: string): Promise<void> {
   await sql`delete from mobile_app_report_daily_rollups where listing_id = ${listingId}::uuid`;
   await sql`delete from mobile_app_report_latest_breakdowns where listing_id = ${listingId}::uuid`;
 

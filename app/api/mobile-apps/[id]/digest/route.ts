@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
 import { generateDigest } from "@/lib/mobile-apps/digest";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
+import { isUuid } from "@/lib/mobile-apps/ids";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     if (!(await isModuleEnabled("mobile-apps")))
       return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
     const { id } = await params;
+    if (!isUuid(id)) return fail("App not found", 404);
     const sql = getSql();
     await ensureMobileAppsSchema(sql);
     const wid = await workspaceId(sql);
@@ -48,6 +50,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     if (!(await isModuleEnabled("mobile-apps")))
       return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
     const { id } = await params;
+    if (!isUuid(id)) return fail("App not found", 404);
     const sql = getSql();
     await ensureMobileAppsSchema(sql);
     const wid = await workspaceId(sql);

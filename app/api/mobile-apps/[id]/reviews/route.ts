@@ -4,6 +4,7 @@ import { getSql } from "@/lib/local-db";
 import { getSession } from "@/lib/auth/session";
 import { isModuleEnabled } from "@/lib/modules/state";
 import { ensureMobileAppsSchema } from "@/lib/mobile-apps/ensure-schema";
+import { isUuid } from "@/lib/mobile-apps/ids";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       return fail("Mobile Applications module is disabled. Enable it in Settings.", 503);
 
     const { id } = await params;
+    if (!isUuid(id)) return fail("App not found", 404);
     const parsed = querySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
     if (!parsed.success) return fail("Invalid review query.", 422);
     const { store, rating, sort, q, since, until, limit, offset } = parsed.data;

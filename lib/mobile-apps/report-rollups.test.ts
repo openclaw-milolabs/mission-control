@@ -13,12 +13,24 @@ function recordingSql(rows: unknown[] = []) {
   }) as unknown as ReturnType<typeof import("@/lib/local-db").getSql> & { array: (v: unknown[]) => unknown };
   // postgres.js sql.array(...) helper — identity is fine for recording.
   (fn as unknown as { array: (v: unknown[]) => unknown }).array = (v: unknown[]) => v;
+  // postgres.js sql.begin(cb) — run the callback against the same recording stub.
+  (fn as unknown as { begin: (cb: (tx: unknown) => Promise<unknown>) => Promise<unknown> }).begin = (cb) => cb(fn);
   return { fn, calls, joined: () => calls.map((c) => c.q).join("\n") };
 }
 
 afterEach(() => vi.clearAllMocks());
 
 describe("refreshReportRollups dimension contracts", () => {
+  it("rebuilds inside a single transaction (no empty-charts window for concurrent reads)", async () => {
+    const { fn, calls } = recordingSql();
+    const beginSpy = vi.spyOn(fn as unknown as { begin: (cb: (tx: unknown) => Promise<unknown>) => Promise<unknown> }, "begin");
+    await refreshReportRollups(fn as never, "L1");
+    expect(beginSpy).toHaveBeenCalledTimes(1);
+    // All delete/insert statements ran via the transaction callback.
+    expect(calls.some((c) => /delete from mobile_app_report_daily_rollups/i.test(c.q))).toBe(true);
+    expect(calls.some((c) => /insert into mobile_app_report_daily_rollups/i.test(c.q))).toBe(true);
+  });
+
   it("clears the listing's rollups/breakdowns before rebuilding (idempotent rebuild)", async () => {
     const { fn, joined } = recordingSql();
     await refreshReportRollups(fn as never, "L1");
