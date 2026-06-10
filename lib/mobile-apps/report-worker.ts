@@ -132,11 +132,15 @@ export async function runReportSyncJob(sql: Sql, job: ClaimedJob, deps: WorkerDe
 
     for (const appId of appIds) {
       await heartbeatJob(sql, job.id);
+      // Backfill = full re-ingest: list ALL report months (not just the lookback
+      // window) and re-parse even cached generations. Memory-safe — files stream
+      // in bounded batches and oversized files are still skipped by the size cap.
       const results = await deps.syncApp(appId, {
         force: true,
         syncReports: true,
         syncAppleStorefronts: true,
         refreshReports: job.mode === "backfill",
+        allReportMonths: job.mode === "backfill",
         store: job.store ?? undefined,
       });
       for (const r of results) {

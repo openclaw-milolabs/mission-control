@@ -322,9 +322,10 @@ async function listFilesOrWarning(
   appIdentifier: string,
   dimensions: readonly string[],
   label: string,
+  allMonths: boolean,
 ): Promise<{ files: ReportFile[]; warning: string | null }> {
   try {
-    const files = await listReportFiles(cfg, kind, appIdentifier, dimensions);
+    const files = await listReportFiles(cfg, kind, appIdentifier, dimensions, { allMonths });
     return { files, warning: files.length ? null : reportNotFoundWarning(label, cfg, appIdentifier, dimensions) };
   } catch (err) {
     return { files: [], warning: `${label} report: ${reportErrMessage(err)}` };
@@ -341,9 +342,10 @@ async function syncSingleDimensionReportFiles(
   dimensions: readonly string[],
   source: string,
   forceReports: boolean,
+  allMonths: boolean,
 ): Promise<ReportSyncStats> {
   const warnings: string[] = [];
-  const { files, warning } = await listFilesOrWarning(cfg, report, appIdentifier, dimensions, label);
+  const { files, warning } = await listFilesOrWarning(cfg, report, appIdentifier, dimensions, label, allMonths);
   if (warning) warnings.push(warning);
   let filesDownloaded = 0;
   let filesSkipped = 0;
@@ -377,10 +379,11 @@ async function syncTrafficSourceFiles(
   cfg: GoogleConfig,
   appIdentifier: string,
   forceReports: boolean,
+  allMonths: boolean,
 ): Promise<ReportSyncStats> {
   const warnings: string[] = [];
   const label = "store performance traffic source";
-  const { files, warning } = await listFilesOrWarning(cfg, "store_performance", appIdentifier, STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS, label);
+  const { files, warning } = await listFilesOrWarning(cfg, "store_performance", appIdentifier, STORE_PERFORMANCE_TRAFFIC_SOURCE_DIMENSIONS, label, allMonths);
   if (warning) warnings.push(warning);
   let filesDownloaded = 0;
   let filesSkipped = 0;
@@ -415,12 +418,13 @@ async function syncGooglePlayReviewCsvFiles(
   cfg: GoogleConfig,
   appIdentifier: string,
   forceReports: boolean,
+  allMonths: boolean,
 ): Promise<ReportSyncStats & { reviewsParsed: number; reviewsInserted: number }> {
   const warnings: string[] = [];
   const label = "reviews CSV";
   let files: ReviewCsvFile[] = [];
   try {
-    files = await listReviewReportFiles(cfg, appIdentifier);
+    files = await listReviewReportFiles(cfg, appIdentifier, { allMonths });
     if (files.length === 0) {
       const bucket = cfg.reportsBucket || "not configured";
       warnings.push(`No Google Play reviews CSV reports found in bucket ${bucket} for package ${appIdentifier}. Expected reviews/reviews_${appIdentifier}_YYYYMM.csv.`);
@@ -459,6 +463,27 @@ async function syncGooglePlayReviewCsvFiles(
   return { warnings, groupsAttempted: 1, filesFound: files.length, filesDownloaded, filesSkipped, reviewsParsed, reviewsInserted };
 }
 
+/** Stored official per-territory ratings for a listing (jsonb may arrive as object or string). */
+async function loadStoredOfficialRatings(sql: Sql, listingId: string): Promise<TerritoryRating[]> {
+  const rows = (await sql`
+    select official_ratings from mobile_app_listings where id = ${listingId}::uuid limit 1
+  `) as unknown as Array<{ official_ratings: unknown }>;
+  const raw = rows[0]?.official_ratings;
+  let arr: unknown[] = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) arr = parsed;
+    } catch {
+      arr = [];
+    }
+  }
+  return arr
+    .filter((t): t is TerritoryRating => Boolean(t) && typeof t === "object" && typeof (t as TerritoryRating).territory === "string")
+    .map((t) => ({ territory: t.territory, avg: t.avg ?? null, count: t.count ?? null }));
+}
+
 async function loadGoogleRatingsFromDb(sql: Sql, listingId: string): Promise<{ territories: TerritoryRating[]; asOf: string | null }> {
   const rows = (await sql`
     select distinct on (dimension_value)
@@ -481,7 +506,14 @@ async function loadGoogleRatingsFromDb(sql: Sql, listingId: string): Promise<{ t
 async function syncListing(
   sql: Sql,
   listing: ListingRow,
-  opts: { force: boolean; dedupeMs: number; refreshReports: boolean; syncReports: boolean; syncAppleStorefronts: boolean },
+  opts: {
+    force: boolean;
+    dedupeMs: number;
+    refreshReports: boolean;
+    syncReports: boolean;
+    syncAppleStorefronts: boolean;
+    allReportMonths: boolean;
+  },
 ): Promise<SyncResult> {
   const store = listing.store as Store;
   const appIdentifier = listing.store_app_id;
@@ -556,7 +588,19 @@ async function syncListing(
         }).catch(() => []),
         fetchAppleAppMetadata(appIdentifier, listing.country).catch(() => null),
       ]);
-      officialRatings = territoryRatings;
+      if (fullScan) {
+        // The full scan is authoritative: it probed every storefront, so replace.
+        officialRatings = territoryRatings;
+      } else {
+        // Light sync probed ONLY the listing's own storefront. MERGE that result
+        // into the stored list (built by the worker's full scan) instead of
+        // replacing it — otherwise every page open collapses the By-country list
+        // to one row (or wipes it on a failed lookup) until the next worker pass.
+        const stored = await loadStoredOfficialRatings(sql, listing.id);
+        const merged = new Map(stored.map((t) => [t.territory, t]));
+        for (const t of territoryRatings) merged.set(t.territory, t);
+        officialRatings = [...merged.values()].sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
+      }
       storeMetadata = metadata;
       const primary =
         officialRatings.find((t) => t.territory === toAlpha2(listing.country)) ?? officialRatings[0] ?? null;
@@ -575,9 +619,16 @@ async function syncListing(
           RATINGS_DIMENSIONS,
           "google_play_console_ratings_report",
           opts.refreshReports,
+          opts.allReportMonths,
         );
         reportAttempts += ratingsStats.groupsAttempted;
         reportWarnings.push(...ratingsStats.warnings);
+      }
+      // ALWAYS read the report-derived ratings already in our DB (cheap, no GCS).
+      // A light sync skips the heavy report-file sync, but it must NOT downgrade
+      // the headline to the written-review average — and wipe the per-country
+      // list — just because it didn't re-download CSVs this time.
+      if (cfg.google.reportsBucket) {
         const ratingReport = await loadGoogleRatingsFromDb(sql, listing.id);
         if (ratingReport.territories.length > 0) {
           officialRatings = ratingReport.territories;
@@ -626,6 +677,7 @@ async function syncListing(
         INSTALLS_DIMENSIONS,
         "google_play_console_stats_report",
         opts.refreshReports,
+        opts.allReportMonths,
       );
       const crashesStats = await syncSingleDimensionReportFiles(
         sql,
@@ -637,6 +689,7 @@ async function syncListing(
         CRASHES_DIMENSIONS,
         "google_play_console_crashes_report",
         opts.refreshReports,
+        opts.allReportMonths,
       );
       const storePerfStats = await syncSingleDimensionReportFiles(
         sql,
@@ -648,9 +701,10 @@ async function syncListing(
         STORE_PERFORMANCE_COUNTRY_DIMENSIONS,
         "google_play_console_store_performance_report",
         opts.refreshReports,
+        opts.allReportMonths,
       );
-      const trafficStats = await syncTrafficSourceFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports);
-      const reviewCsvStats = await syncGooglePlayReviewCsvFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports);
+      const trafficStats = await syncTrafficSourceFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports, opts.allReportMonths);
+      const reviewCsvStats = await syncGooglePlayReviewCsvFiles(sql, listing.id, cfg.google, appIdentifier, opts.refreshReports, opts.allReportMonths);
       const stats = [installsStats, crashesStats, storePerfStats, trafficStats, reviewCsvStats];
       for (const s of stats) {
         reportAttempts += s.groupsAttempted;
@@ -738,6 +792,8 @@ export async function syncApp(
     refreshReports?: boolean;
     syncReports?: boolean;
     syncAppleStorefronts?: boolean;
+    /** Backfill: list ALL report months instead of the lookback window. Worker-owned. */
+    allReportMonths?: boolean;
     listingConcurrency?: number;
   } = {},
 ): Promise<SyncResult[]> {
@@ -751,8 +807,9 @@ export async function syncApp(
   const syncReports = opts.syncReports === true;
   const syncAppleStorefronts = opts.syncAppleStorefronts === true;
   // refreshReports (force re-download of CSVs) is meaningless without syncReports,
-  // so derive it from syncReports rather than from `force`.
+  // so derive it from syncReports rather than from `force`. Same for allReportMonths.
   const refreshReports = syncReports && opts.refreshReports === true;
+  const allReportMonths = syncReports && opts.allReportMonths === true;
 
   const listings = (await sql`
     select id::text, store, store_app_id, country, last_synced_at
@@ -764,7 +821,7 @@ export async function syncApp(
   const limit = pLimit(Math.max(1, opts.listingConcurrency ?? cfg.sync.concurrency));
   const results = await Promise.all(
     listings.map((l) =>
-      limit(() => syncListing(sql, l, { force, dedupeMs, refreshReports, syncReports, syncAppleStorefronts })),
+      limit(() => syncListing(sql, l, { force, dedupeMs, refreshReports, syncReports, syncAppleStorefronts, allReportMonths })),
     ),
   );
 

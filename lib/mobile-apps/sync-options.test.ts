@@ -29,16 +29,24 @@ import { syncApp } from "@/lib/mobile-apps/sync";
 
 type Listing = { id: string; store: string; store_app_id: string; country: string; last_synced_at: string | null };
 
-function makeFakeSql(listings: Listing[]) {
+function makeFakeSql(
+  listings: Listing[],
+  extra: { storedOfficialRatings?: unknown; googleReportRatings?: unknown[] } = {},
+) {
   let runs = 0;
-  const sql = (strings: TemplateStringsArray): Promise<unknown[]> => {
+  const calls: Array<{ q: string; values: unknown[] }> = [];
+  const sql = (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> => {
     const q = strings.join(" ");
+    calls.push({ q, values });
     if (q.includes("from mobile_app_listings") && q.includes("store_app_id")) return Promise.resolve(listings);
+    if (q.includes("select official_ratings from mobile_app_listings"))
+      return Promise.resolve([{ official_ratings: extra.storedOfficialRatings ?? null }]);
+    if (q.includes("from mobile_app_report_metrics")) return Promise.resolve(extra.googleReportRatings ?? []);
     if (q.includes("insert into app_review_sync_runs")) return Promise.resolve([{ id: `run-${++runs}` }]);
     if (q.includes("insert into app_reviews")) return Promise.resolve([{ inserted: true }]);
     return Promise.resolve([]);
   };
-  return sql;
+  return Object.assign(sql, { calls });
 }
 
 const review = (id: string): RawReview => ({
@@ -78,6 +86,81 @@ describe("syncApp report-sync gating", () => {
     await syncApp("app1", { force: true, syncReports: true });
 
     expect(listReportFiles).toHaveBeenCalled();
+  });
+});
+
+describe("syncApp backfill month window", () => {
+  it("allReportMonths:true lists ALL months; default stays lookback-bounded", async () => {
+    vi.mocked(getSql).mockReturnValue(makeFakeSql([googleListing]) as never);
+    vi.mocked(loadMobileReviewsConfig).mockReturnValue(config("off") as never);
+    vi.mocked(getProvider).mockReturnValue({ fetchReviews: vi.fn(async () => [review("r1")]) } as never);
+
+    await syncApp("app1", { force: true, syncReports: true, allReportMonths: true });
+    for (const call of vi.mocked(listReportFiles).mock.calls) {
+      expect(call[4]).toMatchObject({ allMonths: true });
+    }
+
+    vi.mocked(listReportFiles).mockClear();
+    await syncApp("app1", { force: true, syncReports: true });
+    for (const call of vi.mocked(listReportFiles).mock.calls) {
+      expect(call[4]).toMatchObject({ allMonths: false });
+    }
+  });
+});
+
+describe("syncApp light-sync rating stability", () => {
+  it("Apple light sync MERGES its one-country probe into the stored By-country list", async () => {
+    const fake = makeFakeSql([appleListing], {
+      storedOfficialRatings: [
+        { territory: "nl", avg: 4.5, count: 50 },
+        { territory: "us", avg: 4.7, count: 90 },
+      ],
+    });
+    vi.mocked(getSql).mockReturnValue(fake as never);
+    vi.mocked(loadMobileReviewsConfig).mockReturnValue(config("always") as never);
+    vi.mocked(getProvider).mockReturnValue({ fetchReviews: vi.fn(async () => [review("a1")]) } as never);
+    vi.mocked(fetchAppleTerritoryRatings).mockResolvedValue([{ territory: "us", avg: 4.8, count: 100 }]);
+
+    await syncApp("app1", { force: true }); // light: no syncAppleStorefronts
+
+    const update = fake.calls.find((c) => c.q.includes("update mobile_app_listings"));
+    expect(update, "listing update was issued").toBeTruthy();
+    const ratings = JSON.parse(String(update!.values[2])) as Array<{ territory: string; avg: number; count: number }>;
+    // The stored nl row survives; the probed us row is refreshed in place.
+    expect(ratings.map((r) => r.territory).sort()).toEqual(["nl", "us"]);
+    expect(ratings.find((r) => r.territory === "us")).toMatchObject({ avg: 4.8, count: 100 });
+    expect(ratings.find((r) => r.territory === "nl")).toMatchObject({ avg: 4.5, count: 50 });
+  });
+
+  it("Apple light sync keeps the stored list intact when the storefront probe fails", async () => {
+    const fake = makeFakeSql([appleListing], {
+      storedOfficialRatings: [{ territory: "nl", avg: 4.5, count: 50 }],
+    });
+    vi.mocked(getSql).mockReturnValue(fake as never);
+    vi.mocked(loadMobileReviewsConfig).mockReturnValue(config("always") as never);
+    vi.mocked(getProvider).mockReturnValue({ fetchReviews: vi.fn(async () => [review("a1")]) } as never);
+    vi.mocked(fetchAppleTerritoryRatings).mockRejectedValue(new Error("rate limited"));
+
+    await syncApp("app1", { force: true });
+
+    const update = fake.calls.find((c) => c.q.includes("update mobile_app_listings"));
+    const ratings = JSON.parse(String(update!.values[2])) as Array<{ territory: string }>;
+    expect(ratings.map((r) => r.territory)).toEqual(["nl"]);
+  });
+
+  it("Google light sync keeps the Play Console report rating from the DB (no downgrade to written-review average)", async () => {
+    const fake = makeFakeSql([googleListing], {
+      googleReportRatings: [{ territory: "us", avg: 4.3, as_of: "2026-06-01" }],
+    });
+    vi.mocked(getSql).mockReturnValue(fake as never);
+    vi.mocked(loadMobileReviewsConfig).mockReturnValue(config("off") as never);
+    vi.mocked(getProvider).mockReturnValue({ fetchReviews: vi.fn(async () => [review("r1")]) } as never);
+
+    const [res] = await syncApp("app1", { force: true }); // light: no syncReports
+
+    expect(listReportFiles).not.toHaveBeenCalled(); // still no heavy GCS work
+    expect(res.ratingSource).toBe("google_play_console_ratings_report");
+    expect(res.ratingAsOf).toBe("2026-06-01");
   });
 });
 

@@ -397,6 +397,9 @@ function fileMeta(file: { name?: string; metadata?: Record<string, unknown> }): 
   };
 }
 
+/** Listing window: incremental syncs stay lookback-bounded; backfill takes all months. */
+export type ListReportOptions = { allMonths?: boolean };
+
 /**
  * List every Play Console CSV for a package/report across all available years.
  * This is read-only: it only uses GCS list metadata, never upload/write APIs.
@@ -406,6 +409,7 @@ export async function listReportFiles(
   kind: ReportKind,
   packageName: string,
   dimensions: readonly string[],
+  opts: ListReportOptions = {},
 ): Promise<ReportFile[]> {
   const bucketName = normalizeBucketName(cfg.reportsBucket);
   if (!bucketName) return [];
@@ -414,14 +418,16 @@ export async function listReportFiles(
   try {
     const [files] = await bucket.getFiles({ prefix });
     const allowed = new Set(dimensions);
-    // Bound the scan to the configured lookback window. The bucket can hold YEARS
-    // of CSVs; downloading + parsing them all at once is what OOM-kills the server.
-    const allowedMonths = new Set(checkedReportMonths(cfg.reportsLookbackMonths));
+    // Bound the scan to the configured lookback window for incremental syncs. The
+    // bucket can hold YEARS of CSVs; the old buffer-everything path OOM-killed the
+    // server on that. Backfill (worker-owned, streamed, batched, size-capped) may
+    // take every month so the full history gets ingested exactly once.
+    const allowedMonths = opts.allMonths ? null : new Set(checkedReportMonths(cfg.reportsLookbackMonths));
     return files
       .map((file) => {
         const path = file.name;
         const hit = reportPathMatch(kind, packageName, path);
-        if (!hit || !allowed.has(hit.dimension) || !allowedMonths.has(hit.yyyyMM)) return null;
+        if (!hit || !allowed.has(hit.dimension) || (allowedMonths && !allowedMonths.has(hit.yyyyMM))) return null;
         return { kind, path, yyyyMM: hit.yyyyMM, dimension: hit.dimension, ...fileMeta(file) } satisfies ReportFile;
       })
       .filter((f): f is ReportFile => Boolean(f))
@@ -440,20 +446,25 @@ export async function listReportFiles(
  * List every Google Play Console monthly reviews CSV for this package.
  * Path format: reviews/reviews_${packageName}_YYYYMM.csv
  */
-export async function listReviewReportFiles(cfg: GoogleConfig, packageName: string): Promise<ReviewCsvFile[]> {
+export async function listReviewReportFiles(
+  cfg: GoogleConfig,
+  packageName: string,
+  opts: ListReportOptions = {},
+): Promise<ReviewCsvFile[]> {
   const bucketName = normalizeBucketName(cfg.reportsBucket);
   if (!bucketName) return [];
   const bucket = reportsBucket(cfg);
   const prefix = `reviews/reviews_${packageName}_`;
   try {
     const [files] = await bucket.getFiles({ prefix });
-    // Same lookback bound as the stats reports — never parse the whole history.
-    const allowedMonths = new Set(checkedReportMonths(cfg.reportsLookbackMonths));
+    // Same lookback bound as the stats reports for incremental syncs; backfill
+    // may take the whole history (streamed + batched, never buffered).
+    const allowedMonths = opts.allMonths ? null : new Set(checkedReportMonths(cfg.reportsLookbackMonths));
     return files
       .map((file) => {
         const path = file.name;
         const hit = reviewsPathMatch(packageName, path);
-        if (!hit || !allowedMonths.has(hit.yyyyMM)) return null;
+        if (!hit || (allowedMonths && !allowedMonths.has(hit.yyyyMM))) return null;
         return { kind: "reviews", dimension: "monthly", path, yyyyMM: hit.yyyyMM, ...fileMeta(file) } satisfies ReviewCsvFile;
       })
       .filter((f): f is ReviewCsvFile => Boolean(f))

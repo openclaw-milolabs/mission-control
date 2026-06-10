@@ -764,21 +764,20 @@ export function AppDetailClient({ appId }: { appId: string }) {
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
-        {syncing ? (
+        {/* Full-page spinner ONLY while we have nothing to render yet (first ever
+            load). Once cached data exists it is shown immediately; the live store
+            re-check runs in the background with the inline "checking stores…"
+            indicator instead of blanking the page for seconds on every open. */}
+        {syncing && !app ? (
           <div className="flex h-full min-h-[70vh] flex-col items-center justify-center gap-5 text-center">
             <span className="relative grid size-16 place-items-center">
               <span className="absolute inset-0 animate-spin rounded-full border-[3px] border-muted border-t-foreground" />
-              {app?.icon_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={app.icon_url} alt="" className="size-9 rounded-xl border" />
-              ) : (
-                <IconRefresh className="size-6 text-muted-foreground" />
-              )}
+              <IconRefresh className="size-6 text-muted-foreground" />
             </span>
             <div className="max-w-md">
               <h2 className="text-lg font-semibold tracking-tight">Checking the stores…</h2>
               <p className="mt-1.5 text-sm text-muted-foreground">
-                Fetching the latest ratings and reviews for {app?.name ?? "this app"} from the App Store and Google Play.
+                Fetching the latest ratings and reviews for this app from the App Store and Google Play.
                 This usually takes a few seconds — and a brand-new review can still take hours to appear on the store side.
               </p>
             </div>

@@ -88,6 +88,36 @@ describe("processQueuedJobs orchestration", () => {
     expect(calls.some((c) => /pg_notify\('mobile_apps_change'/i.test(c.q))).toBe(true);
   });
 
+  it("backfill jobs re-ingest the FULL history: refreshReports + allReportMonths on", async () => {
+    const { fn } = routerSql({
+      claimed: [{ id: "j1", mode: "backfill", store: "google", mobileAppId: "A1", listingId: null }],
+    });
+    const syncApp = vi.fn(async () => [
+      { listingId: "L1", store: "google", status: "success", reportWarnings: [], fetched: 0, inserted: 0 },
+    ]);
+    const deps: WorkerDeps = { syncApp: syncApp as never, refreshReportRollups: vi.fn(async () => {}), updateFreshness: vi.fn(async () => {}) };
+
+    await processQueuedJobs(fn as never, deps);
+
+    const opts = (syncApp.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(opts).toMatchObject({ refreshReports: true, allReportMonths: true });
+  });
+
+  it("incremental jobs stay lookback-bounded: refreshReports + allReportMonths off", async () => {
+    const { fn } = routerSql({
+      claimed: [{ id: "j1", mode: "incremental", store: "google", mobileAppId: "A1", listingId: null }],
+    });
+    const syncApp = vi.fn(async () => [
+      { listingId: "L1", store: "google", status: "success", reportWarnings: [], fetched: 0, inserted: 0 },
+    ]);
+    const deps: WorkerDeps = { syncApp: syncApp as never, refreshReportRollups: vi.fn(async () => {}), updateFreshness: vi.fn(async () => {}) };
+
+    await processQueuedJobs(fn as never, deps);
+
+    const opts = (syncApp.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(opts).toMatchObject({ refreshReports: false, allReportMonths: false });
+  });
+
   it("marks the job failed when the sync throws, and does not crash the loop", async () => {
     const { fn, calls } = routerSql({
       claimed: [{ id: "j1", mode: "incremental", store: "google", mobileAppId: "A1", listingId: null }],
